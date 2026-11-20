@@ -4,7 +4,7 @@
 
 mod acts;
 #[cfg(test)]
-mod seal_tests;
+pub(crate) mod seal_tests;
 #[cfg(test)]
 pub(crate) mod tests;
 // Named `tests.rs`, as every test file is, so it is read as tests.

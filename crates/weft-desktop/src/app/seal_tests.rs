@@ -52,6 +52,17 @@ fn open_seal(app: &mut WeftDesktopApp, wire: &mut Wire, questions: Value) {
     });
 }
 
+/// The Seal opened on work whose Eval asked more than a short window holds.
+pub(crate) fn many_questions(app: &mut WeftDesktopApp, wire: &mut Wire) {
+    let questions: Vec<Value> = (0..12)
+        .map(|n| {
+            json!({"id": format!("q{n}"), "ask": "did_you_want",
+                   "behaviour": format!("Behaviour {n}: the sign-in page remembers the last email.")})
+        })
+        .collect();
+    open_seal(app, wire, json!({"questions": questions, "eval": "evl_3"}));
+}
+
 /// The Seal opened on work whose Eval asked nothing: today's dialog.
 pub(crate) fn no_questions(app: &mut WeftDesktopApp, wire: &mut Wire) {
     open_seal(app, wire, json!({"questions": [], "eval": "evl_3"}));

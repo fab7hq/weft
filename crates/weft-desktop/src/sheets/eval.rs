@@ -88,7 +88,13 @@ pub(super) fn render_detail(props: &SheetProps, project: &Path, eval_id: &str) -
         Some(weft_core::offers::eval_detail(ev, record.as_ref(), &c.units, &c.work.record, seal))
     });
     let ids = || (project.to_path_buf(), eval_id.to_string());
-    let mut body = div().self_stretch().flex_1().flex_col().style("overflow-y", "auto").pad(28, 48);
+    let mut body = div()
+        .layer("eval detail body")
+        .self_stretch()
+        .flex_1()
+        .flex_col()
+        .style("overflow-y", "auto")
+        .pad(28, 48);
     let Some(d) = &detail else {
         body = body
             .child(div().color(palette::MUTED).text(eval_id.to_string()))

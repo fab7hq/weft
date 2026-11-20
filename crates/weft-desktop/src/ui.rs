@@ -97,6 +97,7 @@ pub fn sheet_head(title: impl Into<String>, aside: Option<(String, &str)>) -> El
 /// A sheet's body: a column that scrolls.
 pub fn sheet_body() -> Element {
     div()
+        .layer("sheet body")
         .self_stretch()
         .flex_1()
         .flex_col()

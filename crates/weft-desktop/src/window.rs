@@ -1511,6 +1511,23 @@ pub(crate) fn at_end(handle: &ScrollHandle) -> bool {
     -handle.offset().y >= handle.max_offset().y - px(24.0)
 }
 
+/// What a scroll holds is never squeezed to fit it: each child of a column
+/// that scrolls down, or of a row that scrolls across, keeps its size on that
+/// axis, so it runs past the scroll's end and the scroll moves it. A child
+/// clipped with `overflow: hidden` would otherwise shrink to fit and lose
+/// its end.
+fn keep_whole_in_scrolls(el: &mut Element) {
+    let (x, y) = scroll_axes(&el.styles);
+    let direction = el.styles.iter().find(|(k, _)| k == "flex-direction").map(|(_, v)| v.as_str());
+    let keep = (y && direction == Some("column")) || (x && direction == Some("row"));
+    for child in &mut el.children {
+        if keep && !child.styles.iter().any(|(k, _)| k == "flex-shrink") {
+            child.styles.push(("flex-shrink".into(), "0".into()));
+        }
+        keep_whole_in_scrolls(child);
+    }
+}
+
 /// The axes an element scrolls on, `(x, y)`: its `overflow-x` and
 /// `overflow-y` of `auto` or `scroll`.
 fn scroll_axes(styles: &[(String, String)]) -> (bool, bool) {
@@ -1794,7 +1811,11 @@ impl Render for GpuiDesktopView {
         let rebuild = std::mem::take(&mut self.stale) || !output_only || self.last.is_none();
         if rebuild {
             self.last = Some(match self.shared.lock() {
-                Ok(guard) => guard.app.render(),
+                Ok(guard) => {
+                    let mut tree = guard.app.render();
+                    keep_whole_in_scrolls(&mut tree);
+                    tree
+                }
                 Err(_) => crate::gpui::div(),
             });
             self.builds += 1;
@@ -2375,6 +2396,220 @@ mod tests {
         });
     }
 
+    /// Lay the window out at 960 by 640 and give `name`'s bounds.
+    fn laid_out(cx: &mut VisualTestContext, name: &'static str) -> Bounds<Pixels> {
+        cx.simulate_resize(size(px(960.0), px(640.0)));
+        for _ in 0..2 {
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        }
+        cx.debug_bounds(name).unwrap_or_else(|| panic!("{name} was not drawn"))
+    }
+
+    /// A change in the Eval view with more to say than the window holds: its
+    /// detail ends inside the window, so it scrolls instead of running off.
+    #[test]
+    fn a_long_change_scrolls_inside_the_eval_view() {
+        windowed(|cx| {
+            let (_tmp, shared, _view, mut wire, cx) = opened_view(cx);
+            {
+                let mut g = shared.lock().unwrap();
+                let mut view = crate::app::tests::an_eval_view();
+                view.items[0].why = (0..80).map(|n| format!("Reason {n} it is here.")).collect();
+                crate::app::tests::open_view(&mut g.app, &mut wire, &view);
+                g.dirty = true;
+            }
+            let detail = laid_out(cx, "eval detail");
+            assert!(detail.bottom() <= px(640.0), "{detail:?} ends inside the window");
+            let list = laid_out(cx, "eval items");
+            assert!(list.bottom() <= px(640.0), "{list:?} ends inside the window");
+        });
+    }
+
+    /// A change's lines, more than the window holds: they scroll inside the
+    /// window instead of being cut off.
+    #[test]
+    fn a_changes_long_lines_scroll_inside_the_eval_view() {
+        windowed(|cx| {
+            let (_tmp, shared, _view, mut wire, cx) = opened_view(cx);
+            let block = {
+                let mut g = shared.lock().unwrap();
+                let mut view = crate::app::tests::an_eval_view();
+                let at = view.items.iter().position(|i| !i.windows.is_empty()).expect("lines");
+                let window = view.items[at].windows[0].clone();
+                view.items[at].windows.truncate(1);
+                let key = view.items[at].key.clone();
+                crate::app::tests::open_view(&mut g.app, &mut wire, &view);
+                let text: String = (1..=200).map(|n| format!("line {n}\n")).collect();
+                let then =
+                    crate::daemon::Then::Window { eval: "evl_3".into(), window: window.clone() };
+                g.app.clients[0].read.insert(then, serde_json::json!({ "text": text }));
+                if let Some(crate::app::ActiveSheet::EvalView { at, .. }) = &mut g.app.active_sheet
+                {
+                    *at = vec![key, "lines".into()];
+                }
+                g.dirty = true;
+                Box::leak(format!("lines {window}").into_boxed_str()) as &'static str
+            };
+            let pane = laid_out(cx, "eval lines");
+            assert!(pane.bottom() <= px(640.0), "{pane:?} ends inside the window");
+            let code = cx.debug_bounds(block).expect("the lines drawn");
+            assert!(code.size.height >= px(200.0 * 22.0), "every line keeps its height: {code:?}");
+        });
+    }
+
+    /// Every sheet in a window too short for what it says: each of its
+    /// scrolls ends inside the window, so what does not fit scrolls instead
+    /// of running off its foot.
+    #[test]
+    fn every_sheets_scrolls_end_inside_a_short_window() {
+        use crate::action::SettingsTab;
+        use crate::app::ActiveSheet;
+        windowed(|cx| {
+            let (_tmp, shared, _view, mut wire, cx) = opened_view(cx);
+            let root = shared.lock().unwrap().app.clients[0].root.clone();
+            {
+                let mut g = shared.lock().unwrap();
+                let view = crate::app::tests::an_eval_view();
+                crate::app::tests::open_view(&mut g.app, &mut wire, &view);
+            }
+            let p = || root.clone();
+            let sheets = vec![
+                ActiveSheet::Settings { tab: SettingsTab::General },
+                ActiveSheet::Settings { tab: SettingsTab::Workflow },
+                ActiveSheet::Settings { tab: SettingsTab::RingFrame },
+                ActiveSheet::Settings { tab: SettingsTab::Harnesses },
+                ActiveSheet::ProjectSettings { project: p() },
+                ActiveSheet::Ask { project: p(), send_to: None, follow_up_unit: None },
+                ActiveSheet::Unit { project: p(), unit: "ask_4".into() },
+                ActiveSheet::WorkDetail { project: p(), unit: "ask_4".into() },
+                ActiveSheet::EvalDetail { project: p(), eval: "evl_2".into() },
+                ActiveSheet::EvalView { project: p(), eval: "evl_3".into(), at: Vec::new() },
+                ActiveSheet::SealDetail { project: p(), seal: "sel_4".into() },
+                ActiveSheet::SessionDetail { project: p(), session: "s1".into() },
+                ActiveSheet::Updates,
+                ActiveSheet::Remote,
+            ];
+            for sheet in sheets {
+                let scrolls = {
+                    let mut g = shared.lock().unwrap();
+                    g.app.active_sheet = Some(sheet.clone());
+                    g.dirty = true;
+                    let mut names = Vec::new();
+                    scrolls_in(&g.app.render(), &mut names);
+                    names
+                };
+                cx.simulate_resize(size(px(960.0), px(360.0)));
+                for _ in 0..2 {
+                    cx.update(|window, _| window.refresh());
+                    cx.run_until_parked();
+                }
+                let mut measured = 0;
+                for name in scrolls {
+                    let name: &'static str = Box::leak(name.into_boxed_str());
+                    let Some(b) = cx.debug_bounds(name) else { continue };
+                    measured += 1;
+                    assert!(b.bottom() <= px(360.0), "{sheet:?}: {name} {b:?} ends inside");
+                }
+                assert!(measured > 0, "{sheet:?}: a scroll of it was drawn");
+            }
+        });
+    }
+
+    /// The dialogs over the window, each with more than a short window
+    /// holds, by the scroll each has: the Seal's, an Eval's with many
+    /// findings, an Ask's long prompt. Each of their scrolls ends inside the
+    /// window.
+    #[test]
+    fn every_dialogs_scrolls_end_inside_a_short_window() {
+        windowed(|cx| {
+            let (_tmp, shared, _view, mut wire, cx) = opened_view(cx);
+            let findings: Vec<_> = (0..40)
+                .map(|n| {
+                    serde_json::json!({
+                        "kind": "data_bulk", "path": format!("data/set-{n}/"), "files": 900,
+                        "kinds_of_files": [["json", 900]],
+                        "fix": {"file": ".gitattributes",
+                                "line": format!("data/set-{n}/** linguist-generated=true")},
+                    })
+                })
+                .collect();
+            let reads = serde_json::json!({"reads": {
+                "since": "ask", "when": "2026-11-08T09:12:00Z", "commits": 52,
+                "files": 13_852, "skipped": {}, "large": false, "findings": findings,
+            }});
+            let staged = |id: &str, what: &str, payload: Vec<u8>| crate::daemon::Staged {
+                id: id.into(),
+                pane: u32::MAX,
+                what: what.into(),
+                why: String::new(),
+                payload,
+                sends: None,
+                go: None,
+            };
+            let long_prompt: String =
+                (0..120).map(|n| format!("- rule {n}: keep it plain\n")).collect();
+            type Open = Box<dyn Fn(&mut crate::app::WeftDesktopApp, &mut crate::app::tests::Wire)>;
+            let dialogs: Vec<(&str, Open)> = vec![
+                ("Seal dialog", Box::new(crate::app::seal_tests::many_questions)),
+                (
+                    "findings",
+                    Box::new(move |app, _| {
+                        app.clients[0].waiting = vec![staged(
+                            "p1",
+                            "Eval this work?",
+                            serde_json::to_vec(&reads).unwrap(),
+                        )]
+                    }),
+                ),
+                (
+                    "payload",
+                    Box::new(move |app, _| {
+                        app.clients[0].waiting =
+                            vec![staged("p2", "Ask Codex?", long_prompt.clone().into_bytes())]
+                    }),
+                ),
+            ];
+            for (dialog, open) in dialogs {
+                let scrolls = {
+                    let mut g = shared.lock().unwrap();
+                    g.app.bottom_bar = crate::app::BottomBarState::None;
+                    g.app.clients[0].waiting.clear();
+                    open(&mut g.app, &mut wire);
+                    g.dirty = true;
+                    let mut names = Vec::new();
+                    scrolls_in(&g.app.render(), &mut names);
+                    names
+                };
+                cx.simulate_resize(size(px(960.0), px(360.0)));
+                for _ in 0..2 {
+                    cx.update(|window, _| window.refresh());
+                    cx.run_until_parked();
+                }
+                assert!(scrolls.iter().any(|s| s == dialog), "{dialog} open: {scrolls:?}");
+                for name in scrolls {
+                    let name: &'static str = Box::leak(name.into_boxed_str());
+                    let Some(b) = cx.debug_bounds(name) else {
+                        assert_ne!(name, dialog, "{dialog} was drawn");
+                        continue;
+                    };
+                    assert!(b.bottom() <= px(360.0), "{dialog}: {name} {b:?} ends inside");
+                }
+            }
+        });
+    }
+
+    /// The names of the scrolls in `el`, every one named.
+    fn scrolls_in(el: &Element, names: &mut Vec<String>) {
+        if scroll_axes(&el.styles).1 {
+            let name = el.layer_name.clone();
+            names.push(name.unwrap_or_else(|| panic!("a scroll with no name: {:?}", el.styles)));
+        }
+        for c in &el.children {
+            scrolls_in(c, names);
+        }
+    }
+
     /// A finding with a very long path and line, in the Eval dialog of a
     /// 960-px window: its words and its line end inside its box, and its
     /// button stays whole within it.
@@ -2421,6 +2656,37 @@ mod tests {
             assert!(button.right() <= list.right(), "{button:?} inside {list:?}");
             assert!(button.size.width > px(100.0), "the button whole: {button:?}");
         });
+    }
+
+    /// Each child of a scrolling column keeps its height, one clipped with
+    /// `overflow: hidden` among them; one that says its own shrink keeps it,
+    /// and a column that does not scroll squeezes as before.
+    #[test]
+    fn what_a_scroll_holds_keeps_its_size() {
+        let clipped = || crate::gpui::div().style("overflow", "hidden").text("x");
+        let mut tree = crate::gpui::div()
+            .flex_col()
+            .child(
+                crate::gpui::div()
+                    .flex_col()
+                    .style("overflow-y", "auto")
+                    .child(clipped())
+                    .child(clipped().style("flex-shrink", "1")),
+            )
+            .child(clipped());
+        keep_whole_in_scrolls(&mut tree);
+        let shrink = |el: &Element| {
+            el.styles
+                .iter()
+                .filter(|(k, _)| k == "flex-shrink")
+                .map(|(_, v)| v.clone())
+                .collect::<Vec<_>>()
+        };
+        let scroll = &tree.children[0];
+        assert_eq!(shrink(&scroll.children[0]), ["0"], "kept whole");
+        assert_eq!(shrink(&scroll.children[1]), ["1"], "its own say stands");
+        assert!(shrink(&tree.children[1]).is_empty(), "not in a scroll");
+        assert!(shrink(scroll).is_empty(), "the scroll itself is the column's to size");
     }
 
     #[test]

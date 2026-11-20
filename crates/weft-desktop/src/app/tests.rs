@@ -2532,7 +2532,7 @@ fn the_state_is_written_once_by_whoever_takes_it() {
 /// login", with a question carried from an earlier Seal, changes and a
 /// requirement to look at, one the readings could not settle, and the rest
 /// settled.
-fn an_eval_view() -> weft_core::eval_view::EvalView {
+pub(crate) fn an_eval_view() -> weft_core::eval_view::EvalView {
     let record: serde_json::Value =
         serde_json::from_str(include_str!("../../../weft-core/tests/fixtures/eval-v4/record.json"))
             .unwrap();
