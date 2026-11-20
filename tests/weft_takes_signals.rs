@@ -19,6 +19,10 @@ struct Client {
     next: u64,
     stream: UnixStream,
     lines: Lines<UnixStream>,
+    /// Each pane's turn and the sessions carried, as the open answer and
+    /// every `agents` event since have told them.
+    turns: Vec<Option<Turn>>,
+    rows: Vec<weft_core::sessions::Row>,
 }
 
 impl Client {
@@ -32,11 +36,21 @@ impl Client {
             std::thread::sleep(Duration::from_millis(20));
         };
         let lines = Lines::new(stream.try_clone().expect("clone"));
-        let mut c = Client { next: 1, stream, lines };
+        let mut c = Client { next: 1, stream, lines, turns: Vec::new(), rows: Vec::new() };
         c.answer(Call::Hello { client: "test".into(), protocol: PROTOCOL });
         let path = root.to_string_lossy().into_owned();
-        c.answer(Call::Open { path, rows: 24, cols: 80, raw: false });
+        let opened = c.answer(Call::Open { path, rows: 24, cols: 80, raw: false });
+        c.turns = serde_json::from_value(opened["agents"]["panes"].clone()).unwrap();
+        c.rows = serde_json::from_value(opened["agents"]["sessions"].clone()).unwrap();
         c
+    }
+
+    /// What an `agents` event moved, taken.
+    fn take(&mut self, line: &Line) -> bool {
+        let Line::Event(Event::Agents { panes, changed, gone, .. }) = line else { return false };
+        self.turns = panes.clone();
+        weft_core::sessions::apply(&mut self.rows, changed, gone);
+        true
     }
 
     fn send(&mut self, call: Call) -> u64 {
@@ -52,25 +66,25 @@ impl Client {
             match self.lines.next().expect("read").expect("a line") {
                 Line::Result { id: got, result } if got == id => return result,
                 Line::Error { id: got, message, .. } if got == id => panic!("{message}"),
-                _ => {}
+                other => {
+                    self.take(&other);
+                }
             }
         }
     }
 
-    /// The next `agents` event that `pick` says yes to.
+    /// Until each pane's turn and the sessions, as told, are what `pick`
+    /// says yes to.
     fn agents_until(
         &mut self,
         pick: impl Fn(&[Option<Turn>], &[weft_core::sessions::Row]) -> bool,
     ) {
         self.stream.set_read_timeout(Some(Duration::from_secs(5))).expect("timeout");
-        loop {
+        while !pick(&self.turns, &self.rows) {
             match self.lines.next() {
-                Ok(Some(Line::Event(Event::Agents { panes, sessions, .. })))
-                    if pick(&panes, &sessions) =>
-                {
-                    return;
+                Ok(Some(line)) => {
+                    self.take(&line);
                 }
-                Ok(Some(_)) => {}
                 other => panic!("the agents never said so: {other:?}"),
             }
         }

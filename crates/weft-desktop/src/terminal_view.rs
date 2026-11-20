@@ -6,9 +6,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use gpui::{
-    App, Bounds, Font, FontFeatures, FontStyle, FontWeight, Hsla, IntoElement, Pixels, Rgba,
-    SharedString, StrikethroughStyle, Styled, TextAlign, TextRun, UnderlineStyle, Window, canvas,
-    fill, font, point, px, size,
+    App, Bounds, Context, Font, FontFeatures, FontStyle, FontWeight, Hsla, IntoElement, Pixels,
+    Render, Rgba, SharedString, StrikethroughStyle, Styled, TextAlign, TextRun, UnderlineStyle,
+    Window, canvas, fill, font, point, px, size,
 };
 use weft_term::palette;
 
@@ -23,6 +23,29 @@ pub fn grid_size(width: f32, height: f32, cell_width: f32, line_height: f32) -> 
     let rows = (height / line_height).floor().max(1.0);
     let cols = (width / cell_width).floor().max(1.0);
     (rows.min(u16::MAX as f32) as u16, cols.min(u16::MAX as f32) as u16)
+}
+
+/// A pane's terminal as a view of its own: its output redraws it, and the
+/// window around it keeps the layout it had.
+pub(crate) struct TerminalView {
+    shared: Arc<Mutex<SharedState>>,
+    project: PathBuf,
+    pane: u32,
+    /// How many times it was drawn, for a test.
+    pub(crate) drawn: usize,
+}
+
+impl TerminalView {
+    pub(crate) fn new(shared: Arc<Mutex<SharedState>>, project: PathBuf, pane: u32) -> Self {
+        TerminalView { shared, project, pane, drawn: 0 }
+    }
+}
+
+impl Render for TerminalView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        self.drawn += 1;
+        terminal(Arc::clone(&self.shared), self.project.clone(), self.pane)
+    }
 }
 
 /// The terminal of `pane` in `project`, filling its parent. It sizes the

@@ -148,6 +148,9 @@ pub enum Light {
 pub struct Lit {
     pub name: String,
     pub light: Light,
+    /// Its words, as a key of `words.json`.
+    #[serde(default)]
+    pub key: String,
 }
 
 /// A running Eval's progress: one ring with an arc per reading, and its steps.
@@ -161,6 +164,9 @@ pub struct Progress {
     pub steps: Vec<Lit>,
     /// The checks still running, a line each.
     pub tests: Vec<String>,
+    /// How many of the items to read have a reading in, of how many.
+    #[serde(default)]
+    pub reads: (usize, usize),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -913,6 +919,8 @@ impl EvalView {
             .map(|d| (strs(d, "items"), s(d, "quote")))
             .collect();
         let rep = Report { declared, carried, again, ..Report::default() };
+        let answered = reads.iter().filter(|r| r.answers.iter().any(Option::is_some)).count();
+        let reads_of = (answered, reads.len());
         let waiting = readings.is_empty();
         let mut read: Vec<Read1> = if waiting { Vec::new() } else { reads };
         if !waiting {
@@ -928,7 +936,10 @@ impl EvalView {
         let (items, quoted) = items_of(&read, &rep);
         let paths: BTreeMap<String, String> =
             list(src.evidence, "windows").iter().map(|w| (s(w, "id"), s(w, "path"))).collect();
-        let progress = progress(&planned, &done, readings.len(), src.checks_running);
+        let progress = Progress {
+            reads: reads_of,
+            ..progress(&planned, &done, readings.len(), src.checks_running)
+        };
         EvalView {
             eval_id: src.eval_id.to_string(),
             title,
@@ -1008,14 +1019,13 @@ fn progress(
         Some(i) => (word(rings[i]), word("eval_view.ring.reading")),
         None => (word(rings[reads_in.clamp(1, 3) - 1]), word("eval_view.ring.read")),
     };
-    let lit = |light: Light, [done_, now, next]: [&str; 3]| Lit {
-        name: word(match light {
+    let lit = |light: Light, [done_, now, next]: [&str; 3]| {
+        let key = match light {
             Light::Done => done_,
             Light::Now => now,
             Light::Next => next,
-        })
-        .into(),
-        light,
+        };
+        Lit { name: word(key).into(), light, key: key.into() }
     };
     let asked = if planned("q1") && !done("q1") { Light::Now } else { Light::Done };
     let read = if done("rd1") {
@@ -1063,6 +1073,7 @@ fn progress(
             .iter()
             .map(|c| fill("eval_view.test_running", &[("check", c)]))
             .collect(),
+        reads: (0, 0),
     }
 }
 

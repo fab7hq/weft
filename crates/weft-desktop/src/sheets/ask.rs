@@ -102,17 +102,16 @@ pub fn sensing(sheet: Option<&Value>, sheet_for: Option<&str>, text: &str) -> bo
 /// The words being read (17.23): one panel where SEND TO, the route, its
 /// rules and the practices will be.
 fn sensing_panel() -> Element {
+    busy_panel("sensing", word("ask.sensing"), word("ask.sensing_line"))
+}
+
+/// Something still read where its content will be: three dots that
+/// breathe, what is being done, and a line more.
+pub(crate) fn busy_panel(layer: &str, title: &str, line: &str) -> Element {
     // The window breathes `pulse` alone, so the dots breathe together.
-    let dot = || {
-        div()
-            .w(8)
-            .h(8)
-            .style("border-radius", "4px")
-            .bg(palette::BLUE_BORDER)
-            .style("animation", "pulse")
-    };
+    let dot = crate::waiting::dot;
     div()
-        .layer("sensing")
+        .layer(layer)
         .self_stretch()
         .h(150)
         .flex_col()
@@ -122,8 +121,8 @@ fn sensing_panel() -> Element {
         .bg(palette::SURFACE)
         .border(palette::BLUE_BORDER)
         .child(div().flex_row().gap(6).child(dot()).child(dot()).child(dot()))
-        .child(div().font_weight(600).font_size(15).text(word("ask.sensing")))
-        .child(div().font_size(13).color(palette::MUTED).text(word("ask.sensing_line")))
+        .child(div().font_weight(600).font_size(15).text(title))
+        .children((!line.is_empty()).then(|| div().font_size(13).color(palette::MUTED).text(line)))
 }
 
 fn label(text: impl Into<String>) -> Element {
@@ -325,8 +324,17 @@ pub(super) fn render(props: &SheetProps, follow_up_unit: Option<&str>) -> Elemen
         Some(_) if reading => (Vec::new(), vec![sensing_panel()]),
         Some(sheet) if pending => heads_rows(sheet, c, &harness),
         Some(sheet) => draft_rows(sheet, c, &harness),
+        // Its first read still to come: said where the sheet will be.
+        None if props.ask_reading => {
+            (Vec::new(), vec![busy_panel("ask reading", word("desktop.settings.asking"), "")])
+        }
         None => (Vec::new(), Vec::new()),
     };
+    // Read again for other words, with no Sense to say so: a line breathes.
+    let (picks, mut rows) = (picks, rows);
+    if props.ask_reading && props.ask_sheet.is_some() && !reading && !pending {
+        rows.push(crate::waiting::busy_line(word("desktop.settings.asking"), palette::MUTED));
+    }
     // One warning, as 7.1 says it: Weft's reading of the harness's setup,
     // else RingFrame's reason for not reading the sheet. Ask stays on.
     let refused = props

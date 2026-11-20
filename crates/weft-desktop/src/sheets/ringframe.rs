@@ -1,7 +1,8 @@
 //! Settings › RingFrame: the practices a prompt draws on, the core rules per
-//! phase, every rule of the base practice with where it comes from, what Eval
-//! judges must not do, and a preview of the Rules block a route gets. Every
-//! project's; a project's own are in its settings.
+//! phase, every rule of the base practice and of each practice turned on,
+//! with where it comes from, what Eval judges must not do, and a preview of
+//! the Rules block a route gets. Every project's; a project's own are in its
+//! settings.
 
 use serde_json::{Value, json};
 use weft_core::words::{fill, word};
@@ -11,7 +12,7 @@ use super::menu::badge;
 use crate::action::{Focus, SheetAct};
 use crate::daemon::Then;
 use crate::gpui::{Element, div, input_el, palette};
-use crate::ui::{note, row_list, section_label, sheet_body};
+use crate::ui::{row_list, section_label, sheet_body};
 
 const BASE: &str = "practices/software-development";
 const TASKS: [&str; 4] = ["implement", "plan", "review", "diagnose"];
@@ -92,11 +93,17 @@ fn choices(props: &SheetProps, dotted: &str, options: Vec<(String, SheetAct)>) -
 }
 
 /// What a Settings read shows until RingFrame answers: that it is asked,
-/// or why RingFrame would not say.
-pub(super) fn unanswered(refused: Option<&String>) -> String {
+/// breathing, or why RingFrame would not say, with Try again.
+pub(super) fn unanswered(refused: Option<&String>, then: Then) -> Element {
     match refused {
-        Some(why) => fill("desktop.settings.refused", &[("why", why)]),
-        None => word("desktop.settings.asking").to_string(),
+        Some(why) => {
+            let again = SheetAct::TryAgain { project: Default::default(), then };
+            crate::waiting::failed(
+                fill("desktop.settings.refused", &[("why", why)]),
+                Some(again.into()),
+            )
+        }
+        None => crate::waiting::busy_line(word("desktop.settings.asking"), palette::MUTED),
     }
 }
 
@@ -108,7 +115,7 @@ pub(super) fn render(props: &SheetProps) -> Element {
     let rules = props.clients.iter().find_map(|c| c.read.get(&then));
     let Some(rules) = rules else {
         let refused = props.clients.iter().find_map(|c| c.refused.get(&then));
-        return sheet_body().child(note(unanswered(refused), palette::MUTED));
+        return sheet_body().child(unanswered(refused, then.clone()));
     };
     let machine = props
         .clients
@@ -232,45 +239,6 @@ pub(super) fn render(props: &SheetProps) -> Element {
             .children(choices(props, &dotted, options)),
     );
 
-    // The base practice's rules: the first few, then how many more.
-    let entries = base["entries"].as_array().cloned().unwrap_or_default();
-    let folded = !props.all_rules && entries.len() > FIRST_RULES + 1;
-    let mut rows = Vec::new();
-    for e in entries.iter().take(if folded { FIRST_RULES } else { entries.len() }) {
-        rows.push(rule(props, e));
-    }
-    if folded {
-        let n = (entries.len() - FIRST_RULES).to_string();
-        rows.push(
-            div()
-                .layer("more rules")
-                .on_click(SheetAct::AllRules)
-                .self_stretch()
-                .pad(8, 14)
-                .font_size(13)
-                .color(palette::MUTED)
-                .text(fill("desktop.settings.more_rules", &[("n", &n)])),
-        );
-    }
-    let own = base["entries"].as_array().map_or(0, |e| {
-        e.iter().filter(|x| x["id"].as_str().is_some_and(|i| i.starts_with("own."))).count()
-    });
-    let add = link(
-        "add rule",
-        SheetAct::EditSetting {
-            project: None,
-            key: key(&[
-                "ringframe",
-                "deltas",
-                BASE,
-                "entries",
-                &format!("own.{}", own + 1),
-                "text",
-            ]),
-        },
-        word("desktop.settings.add_rule"),
-    );
-
     // What Eval judges must not do: the machine's list, else RingFrame's own.
     let deny = layer["eval"]["deny"].as_array().cloned();
     let shipped = deny.is_none();
@@ -315,45 +283,103 @@ pub(super) fn render(props: &SheetProps) -> Element {
         ))
     });
 
+    // The rules of the base practice, then of each practice turned on here.
     let mut body = sheet_body()
         .child(section_label(word("desktop.settings.practices")))
-        .child(row_list(practices))
-        .child(
-            div()
-                .self_stretch()
-                .flex_row()
-                .justify_between()
-                .child(section_label(fill(
-                    "desktop.settings.rules",
-                    &[("practice", &domain_name("software-development"))],
-                )))
-                .child(add),
-        );
-    let editing_new = props.setting_editing.is_some_and(|(p, k)| {
-        p.is_none() && k.get(4).is_some_and(|id| id.starts_with("own.")) && !rows_have(&base, &k[4])
+        .child(row_list(practices));
+    let own = next_own(&catalogs);
+    let on = rules["domains"].as_array().into_iter().flatten().filter_map(|d| {
+        let id = d["domain"].as_str()?;
+        let catalog = format!("practices/{id}");
+        (d["base"] != true && !layer["deltas"][catalog.as_str()].is_null()).then_some(id)
     });
-    if editing_new && let Some((_, k)) = props.setting_editing {
-        rows.push(div().self_stretch().pad(8, 14).child(field(props, k.clone(), String::new())));
+    for id in std::iter::once(BASE.trim_start_matches("practices/")).chain(on) {
+        let catalog = format!("practices/{id}");
+        let listed = catalogs.iter().find(|c| c["catalog"] == catalog.as_str());
+        body = body.children(rules_section(props, &catalog, listed, &domain_name(id), &own));
     }
-    body = body.child(row_list(rows)).child(section_label(word("desktop.settings.judges")));
-    body.child(row_list(judges)).child(preview(props))
+    body.child(section_label(word("desktop.settings.judges")))
+        .child(row_list(judges))
+        .child(preview(props))
 }
 
-fn rows_have(base: &Value, id: &str) -> bool {
-    base["entries"].as_array().is_some_and(|e| e.iter().any(|x| x["id"] == id))
+/// The id a new rule of the person's own takes: the first `own.N` no
+/// practice holds, so two practices never share one.
+fn next_own(catalogs: &[Value]) -> String {
+    let taken = |id: &str| catalogs.iter().any(|c| rows_have(c, id));
+    (1..).map(|n| format!("own.{n}")).find(|id| !taken(id)).unwrap_or_default()
+}
+
+/// One practice's rules, headed by its name with "+ Add a rule": the first
+/// few, then how many more; the new rule being typed under them.
+fn rules_section(
+    props: &SheetProps,
+    catalog: &str,
+    listed: Option<&Value>,
+    name: &str,
+    own: &str,
+) -> [Element; 2] {
+    let empty = Value::Null;
+    let listed = listed.unwrap_or(&empty);
+    let entries = listed["entries"].as_array().map_or(&[][..], Vec::as_slice);
+    let folded = !props.all_rules.contains(catalog) && entries.len() > FIRST_RULES + 1;
+    let shown = if folded { FIRST_RULES } else { entries.len() };
+    let mut rows: Vec<Element> =
+        entries.iter().take(shown).map(|e| rule(props, catalog, e)).collect();
+    if folded {
+        let n = (entries.len() - FIRST_RULES).to_string();
+        rows.push(
+            div()
+                .layer("more rules")
+                .on_click(SheetAct::AllRules(catalog.to_string()))
+                .self_stretch()
+                .pad(8, 14)
+                .font_size(13)
+                .color(palette::MUTED)
+                .text(fill("desktop.settings.more_rules", &[("n", &n)])),
+        );
+    }
+    let new_key = key(&["ringframe", "deltas", catalog, "entries", own, "text"]);
+    let add = link(
+        "add rule",
+        SheetAct::EditSetting { project: None, key: new_key },
+        word("desktop.settings.add_rule"),
+    );
+    // The new rule being typed: an own id this practice does not hold yet.
+    let typing = props.setting_editing.and_then(|(p, k)| {
+        let new = p.is_none()
+            && k.get(2).is_some_and(|c| c == catalog)
+            && k.get(4).is_some_and(|id| id.starts_with("own.") && !rows_have(listed, id));
+        new.then(|| k.clone())
+    });
+    if let Some(k) = typing {
+        rows.push(div().self_stretch().pad(8, 14).child(field(props, k, String::new())));
+    }
+    let head = div()
+        .layer(format!("rules head {catalog}"))
+        .self_stretch()
+        .flex_row()
+        .justify_between()
+        .child(section_label(fill("desktop.settings.rules", &[("practice", name)])))
+        .child(add);
+    [head, row_list(rows).layer(format!("rules {catalog}"))]
+}
+
+fn rows_have(catalog: &Value, id: &str) -> bool {
+    catalog["entries"].as_array().is_some_and(|e| e.iter().any(|x| x["id"] == id))
 }
 
 /// One rule: its name and wording, where it comes from, its tier and whether
 /// it is on; Edit opens its wording, tasks and concerns, Reset takes the
 /// change out.
-fn rule(props: &SheetProps, e: &Value) -> Element {
+fn rule(props: &SheetProps, catalog: &str, e: &Value) -> Element {
     let id = e["id"].as_str().unwrap_or_default();
-    let base = |field: &str| key(&["ringframe", "deltas", BASE, "entries", id, field]);
+    let entry = |field: &str| key(&["ringframe", "deltas", catalog, "entries", id, field]);
     let changed = e["source"] != "shipped";
     let on = e["enabled"] != false;
     let tier = e["tier"].as_str().unwrap_or("core");
     let label = e["label"].as_str().unwrap_or(id).to_string();
-    let tier_key = base("tier");
+    let tier_key = entry("tier");
     let dotted = tier_key.join(".");
     let tiers: Vec<(String, SheetAct)> = ["core", "situational"]
         .iter()
@@ -364,9 +390,9 @@ fn rule(props: &SheetProps, e: &Value) -> Element {
             )
         })
         .collect();
-    let editing = props
-        .setting_editing
-        .is_some_and(|(p, k)| p.is_none() && k.get(4).map(String::as_str) == Some(id));
+    let editing = props.setting_editing.is_some_and(|(p, k)| {
+        p.is_none() && k.get(2).is_some_and(|c| c == catalog) && k.get(4).is_some_and(|i| i == id)
+    });
     let mut row = div()
         .layer(format!("rule {id}"))
         .self_stretch()
@@ -409,7 +435,7 @@ fn rule(props: &SheetProps, e: &Value) -> Element {
                         .layer("rule switch")
                         .on_click(SheetAct::Choose {
                             project: None,
-                            key: base("enabled"),
+                            key: entry("enabled"),
                             value: Some(json!(!on)),
                         })
                         .child(badge(
@@ -423,7 +449,7 @@ fn rule(props: &SheetProps, e: &Value) -> Element {
                         "reset",
                         SheetAct::Choose {
                             project: None,
-                            key: key(&["ringframe", "deltas", BASE, "entries", id]),
+                            key: key(&["ringframe", "deltas", catalog, "entries", id]),
                             value: None,
                         },
                         word("act.reset"),
@@ -431,7 +457,7 @@ fn rule(props: &SheetProps, e: &Value) -> Element {
                 } else {
                     link(
                         "edit",
-                        SheetAct::EditSetting { project: None, key: base("text") },
+                        SheetAct::EditSetting { project: None, key: entry("text") },
                         word("desktop.settings.edit"),
                     )
                 }),
@@ -457,7 +483,7 @@ fn rule(props: &SheetProps, e: &Value) -> Element {
                     .pad(4, 28)
                     .items_center()
                     .child(div().w(130).font_size(12).color(palette::MUTED).text(word(word_key)))
-                    .child(field(props, base(field_name), shown)),
+                    .child(field(props, entry(field_name), shown)),
             );
         }
     }
@@ -548,7 +574,7 @@ fn preview(props: &SheetProps) -> Element {
                 .pad(8, 14)
                 .font_size(12)
                 .color(palette::MUTED)
-                .text(unanswered(Some(why))),
+                .text(fill("desktop.settings.refused", &[("why", why)])),
         );
     }
     el

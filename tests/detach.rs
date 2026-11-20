@@ -751,8 +751,13 @@ fn agents_are_sent_once_until_a_receipt_moves() {
             },
         );
     }
+    let mut rows: Vec<weft_core::sessions::Row> =
+        serde_json::from_value(c.opened["agents"]["sessions"].clone()).unwrap();
     c.wait_until(|e| match e {
-        Event::Agents { sessions, .. } if sessions.len() == 2 => Some(()),
+        Event::Agents { changed, gone, .. } => {
+            weft_core::sessions::apply(&mut rows, &changed, &gone);
+            (rows.len() == 2).then_some(())
+        }
         _ => None,
     });
     c.send(Call::StartAgent { harness: "codex".into(), spec: "/bin/cat".into(), session: None });
@@ -1085,6 +1090,7 @@ fn a_seal_names_its_units_eval_and_an_eval_acts_on_the_unit() {
         lines: Some(50),
         before: None,
         after: None,
+        q: None,
     };
     let screen = c.answer(read).map(|v| v["text"].as_str().unwrap_or_default().to_string());
     assert!(screen.as_deref().is_ok_and(|s| !s.contains("evl_1")), "typed: {screen:?}");
@@ -1276,7 +1282,7 @@ fn a_reopened_project_shows_its_sessions_ended_and_resumable() {
     let mut gone = gone;
     gone.wait().unwrap();
     c.wait_until(|e| match e {
-        Event::Agents { sessions, .. } if sessions.iter().any(|r| r.id == "s_old") => Some(()),
+        Event::Agents { changed, .. } if changed.iter().any(|r| r.id == "s_old") => Some(()),
         _ => None,
     });
 

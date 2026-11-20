@@ -150,12 +150,19 @@ enum Carries {
     Follow(u64, usize, u32),
     /// The machine's settings, as `config.get` answers them.
     Settings,
+    /// Which files an Eval should skip, as the daemon's check found them.
+    Skip,
     /// A read of sealed work, under its name: a follow-up's words
     /// (`remedy`) or the commits Undo offers (`commits`).
     Sealed(String),
     /// A yes to a pending, by its id: one the daemon finds its agent not
-    /// ready for may then be sent anyway.
-    Resolve(String),
+    /// ready for may then be sent anyway. True when the yes opens an Eval.
+    Resolve(String, bool),
+    /// A page of a project's earlier sessions.
+    Sessions,
+    /// Whether a Seal's receipt still holds, by the Seal's id, as RingFrame
+    /// checked it.
+    Receipt(String),
 }
 
 /// The daemon's reads one device read is gathered from.
@@ -163,17 +170,14 @@ enum Carries {
 enum Part {
     Source,
     Prompt,
-    Seal,
     View,
     /// The hunk of the view's change at this index.
     Hunk(usize),
 }
 
-/// What a read gathers parts for: a work's Details, a Seal's (with the page
-/// of its Asks after `after`), or an Eval's view.
+/// What a read gathers parts for: a work's Details, or an Eval's view.
 enum Gather {
     Work(Box<weft_core::ledger::Unit>),
-    Seal { id: String, after: Option<String> },
     EvalView,
 }
 
@@ -188,7 +192,6 @@ struct Gathering {
     left: usize,
     source: Option<String>,
     prompt: Option<String>,
-    seal: Option<Value>,
     /// The Eval view, for `read eval_view`.
     view: Option<weft_core::eval_view::EvalView>,
     hunks: BTreeMap<String, String>,
@@ -207,6 +210,22 @@ struct Asking {
 struct Open {
     client: daemon::Project,
     agents: agents::Project,
+    /// What takes a while there, as weftd last said.
+    jobs: crate::jobs::Jobs,
+    /// Which files an Eval there should skip, as weftd last said.
+    skip: Value,
+}
+
+impl Open {
+    /// What a device that connects is told of the jobs in this project.
+    fn jobs_message(&self) -> Value {
+        json!({"type": "jobs", "project": self.agents.name, "jobs": self.jobs.all()})
+    }
+
+    /// What a device is told of the files an Eval here should skip.
+    fn skip_message(&self) -> Value {
+        json!({"type": "skip", "project": self.agents.name, "findings": self.skip})
+    }
 }
 
 struct Remote {
@@ -236,6 +255,9 @@ struct Remote {
     port: u16,
     /// Calls waiting for the daemon's answer, by project and call id.
     calls: HashMap<(usize, u64), Asked>,
+    /// Calls a device made that were answered, for a while: a job a call
+    /// began goes on after its answer, and is still that device's.
+    answered: HashMap<(usize, u64), (u64, Value, Instant)>,
     /// Reads of a work being gathered, by id.
     gathering: HashMap<u64, Gathering>,
     next_gathering: u64,
@@ -343,6 +365,7 @@ impl Remote {
             adapter: None,
             port,
             calls: HashMap::new(),
+            answered: HashMap::new(),
             gathering: HashMap::new(),
             not_ready: HashSet::new(),
             next_gathering: 0,
@@ -434,7 +457,15 @@ impl Remote {
                 }
                 let listed: Vec<Value> =
                     client.opened["pendings"].as_array().cloned().unwrap_or_default();
-                self.projects.push(Some(Open { client, agents }));
+                let jobs = crate::jobs::Jobs::of(&client.opened["jobs"], Instant::now());
+                let skip = client.opened["skip"].clone();
+                let skip = if skip.is_array() { skip } else { json!([]) };
+                let open = Open { client, agents, jobs, skip };
+                if !open.jobs.all().is_empty() {
+                    self.to_devices(&open.jobs_message());
+                }
+                self.to_devices(&open.skip_message());
+                self.projects.push(Some(open));
                 self.look_for_starts(at);
                 for p in listed.iter().filter_map(weft_proto::pending_of) {
                     self.pending_added(at, p);
@@ -450,7 +481,13 @@ impl Remote {
             Heard::Gone(CONTROL) => return false,
             Heard::Gone(at) => {
                 if let Some(slot) = self.projects.get_mut(at) {
-                    *slot = None;
+                    // Nothing goes on in a project that has gone.
+                    if let Some(open) = slot.take()
+                        && !open.jobs.all().is_empty()
+                    {
+                        let gone = json!({"type": "jobs", "project": open.agents.name, "jobs": []});
+                        self.to_devices(&gone);
+                    }
                 }
                 let lost: Vec<_> = self.calls.keys().filter(|(p, _)| *p == at).copied().collect();
                 for key in lost {
@@ -470,6 +507,13 @@ impl Remote {
             }
             Heard::Event(_, Event::Presence { .. }) => self.presence(),
             Heard::Event(CONTROL, _) => {}
+            Heard::Event(at, Event::Skip { findings }) => {
+                if let Some(open) = self.projects.get_mut(at).and_then(Option::as_mut) {
+                    open.skip = serde_json::to_value(findings).unwrap_or_default();
+                    let told = open.skip_message();
+                    self.to_devices(&told);
+                }
+            }
             Heard::Event(at, Event::Config { config }) => {
                 if let Some(open) = self.projects.get(at).and_then(Option::as_ref) {
                     let project = open.agents.name.clone();
@@ -481,6 +525,7 @@ impl Remote {
             Heard::Answer(at, id, answer) => self.answered(at, id, answer),
             Heard::Event(at, screen @ Event::Screen { .. }) => self.screen(at, screen),
             Heard::Event(at, pending @ Event::Pending { .. }) => self.pending_added(at, pending),
+            Heard::Event(at, Event::Progress { job }) => self.progress(at, job),
             Heard::Event(_, Event::Resolved { id, yes }) => {
                 if self.pendings.remove(&id).is_some() {
                     self.to_devices(&json!({"type": "resolved", "id": id, "yes": yes}));
@@ -694,8 +739,12 @@ impl Remote {
         self.view.failed = None;
         let (cancel, tx) = (self.cancel.clone(), self.tx.clone());
         let account = self.settings.account.clone();
+        // Named as Settings names it now; the daemon said the system's own
+        // name when this connected.
+        let system = self.control.opened["system_name"].as_str();
+        let name = store::machine_name(&self.settings.weft, system);
         std::thread::spawn(move || {
-            account.sign_in(&store::host_name(), &cancel, |step| {
+            account.sign_in(&name, &cancel, |step| {
                 let _ = tx.send(Wake::SignIn(step));
             });
         });
@@ -749,6 +798,7 @@ impl Remote {
         match event {
             TunnelEvent::Address(address) => {
                 self.view.tunnel_why = None;
+                self.view.answers &= self.view.address.as_ref() == Some(&address);
                 self.view.address = Some(address);
                 self.view.up = true;
                 // A new name is looked at once it is known everywhere.
@@ -824,6 +874,11 @@ impl Remote {
         if self.view.address.as_deref() != Some(address) {
             return self.recovery.health.lost(now);
         }
+        let answers = matches!(probe, Probe::Up);
+        if self.view.answers != answers {
+            self.view.answers = answers;
+            self.publish();
+        }
         let acts = self.recovery.seen(now, probe);
         self.perform(acts);
     }
@@ -863,6 +918,7 @@ impl Remote {
         self.open_projects();
         self.push_due();
         self.read_followed();
+        self.jobs_due();
     }
 
     fn socket(&mut self, s: Socket) {
@@ -952,6 +1008,18 @@ impl Remote {
                    "harnesses": self.harnesses(), "pendings": pendings,
                    "update": self.update_json(), "panes": PANES, "split": true}),
         );
+        // Each open project's jobs, so a device that connects while one
+        // runs shows it, and one that missed an Eval that could not open
+        // shows why.
+        let jobs: Vec<Value> = self.projects.iter().flatten().map(Open::jobs_message).collect();
+        for message in jobs {
+            self.send(conn, message);
+        }
+        // And which files an Eval in each should skip, as last found.
+        let skips: Vec<Value> = self.projects.iter().flatten().map(Open::skip_message).collect();
+        for message in skips {
+            self.send(conn, message);
+        }
     }
 
     /// Refused for its version, saying which side is the newer, so the page

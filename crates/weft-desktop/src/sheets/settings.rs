@@ -1,5 +1,6 @@
-//! Settings: the machine's, for every project, on tabs. General holds Turbo,
-//! Start at login and Notifications; Workflow who runs each step
+//! Settings: the machine's, for every project, on tabs. General holds the
+//! machine's name, Turbo, Start at login, Notifications and how long ended
+//! sessions are kept; Workflow who runs each step
 //! and Eval's judges. A project's own settings use the same rows, for what
 //! differs from every project's. Each is set through the daemon and shows
 //! what it last said.
@@ -110,7 +111,7 @@ pub(super) fn render(props: &SheetProps, tab: SettingsTab) -> Element {
     };
     sheet(
         "sheet Settings",
-        sheet_head(word("desktop.settings.title"), None),
+        sheet_head(fill("web.machine.title", &[("machine", props.machine)]), None),
         div().self_stretch().flex_1().flex_col().child(tabs(tab)).child(body),
         sheet_foot(Vec::new(), vec![close_button()]),
     )
@@ -151,29 +152,118 @@ fn general(props: &SheetProps) -> Element {
     let start_at_login = props.clients.iter().any(|c| c.start_at_login);
     let turbo_accent = (palette::AMBER_BG, palette::AMBER_BORDER, palette::AMBER);
     let blue = (palette::SELECTED_BG, palette::BLUE_BORDER, palette::BLUE_BORDER);
-    sheet_body().child(section_label(word("desktop.settings.every_project"))).child(row_list(vec![
-        switch(
-            "Turbo",
-            WindowAct::ToggleTurbo,
-            word("desktop.menu.turbo"),
-            word("desktop.settings.turbo_what"),
-            badge("setting badge", machine("turbo") == Some(true), turbo_accent),
-        ),
-        switch(
-            "Start at login",
-            WindowAct::ToggleStartAtLogin,
-            word("desktop.menu.login"),
-            word("desktop.menu.login_what"),
-            badge("setting badge", start_at_login, blue),
-        ),
-        switch(
-            "Notifications",
-            SheetAct::Toggle(Setting::Notify),
-            word("desktop.settings.notify"),
-            word("desktop.settings.notify_what"),
-            badge("setting badge", machine("notify") != Some(false), blue),
-        ),
-    ]))
+    let login_what = fill("web.machine.login_what", &[("machine", props.machine)]);
+    sheet_body()
+        .child(section_label(word("desktop.settings.this_machine")))
+        .child(row_list(vec![name_row(props)]))
+        .child(section_label(word("desktop.settings.every_project")))
+        .child(row_list(vec![
+            switch(
+                "Turbo",
+                WindowAct::ToggleTurbo,
+                word("desktop.menu.turbo"),
+                word("desktop.settings.turbo_what"),
+                badge("setting badge", machine("turbo") == Some(true), turbo_accent),
+            ),
+            switch(
+                "Start at login",
+                WindowAct::ToggleStartAtLogin,
+                word("desktop.menu.login"),
+                &login_what,
+                badge("setting badge", start_at_login, blue),
+            ),
+            switch(
+                "Notifications",
+                SheetAct::Toggle(Setting::Notify),
+                word("desktop.settings.notify"),
+                word("desktop.settings.notify_what"),
+                badge("setting badge", machine("notify") != Some(false), blue),
+            ),
+            keep_row(props),
+        ]))
+        .child(
+            div()
+                .self_stretch()
+                .font_size(12)
+                .color(palette::DIM)
+                .text(word("web.machine.foot").to_string()),
+        )
+}
+
+/// The machine's name: what Weft and the person's devices call it, typed
+/// in its field and kept on Enter. Of any length, it ends in an ellipsis.
+fn name_row(props: &SheetProps) -> Element {
+    let key = vec!["name".to_string()];
+    let editing = props.setting_editing.is_some_and(|(p, k)| p.is_none() && *k == key);
+    let field = div()
+        .layer("setting value")
+        .w(220)
+        .pad(6, 10)
+        .bg(palette::SURFACE_ALT)
+        .border(palette::LINE)
+        .font_size(13)
+        .style("min-width", "0px");
+    let field = if editing {
+        field.child(input_el(Focus::Setting).text(props.setting_text.to_string()).font_size(13))
+    } else {
+        field
+            .on_click(SheetAct::EditSetting { project: None, key })
+            .color(palette::TEXT)
+            .style("white-space", "nowrap")
+            .style("overflow", "hidden")
+            .style("text-overflow", "ellipsis")
+            .text(props.machine.to_string())
+    };
+    div()
+        .layer("setting Name")
+        .self_stretch()
+        .flex_row()
+        .gap(12)
+        .pad(11, 16)
+        .items_center()
+        .child(label_col(word("desktop.settings.name"), Some(word("desktop.settings.name_what"))))
+        .child(field)
+}
+
+/// How many days an ended session stays listed, typed in its field and kept
+/// on Enter: the number the daemon says applies.
+fn keep_row(props: &SheetProps) -> Element {
+    let key = vec!["sessions".to_string(), "keep_days".to_string()];
+    let editing = props.setting_editing.is_some_and(|(p, k)| p.is_none() && *k == key);
+    let days = props
+        .clients
+        .iter()
+        .find_map(|c| c.config.as_ref()?["effective"]["keep_days"].as_u64())
+        .unwrap_or(weft_core::config::KEEP_DAYS);
+    let field = div()
+        .layer("setting value")
+        .w(70)
+        .pad(6, 10)
+        .bg(palette::SURFACE_ALT)
+        .border(palette::LINE)
+        .font_size(13)
+        .style("text-align", "right");
+    let field = if editing {
+        field.child(input_el(Focus::Setting).text(props.setting_text.to_string()).font_size(13))
+    } else {
+        field
+            .on_click(SheetAct::EditSetting { project: None, key })
+            .color(palette::TEXT)
+            .text(days.to_string())
+    };
+    div()
+        .layer("setting Keep ended sessions")
+        .self_stretch()
+        .flex_row()
+        .gap(12)
+        .pad(11, 16)
+        .items_center()
+        .child(label_col(
+            word("web.machine.keep_sessions"),
+            Some(word("web.machine.keep_sessions_what")),
+        ))
+        .child(field)
+        .child(div().w(34).font_size(13).color(palette::DIM).text(word("web.machine.days")))
 }
 
 /// One switch: its name and what it does, and its badge; the row turns it.

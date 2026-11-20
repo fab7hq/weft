@@ -637,6 +637,7 @@ fn dispatch(
                     ask: ns.one("--ask"),
                     deny: ns.overrides.eval_deny().map(|(from, rules)| (from, rules.to_vec())),
                     statements: Vec::new(),
+                    progress: None,
                 },
             );
             match out {

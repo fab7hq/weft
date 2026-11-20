@@ -27,6 +27,9 @@ pub const WORDS: &[(&str, &str)] = &[
     ("tree.no_ask", "no Ask yet"),
     ("tree.earlier", "{n} earlier sessions"),
     ("tree.earlier_one", "1 earlier session"),
+    ("tree.earlier_title", "Earlier sessions"),
+    ("tree.earlier_more", "Show {n} more"),
+    ("tree.earlier_shown", "{shown} of {total}"),
     ("tree.match", "{n} match"),
     ("tree.search_placeholder", "Search agents and works"),
     ("tree.search_none", "Nothing matches {q}."),
@@ -92,6 +95,120 @@ pub const WORDS: &[(&str, &str)] = &[
     ("state.running", "running"),
     ("state.ended", "ended"),
     ("state.last_active", "last active {time}"),
+    ("time.today", "Today {time}"),
+    ("time.yesterday", "Yesterday {time}"),
+    // The steps of a job, and what they count.
+    ("step.reading_change", "Reading the change"),
+    ("step.dividing", "Dividing it among the readers"),
+    ("step.preparing_readers", "Preparing what each reader is asked"),
+    ("step.starting_readers", "Starting {harness} to read it"),
+    ("step.checking_work", "Checking the work and its Eval"),
+    ("step.reading_files_now", "Reading every file as it is now"),
+    ("step.writing_decision", "Writing your decision"),
+    ("step.noting_git", "Noting it in Git"),
+    ("step.recording_ask", "Recording the Ask"),
+    ("step.starting", "Starting {harness}"),
+    ("step.waiting_ready", "Waiting for {agent} to be ready"),
+    ("step.typing_prompt", "Typing the prompt"),
+    ("step.waiting_received", "Waiting for {agent} to say it got it"),
+    ("step.typing_request", "Typing the request"),
+    ("step.reading_words", "Reading your words"),
+    ("step.choosing_plan", "Choosing the plan"),
+    ("step.writing_prompt", "Writing the prompt"),
+    ("step.finding_release", "Finding the newest release"),
+    ("step.downloading", "Downloading"),
+    ("step.installing", "Installing"),
+    ("step.running", "running: {command}"),
+    ("step.starting_remote", "Starting Weft's remote"),
+    ("step.signing_in", "Signing in (enter the code on your phone)"),
+    ("step.starting_tunnel", "Starting the tunnel"),
+    ("step.waiting_address", "Waiting until the address answers"),
+    ("step.waiting_address_note", "can take a minute or two the first time"),
+    ("count.files", "{done} of {total} files"),
+    ("count.mb", "{done} of {total} MB"),
+    ("size.mb", "{n} MB"),
+    ("count.read", "{done} of {total} read"),
+    ("count.new", "{n} of them new"),
+    ("count.steps", "step {done} of {total}"),
+    ("count.readers", "{done} of {total} readers"),
+    ("wait.turning_on_remote", "Turning Remote on…"),
+    ("wait.reading", "{harness} is reading"),
+    // What an Eval will read, before its yes.
+    ("reads.label", "Reads"),
+    ("reads.since_ask", "since its first Ask, {when}"),
+    ("reads.since_seal", "since its last Seal, {when}"),
+    ("reads.commits", "{n} commits"),
+    ("reads.one_commit", "1 commit"),
+    ("reads.files", "{n} files"),
+    ("reads.one_file", "1 file"),
+    ("reads.skipped", "{n} counted, not read: {kinds}"),
+    ("reads.generated", "{n} generated"),
+    ("reads.vendored", "{n} vendored"),
+    ("reads.binary", "{n} binary"),
+    ("reads.lock", "{n} lock"),
+    ("reads.large_title", "This is a large change for one work."),
+    (
+        "reads.large_where",
+        "It holds everything committed here since {when}. Most of it is in {folder} ({n} files).",
+    ),
+    (
+        "reads.large_fix",
+        "Seal earlier work so the next starts later, or mark data in .gitattributes as generated so it is counted, not read.",
+    ),
+    ("reads.anyway", "Eval anyway"),
+    // Files an Eval should skip: the read check's findings and their lines,
+    // in the Eval dialog and in a project's settings.
+    ("skip.title", "FILES AN EVAL SHOULD SKIP"),
+    ("skip.check_again", "Check again"),
+    ("skip.none", "Every file to skip is already ignored"),
+    ("skip.check_before", "Check before it reads"),
+    ("skip.left", "{left} of {n} left"),
+    ("skip.add_ignore", "Add to .gitignore"),
+    ("skip.mark_generated", "Mark as generated"),
+    ("skip.added_ignore", "Added to .gitignore"),
+    ("skip.added_generated", "Marked as generated"),
+    ("skip.no_longer_read", "{n} files are no longer read"),
+    ("skip.no_longer_read_one", "1 file is no longer read"),
+    ("skip.untracked", "{n} files Git does not track"),
+    ("skip.data_files", "{n} data files ({kinds})"),
+    ("skip.media", "{n} images and videos"),
+    ("skip.built", "{n} files a build wrote"),
+    ("skip.large_text", "{size} of text"),
+    ("skip.sub_repo", "is its own repository: {n} changed files there are not part of this Eval"),
+    ("skip.sub_repo_one", "is its own repository: 1 changed file there is not part of this Eval"),
+    ("skip.sub_repo_commits", "is its own repository: {n} commits there are not part of this Eval"),
+    ("skip.sub_repo_commit", "is its own repository: 1 commit there is not part of this Eval"),
+    // What an Eval counted and did not read, in its Details.
+    ("not_read.title", "Not read"),
+    ("not_read.counted", "{n} files counted"),
+    ("not_read.counted_one", "1 file counted"),
+    ("not_read.other_folders", "and {n} other folders"),
+    ("not_read.other_folder", "and 1 other folder"),
+    // Something the machine is still doing (system/waiting).
+    ("wait.opening_eval", "Opening the Eval…"),
+    ("wait.opening_eval_line", "Reading the change and what you asked"),
+    ("wait.opening_eval_about", "{title} · {asks} · read by {harness}"),
+    ("wait.row_opening_eval", "opening Eval…"),
+    ("wait.sealing", "Sealing…"),
+    ("wait.row_sealing", "sealing…"),
+    ("wait.sending", "Sending…"),
+    ("wait.asking", "Asking…"),
+    ("wait.stopping_eval", "Stopping the Eval…"),
+    ("wait.undoing", "Undoing…"),
+    ("wait.starting", "Starting {harness}…"),
+    ("wait.resuming", "Resuming…"),
+    ("wait.checking", "checking…"),
+    ("wait.checking_receipt", "Checking it against the record…"),
+    ("wait.updating", "Updating…"),
+    ("wait.waits_for", "waits for {name}"),
+    ("wait.try_again", "Try again"),
+    ("wait.could_not_open_eval", "RingFrame could not open the Eval: {why}"),
+    ("wait.could_not_check_receipt", "The receipt could not be checked: {why}"),
+    ("wait.could_not_read", "This could not be read: {why}"),
+    ("wait.preparing", "Preparing…"),
+    ("wait.saving", "Saving…"),
+    ("wait.searching", "Searching…"),
+    ("wait.no_start", "Weft could not find the commit this work started from."),
     // An act pressed on a row it does not act on.
     ("select.agent", "Select an agent to Ask."),
     ("select.work_eval", "Select a work to Eval it."),
@@ -160,6 +277,10 @@ pub const WORDS: &[(&str, &str)] = &[
         "{harness} reads the whole change against what you asked, and reads again only where it is unsure.",
     ),
     ("dialog.eval.nothing_typed", "Nothing is typed into the agent's pane."),
+    // Who reads it, picked in the dialog, and why the one it starts on.
+    ("dialog.eval.read_by", "Read by"),
+    ("dialog.eval.from_work", "the work’s latest agent"),
+    ("dialog.eval.from_settings", "set in Settings"),
     ("dialog.stop_eval.title", "Stop this Eval?"),
     ("dialog.stop_eval.why", "The judges of {title} stop, and the Eval is voided."),
     ("dialog.stop_eval.go", "Stop Eval"),
@@ -533,14 +654,18 @@ pub const WORDS: &[(&str, &str)] = &[
     ("web.menu.settings", "Settings…"),
     // A machine's own settings, from a device (Settings › Machines).
     ("web.machine.title", "Settings · {machine}"),
-    ("web.machine.every_project", "Every project on {machine}"),
     ("web.machine.login_what", "Keep Weft running on {machine}"),
-    ("web.machine.notify_what", "{machine} tells you when an agent needs you"),
     (
         "web.machine.foot",
-        "These are {machine}'s own settings: every device that reaches {machine} sees and changes the same ones, at once.",
+        "These are this machine’s own settings: every device that reaches it sees and changes the same ones, at once.",
     ),
     ("web.machine.no_project", "Open a project on {machine} to see its settings."),
+    ("web.machine.keep_sessions", "Keep ended sessions"),
+    (
+        "web.machine.keep_sessions_what",
+        "Older ones are archived and no longer listed; 0 keeps them all",
+    ),
+    ("web.machine.days", "days"),
     ("web.settings.more_rules", "{n} more ›"),
     ("web.settings.preview_rules", "Preview the rules"),
     (
@@ -649,9 +774,14 @@ pub const WORDS: &[(&str, &str)] = &[
     ("desktop.menu.remote", "Remote…"),
     ("desktop.menu.settings", "Settings…"),
     // Settings: the machine's, for every project.
-    ("desktop.settings.title", "Settings"),
     ("desktop.settings.tab.general", "General"),
-    ("desktop.settings.every_project", "This machine · every project"),
+    ("desktop.settings.this_machine", "This machine"),
+    ("desktop.settings.name", "Name"),
+    (
+        "desktop.settings.name_what",
+        "What Weft and your devices call it. The system’s name until you change it.",
+    ),
+    ("desktop.settings.every_project", "Every project on this machine"),
     ("desktop.settings.turbo_what", "New agents get every permission and no question"),
     ("desktop.settings.notify", "Notifications"),
     ("desktop.settings.notify_what", "Tell you when an agent needs you"),
@@ -897,6 +1027,19 @@ pub fn fill(key: &str, with: &[(&str, &str)]) -> String {
         .fold(word(key).to_string(), |s, (name, value)| s.replace(&format!("{{{name}}}"), value))
 }
 
+/// A count as the words show it, its thousands set apart: `1,204`.
+pub fn count(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, d) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(d);
+    }
+    out
+}
+
 /// The table as `words.json`, the web app's language pack: one object, key
 /// to word.
 /// Its keys sorted, whichever order serde_json keeps a map in for the build.
@@ -925,5 +1068,11 @@ mod tests {
         );
         assert_eq!(say("why.not_set_up", "claude"), "claude is not set up for RingFrame.");
         assert_eq!(word("turn.waiting"), "needs you");
+    }
+
+    #[test]
+    fn a_count_sets_its_thousands_apart() {
+        let shown: Vec<String> = [0, 7, 50, 999, 1_000, 1_204, 75_770, 1_234_567].map(count).into();
+        assert_eq!(shown, ["0", "7", "50", "999", "1,000", "1,204", "75,770", "1,234,567"]);
     }
 }

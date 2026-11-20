@@ -251,6 +251,7 @@ fn history_is_the_last_lines_of_scrollback_and_screen_as_text() {
             lines: Some(lines),
             before: None,
             after: None,
+            q: None,
         });
         answer.unwrap()["text"].as_str().unwrap().to_string()
     };

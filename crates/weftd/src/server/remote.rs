@@ -19,7 +19,17 @@ pub(super) struct Supervisor {
     on: Arc<AtomicBool>,
     /// A thread is keeping it running.
     running: Arc<AtomicBool>,
+    /// Turning it on, told as a job until the address answers, and whether
+    /// it signed in on the way.
+    turning_on: Option<(jobs::Handle, bool)>,
 }
+
+/// Turning Remote on, step by step: starting Weft's remote, signing in,
+/// starting the tunnel, waiting until the address answers.
+const STARTING: usize = 0;
+const SIGNING_IN: usize = 1;
+const TUNNEL: usize = 2;
+const ADDRESS: usize = 3;
 
 impl Session {
     /// Turned on in `config.toml` when the daemon starts: start it.
@@ -33,7 +43,7 @@ impl Session {
 
     /// `remote {act: "on" | "off"}` from a client: kept in `config.toml`, and
     /// `weft remote` started, or told to stop. Any other act is its own.
-    pub(super) fn turn_remote(&mut self, on: bool) -> Answer {
+    pub(super) fn turn_remote(&mut self, on: bool, asked: (u64, u64)) -> Answer {
         let text = std::fs::read_to_string(&self.config).unwrap_or_default();
         if let Err(why) = weft_core::config::set_remote(&text, on) {
             return Answer::No("config", why);
@@ -44,6 +54,20 @@ impl Session {
             return Answer::No("failed", why);
         }
         self.supervisor.on.store(on, Ordering::SeqCst);
+        if let Some((job, _)) = self.supervisor.turning_on.take() {
+            job.end(Err("turned off".into()));
+        }
+        if on {
+            let steps = vec![
+                jobs::step("step.starting_remote", &[], None),
+                jobs::step("step.signing_in", &[], None),
+                jobs::step("step.starting_tunnel", &[], None),
+                jobs::step("step.waiting_address", &[], None),
+            ];
+            let job = self.jobs.begin("remote", Default::default(), None, Some(asked), steps);
+            job.now(STARTING);
+            self.supervisor.turning_on = Some((job, false));
+        }
         let publisher = self.clients.remote.as_ref().map(|(to, _)| *to);
         if on {
             self.keep_remote_running();
@@ -57,6 +81,49 @@ impl Session {
         self.clients.remote = Some((publisher.unwrap_or(u64::MAX), view.clone()));
         self.clients.broadcast_all(&Out::Remote { view });
         Answer::nothing()
+    }
+
+    /// `weft remote` said where it is: turning it on moves on a step, or
+    /// ends once the address answers, or when it needs the person instead.
+    pub(super) fn remote_moved(&mut self, view: &serde_json::Value) {
+        let Some((job, signed)) = &mut self.supervisor.turning_on else { return };
+        let state = view["state"].as_str().unwrap_or_default();
+        let ended = match state {
+            "starting" => {
+                job.now(STARTING);
+                None
+            }
+            "signing_in" | "signed_out" => {
+                *signed = true;
+                job.now(SIGNING_IN);
+                None
+            }
+            "on" => {
+                if !*signed {
+                    // Already signed in: there was nothing to sign in to.
+                    job.skip(SIGNING_IN);
+                    *signed = true;
+                }
+                match (view["tunnel"].as_str(), view["answers"] == true) {
+                    (Some("up"), true) => Some(Ok(())),
+                    (Some("up"), false) => {
+                        job.now(ADDRESS);
+                        None
+                    }
+                    _ => {
+                        job.now(TUNNEL);
+                        None
+                    }
+                }
+            }
+            // A tunnel to choose, or one to install: the person's to do.
+            "choose" | "not_installed" => Some(Err(state.to_string())),
+            _ => None,
+        };
+        if let Some(result) = ended {
+            job.end(result);
+            self.supervisor.turning_on = None;
+        }
     }
 
     /// Whether remote access is turned on.

@@ -21,7 +21,7 @@ use weft_core::turns::Turn;
 
 /// What this daemon speaks. A client that asks for another is refused with a
 /// number rather than left to guess.
-pub const PROTOCOL: u64 = 8;
+pub const PROTOCOL: u64 = 11;
 
 /// Refuse anything absurd rather than allocating on a corrupt length.
 pub const MAX_LINE: usize = 16 * 1024 * 1024;
@@ -102,23 +102,26 @@ pub enum Call {
         /// The Eval a Seal seals (`decide`): its round, and only its Asks.
         eval: Option<String>,
         /// An Ask or follow-up into a new agent of this harness, started for
-        /// it, rather than into `pane`.
+        /// it, rather than into `pane`; for an Eval, the harness that reads.
         start: Option<String>,
         /// What the person chose in the sheet or dialog before Send.
         draft: Option<weft_core::ask::Draft>,
     },
     /// The exact wording, or the judgements, as RingFrame recorded them; or
     /// `what: "history"`, a pane's last `lines` of scrollback and screen as
-    /// text (remote.md D7), where `unit` is empty.
+    /// text (remote.md D7), where `unit` is empty; or `what: "sessions"`,
+    /// the earlier sessions a page at a time.
     Read {
         what: String,
         unit: String,
         pane: Option<u32>,
         lines: Option<u64>,
         /// A conversation's cursors: the page before one, or what was
-        /// added after one.
+        /// added after one; for sessions, the page after one.
         before: Option<String>,
         after: Option<String>,
+        /// What the earlier sessions are searched for, when anything.
+        q: Option<String>,
     },
     /// The Updates view: `look` at RingFrame's configuration and
     /// every harness file, `locate` one whose program is at `path`, `run` one's
@@ -187,6 +190,19 @@ pub enum Call {
         version: String,
         program: String,
     },
+    /// Look again at which files an Eval of this project should skip
+    /// (`.gitignore`, `.gitattributes`). Answers with `{"findings": [..]}`,
+    /// the project's as `Event::Skip` says them, once the check is done.
+    SkipCheck,
+    /// Write one line a finding proposed into its file at the project's
+    /// root: only a line the daemon's latest check proposed, never another.
+    /// The check runs again; every client is told what it finds, and an
+    /// open Eval dialog is sent again with its reads. Answers as
+    /// [`Call::SkipCheck`] does.
+    SkipAdd {
+        file: String,
+        line: String,
+    },
     /// Close a project reopened after an unclean end, from a device or a
     /// window that has nothing to do in it. It closes as any
     /// project does once nobody is in it.
@@ -203,6 +219,91 @@ pub enum Call {
 pub struct Go {
     pub word: String,
     pub warn: bool,
+}
+
+/// Something the machine is doing that takes a while, as it stands: its
+/// steps, how far along it is, and how it ended. Sent whole each time.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Job {
+    /// Unique for this daemon's run: `job_17`.
+    pub id: String,
+    /// What it is, as its words name it: `eval_open`, `readers`, `seal`,
+    /// `seal_check`, `send`, `ask`, `undo`, `update` (RingFrame, Sense or a
+    /// harness, named in `on.harness`), `remote`.
+    pub kind: String,
+    /// What it is about.
+    #[serde(default)]
+    pub on: JobOn,
+    /// The call that began it, on the copy sent to the client that made it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call: Option<u64>,
+    pub steps: Vec<JobStep>,
+    /// How much is done, 0 to 1, when the machine can tell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub share: Option<f32>,
+    /// Milliseconds since it began, as of this message.
+    pub age_ms: u64,
+    /// How it ended; none while it runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<JobEnd>,
+}
+
+/// What a job is about; each part only when it has one.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct JobOn {
+    /// The work, by its root Ask.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eval: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seal: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+}
+
+/// One step of a job, in words a person reads.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct JobStep {
+    /// Its words, as a key of `words.json`.
+    pub key: String,
+    /// The values its words take: `{harness}`, `{agent}`.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub args: std::collections::BTreeMap<String, String>,
+    pub state: StepState,
+    /// Milliseconds it took, or has taken so far.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ms: Option<u64>,
+    /// How many of how many, when it counts something.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<u64>,
+    /// What it counts: `files`, `bytes`, `readers`, `reads`, `steps`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StepState {
+    Done,
+    Now,
+    Next,
+    Failed,
+    Skipped,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct JobEnd {
+    pub ok: bool,
+    /// Why it failed, in the words of what refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
 }
 
 /// Something that happened. Unsolicited, to every client of that project.
@@ -259,6 +360,16 @@ pub enum Event {
         sends: Option<String>,
         /// Its yes button, when not Send.
         go: Option<Go>,
+    },
+    /// Which files an Eval of this project should skip, as the latest check
+    /// found them: each with the line that keeps it out. A nested
+    /// repository is said only in an Eval dialog's reads, never here.
+    Skip {
+        findings: Vec<weft_core::skip::Finding>,
+    },
+    /// A job moved: began, went on a step or a count, or ended.
+    Progress {
+        job: Job,
     },
     /// It was answered. Once.
     Resolved {
@@ -325,12 +436,17 @@ pub enum Event {
         at: i64,
     },
     /// Each agent's state, as its hooks reported it: one per pane, in order;
-    /// the project's session index (sessions.md); and the Mac's
-    /// distance from UTC, in milliseconds, so every client reads a time and
-    /// a date group as the Mac does.
+    /// what moved in the sessions carried as they are (the running, those
+    /// panes hold, and the newest of today's): the rows that changed or came, and the keys of those that
+    /// went ([`weft_core::sessions::Row::key`]); how many earlier sessions
+    /// there are, read a page at a time; and the Mac's distance from UTC, in
+    /// milliseconds, so every client reads a time and a date group as the
+    /// Mac does.
     Agents {
         panes: Vec<Option<Turn>>,
-        sessions: Vec<weft_core::sessions::Row>,
+        changed: Vec<weft_core::sessions::Row>,
+        gone: Vec<String>,
+        earlier: usize,
         zone: i64,
     },
     /// One hook, from `weft signal` to the daemon: sent one way
@@ -455,10 +571,10 @@ impl Call {
                 json!({"act": act, "unit": unit, "pane": pane, "text": text, "eval": eval,
                        "start": start, "draft": draft}),
             ),
-            Call::Read { what, unit, pane, lines, before, after } => (
+            Call::Read { what, unit, pane, lines, before, after, q } => (
                 "read",
                 json!({"what": what, "unit": unit, "pane": pane, "lines": lines,
-                       "before": before, "after": after}),
+                       "before": before, "after": after, "q": q}),
             ),
             Call::Setup { act, harness, path } => {
                 ("setup", json!({"act": act, "harness": harness, "path": path}))
@@ -480,6 +596,8 @@ impl Call {
             ),
             Call::Detach => ("detach", json!({})),
             Call::Dismiss => ("project.dismiss", json!({})),
+            Call::SkipCheck => ("skip.check", json!({})),
+            Call::SkipAdd { file, line } => ("skip.add", json!({"file": file, "line": line})),
             Call::Update { version, program } => {
                 ("update", json!({"version": version, "program": program}))
             }
@@ -538,6 +656,7 @@ impl Call {
                 lines: n("lines"),
                 before: s("before"),
                 after: s("after"),
+                q: s("q"),
             },
             "setup" => Call::Setup {
                 act: s("act")?,
@@ -579,6 +698,8 @@ impl Call {
             }
             "detach" => Call::Detach,
             "project.dismiss" => Call::Dismiss,
+            "skip.check" => Call::SkipCheck,
+            "skip.add" => Call::SkipAdd { file: s("file")?, line: s("line")? },
             "update" => Call::Update { version: s("version")?, program: s("program")? },
             "shutdown" => Call::Shutdown,
             _ => return None,
@@ -610,6 +731,8 @@ impl Event {
                 "pending.added",
                 pending_json(id, *pane, what, why, payload, sends.as_deref(), go.as_ref()),
             ),
+            Event::Progress { job } => ("progress", json!({"job": job})),
+            Event::Skip { findings } => ("skip", json!({"findings": findings})),
             Event::Resolved { id, yes } => ("pending.resolved", json!({"id": id, "yes": yes})),
             Event::Injected { pane, refusal, unrecorded } => {
                 ("injected", json!({"pane": pane, "refusal": refusal, "unrecorded": unrecorded}))
@@ -625,9 +748,11 @@ impl Event {
             Event::Readiness { states } => ("readiness", json!({"states": states})),
             Event::Setup { view } => ("setup", json!({"view": view})),
             Event::Workspace { setup, gap } => ("workspace", json!({"setup": setup, "gap": gap})),
-            Event::Agents { panes, sessions, zone } => {
-                ("agents", json!({"panes": panes, "sessions": sessions, "zone": zone}))
-            }
+            Event::Agents { panes, changed, gone, earlier, zone } => (
+                "agents",
+                json!({"panes": panes, "changed": changed, "gone": gone, "earlier": earlier,
+                       "zone": zone}),
+            ),
             Event::Signal(sent) => ("signal", serde_json::to_value(sent).unwrap_or_default()),
         }
     }
@@ -677,6 +802,12 @@ impl Event {
                     })
                 }),
             },
+            "progress" => {
+                Event::Progress { job: serde_json::from_value(p.get("job")?.clone()).ok()? }
+            }
+            "skip" => {
+                Event::Skip { findings: serde_json::from_value(p.get("findings")?.clone()).ok()? }
+            }
             "pending.resolved" => Event::Resolved { id: s("id")?, yes: p.get("yes")?.as_bool()? },
             "presence" => Event::Presence { at: p.get("at")?.as_i64()? },
             "turbo" => Event::Turbo { on: p.get("on")?.as_bool()? },
@@ -699,7 +830,9 @@ impl Event {
             },
             "agents" => Event::Agents {
                 panes: serde_json::from_value(p.get("panes")?.clone()).ok()?,
-                sessions: serde_json::from_value(p.get("sessions")?.clone()).ok()?,
+                changed: serde_json::from_value(p.get("changed")?.clone()).ok()?,
+                gone: serde_json::from_value(p.get("gone")?.clone()).ok()?,
+                earlier: n("earlier").unwrap_or(0) as usize,
                 zone: p.get("zone").and_then(Value::as_i64).unwrap_or(0),
             },
             "signal" => Event::Signal(Box::new(serde_json::from_value(p.clone()).ok()?)),
@@ -1086,6 +1219,7 @@ mod tests {
                 lines: None,
                 before: None,
                 after: None,
+                q: None,
             },
             Call::Read {
                 what: "history".into(),
@@ -1094,6 +1228,16 @@ mod tests {
                 lines: Some(40),
                 before: None,
                 after: None,
+                q: None,
+            },
+            Call::Read {
+                what: "sessions".into(),
+                unit: String::new(),
+                pane: None,
+                lines: None,
+                before: None,
+                after: Some("codex/s9".into()),
+                q: Some("login".into()),
             },
             Call::Setup {
                 act: "locate".into(),
@@ -1113,6 +1257,8 @@ mod tests {
             Call::Remote { act: json!({"act": "allow", "device": "d_1", "yes": true}) },
             Call::StartAtLogin { on: true, program: "/w/weft".into(), path: "/usr/bin".into() },
             Call::Dismiss,
+            Call::SkipCheck,
+            Call::SkipAdd { file: ".gitignore".into(), line: "/output/".into() },
             Call::Update { version: "0.2.1".into(), program: "/w/weft".into() },
             Call::Detach,
             Call::Shutdown,
@@ -1144,6 +1290,22 @@ mod tests {
     #[test]
     fn every_event_survives_the_wire() {
         for event in [
+            Event::Skip {
+                findings: vec![weft_core::skip::Finding {
+                    kind: "untracked_bulk".into(),
+                    path: "output/".into(),
+                    files: 329,
+                    bytes: 4_000_000,
+                    commits: 0,
+                    kinds_of_files: vec![("html".into(), 300), ("css".into(), 29)],
+                    fix: Some(weft_core::skip::Fix {
+                        file: ".gitignore".into(),
+                        line: "/output/".into(),
+                    }),
+                    added: false,
+                }],
+            },
+            Event::Skip { findings: Vec::new() },
             Event::Panes {
                 panes: vec![
                     PaneInfo {
@@ -1163,6 +1325,49 @@ mod tests {
                         judge: Some("evl_1".into()),
                     },
                 ],
+            },
+            Event::Progress {
+                job: Job {
+                    id: "job_1".into(),
+                    kind: "eval_open".into(),
+                    on: JobOn { work: Some("ask_1".into()), ..JobOn::default() },
+                    call: Some(4),
+                    steps: vec![
+                        JobStep {
+                            key: "step.reading_change".into(),
+                            args: Default::default(),
+                            state: StepState::Now,
+                            ms: Some(1800),
+                            done: Some(38),
+                            total: Some(103),
+                            unit: Some("files".into()),
+                        },
+                        JobStep {
+                            key: "step.starting_readers".into(),
+                            args: [("harness".to_string(), "codex".to_string())].into(),
+                            state: StepState::Next,
+                            ms: None,
+                            done: None,
+                            total: None,
+                            unit: None,
+                        },
+                    ],
+                    share: Some(0.25),
+                    age_ms: 1800,
+                    end: None,
+                },
+            },
+            Event::Progress {
+                job: Job {
+                    id: "job_2".into(),
+                    kind: "seal".into(),
+                    on: JobOn::default(),
+                    call: None,
+                    steps: Vec::new(),
+                    share: None,
+                    age_ms: 9000,
+                    end: Some(JobEnd { ok: false, why: Some("the record moved".into()) }),
+                },
             },
             Event::Output { pane: 0, seq: 7, bytes: vec![0x1b, b'[', b'2', b'J', 0xfe] },
             Event::Screen {
@@ -1239,7 +1444,9 @@ mod tests {
             Event::Workspace { setup: None, gap: None },
             Event::Agents {
                 panes: vec![Some(Turn::TurnEnded), None],
-                sessions: vec![weft_core::sessions::Row {
+                gone: vec!["codex/s0".into(), "grok/pane 3".into()],
+                earlier: 1_204,
+                changed: vec![weft_core::sessions::Row {
                     id: "s1".into(),
                     harness: "claude-code".into(),
                     state: weft_core::sessions::State::Quiet,

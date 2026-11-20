@@ -34,6 +34,7 @@ pub(super) struct Due {
     pane: u32,
     ask: String,
     until: std::time::Instant,
+    job: Option<jobs::Handle>,
 }
 
 /// One send for a pane's worker to type.
@@ -44,6 +45,8 @@ pub(super) struct Job {
     pub(super) project: usize,
     pub(super) pane: u32,
     pub(super) sends: Option<String>,
+    /// The send it is, told as it goes.
+    pub(super) job: Option<jobs::Handle>,
 }
 
 /// A pane's worker: it types each send in turn and says how each went.
@@ -54,7 +57,8 @@ pub(super) fn typer(tx: Sender<Wake>) -> Sender<Job> {
     std::thread::spawn(move || {
         for j in rx {
             let typed = j.typist.inject_as(&j.payload, &j.how);
-            let done = Wake::Typed { project: j.project, pane: j.pane, typed, sends: j.sends };
+            let (project, pane, sends, job) = (j.project, j.pane, j.sends, j.job);
+            let done = Wake::Typed { project, pane, typed, sends, job };
             if tx.send(done).is_err() {
                 return;
             }
@@ -139,6 +143,9 @@ impl Session {
     /// starting, is waited for on the tick, never here. The refusal, if
     /// there is one, is the person's to see.
     pub(super) fn type_it(&mut self, project: usize, w: Waiting, force: bool) {
+        if let Some(job) = &w.job {
+            job.to("step.waiting_ready");
+        }
         let now = std::time::Instant::now();
         let screen = (now, String::new());
         let until = now + STARTED_TIMEOUT;
@@ -184,6 +191,10 @@ impl Session {
             Some(slot) => match not_ready {
                 Err(why) if slot.pane.running() => Some(why.to_string()),
                 _ => {
+                    if let Some(job) = &w.job {
+                        job.to("step.typing_prompt");
+                        job.to("step.typing_request");
+                    }
                     let job = Job {
                         typist: slot.pane.typist(),
                         payload: w.payload,
@@ -191,6 +202,7 @@ impl Session {
                         project,
                         pane: w.pane,
                         sends: w.sends.clone(),
+                        job: w.job.clone(),
                     };
                     match slot.typer.get_or_insert_with(|| typer(tx)).send(job) {
                         Ok(()) => None,
@@ -206,12 +218,17 @@ impl Session {
             // while the worker is still typing answers it too.
             (None, Some(ask)) => {
                 let until = std::time::Instant::now() + RECEIPT_CAP;
-                self.projects[project].due.push(Due { pane: w.pane, ask, until });
+                let job = w.job;
+                self.projects[project].due.push(Due { pane: w.pane, ask, until, job });
             }
             (None, None) => {}
-            (refusal, _) => self
-                .clients
-                .broadcast(project, &Out::Injected { pane: w.pane, refusal, unrecorded: None }),
+            (refusal, _) => {
+                if let (Some(job), Some(why)) = (&w.job, &refusal) {
+                    job.end(Err(why.clone()));
+                }
+                self.clients
+                    .broadcast(project, &Out::Injected { pane: w.pane, refusal, unrecorded: None })
+            }
         }
     }
 
@@ -241,6 +258,7 @@ impl Session {
             project,
             pane,
             sends: None,
+            job: None,
         };
         match slot.typer.get_or_insert_with(|| typer(tx)).send(job) {
             Ok(()) => Answer::Ok(serde_json::json!({})),
@@ -256,6 +274,7 @@ impl Session {
         pane: u32,
         typed: Result<crate::pane::Attempt, weft_core::inject::Refusal>,
         sends: Option<String>,
+        job: Option<jobs::Handle>,
     ) {
         let refusal = match typed {
             Err(r) => Some(format!("{r:?}")),
@@ -263,6 +282,15 @@ impl Session {
             Ok(a) if !a.submitted => Some("PasteNotShown".to_string()),
             Ok(_) => None,
         };
+        // Typed: a send of an Ask waits for its agent to say it got it;
+        // anything else is done.
+        if let Some(job) = &job {
+            match (&refusal, &sends) {
+                (Some(why), _) => job.end(Err(why.clone())),
+                (None, Some(_)) => job.to("step.waiting_received"),
+                (None, None) => job.end(Ok(())),
+            }
+        }
         // A judge's line is the judges' own, and no one is told of it.
         if self
             .projects
@@ -312,9 +340,13 @@ impl Session {
             None => return None,
         };
         let due = &mut self.projects[at].due;
-        let Due { ask, .. } = due.remove(due.iter().position(|d| d.pane == pane)?);
+        let Due { ask, job, .. } = due.remove(due.iter().position(|d| d.pane == pane)?);
         let tx = self.tx.clone();
         Some(Box::new(move |answer| {
+            if let Some(job) = &job {
+                let theirs = matches!(&answer, Ok(v) if !is_the_ask(v, &ask));
+                job.end(if theirs { Err("NotTheAsk".into()) } else { Ok(()) });
+            }
             let _ = tx.send(Wake::Received { project: at, pane, ask, answer, tie });
         }))
     }
@@ -351,7 +383,9 @@ impl Session {
     pub(super) fn received_nothing(&mut self, project: usize, pane: u32) {
         let due = &mut self.projects[project].due;
         if let Some(i) = due.iter().position(|d| d.pane == pane) {
-            due.remove(i);
+            if let Some(job) = due.remove(i).job {
+                job.end(Err("NoReceipt".into()));
+            }
             let said = Out::Injected { pane, refusal: Some("NoReceipt".into()), unrecorded: None };
             self.clients.broadcast(project, &said);
         }
@@ -366,6 +400,9 @@ impl Session {
         let (late, waiting): (Vec<Due>, Vec<Due>) = due.into_iter().partition(|d| now >= d.until);
         self.projects[project].due = waiting;
         for d in late {
+            if let Some(job) = &d.job {
+                job.end(Err("NoReceipt".into()));
+            }
             let said =
                 Out::Injected { pane: d.pane, refusal: Some("NoReceipt".into()), unrecorded: None };
             self.clients.broadcast(project, &said);
@@ -387,6 +424,124 @@ impl Session {
         }
         let title = harness.map_or(name, |h| h.title.as_str());
         Some(weft_core::words::fill("send.no_prompt", &[("harness", title)]))
+    }
+
+    /// A send said yes to, as a job: recording its Ask when it is one not
+    /// yet recorded, starting its agent when it is a new one, waiting for
+    /// the agent, typing, and, for an Ask, waiting for the agent to say it
+    /// got it.
+    pub(super) fn send_job(
+        &mut self,
+        client: u64,
+        call_id: u64,
+        at: usize,
+        w: &Waiting,
+        into: Option<&Elsewhere>,
+        pane: Option<u32>,
+    ) -> jobs::Handle {
+        let start = match into.map(|e| &e.to) {
+            Some(Into::Start(harness)) => Some(harness.clone()),
+            _ => None,
+        };
+        let agent = start
+            .clone()
+            .or_else(|| pane.and_then(|p| self.projects[at].slot(p)).map(|s| s.map.harness.clone()))
+            .unwrap_or_default();
+        let ask = w.compile.is_some() || w.sends.is_some();
+        let units = self.projects[at].ledger.units();
+        let work = weft_core::work::work(&units, &self.projects[at].ledger.record());
+        let on = weft_proto::JobOn {
+            work: w.sends.as_deref().and_then(|a| work.of_ask(a)).map(|u| u.root.clone()),
+            ask: w.sends.clone(),
+            pane,
+            harness: Some(agent.clone()),
+            ..Default::default()
+        };
+        let agent = [("agent", agent.as_str())];
+        let steps = vec![
+            jobs::step("step.recording_ask", &[], None),
+            jobs::step("step.starting", &[("harness", start.as_deref().unwrap_or_default())], None),
+            jobs::step("step.waiting_ready", &agent, None),
+            jobs::step("step.typing_prompt", &[], None),
+            jobs::step("step.waiting_received", &agent, None),
+        ];
+        let job = self.jobs.begin("send", on, Some(at), Some((client, call_id)), steps);
+        if w.compile.is_none() {
+            job.skip(0);
+        }
+        if start.is_none() {
+            job.skip(1);
+        }
+        if !ask {
+            job.skip(4);
+        }
+        job.now(if w.compile.is_some() { 0 } else { 2 });
+        job
+    }
+
+    /// A Send's Ask is recorded, or would not be: what it types goes now,
+    /// into a new agent once it has started.
+    pub(super) fn compiled(
+        &mut self,
+        (client, _): (u64, u64),
+        at: usize,
+        send: Compiling,
+        compiled: Result<Option<String>, String>,
+    ) -> Answer {
+        let Compiling { mut w, into, force } = send;
+        let job = w.job.clone();
+        let fail = |s: &mut Self, code: &'static str, why: String| {
+            if let Some(job) = &job {
+                s.end_job(job, Err(why.clone()));
+            }
+            Answer::No(code, why)
+        };
+        if self.projects[at].closed {
+            return fail(self, "no_project", "the project closed".into());
+        }
+        match compiled {
+            Ok(Some(ask_id)) => {
+                w.sends = Some(ask_id);
+                // Counted off the send: what the person kept teaches Sense.
+                let (model, root) = (Arc::clone(&self.sense), self.projects[at].root.clone());
+                let weft_dir = self.weft_dir();
+                std::thread::spawn(move || crate::memory::after_compile(&model, &weft_dir, &root));
+            }
+            Ok(None) => {}
+            Err(message) => {
+                let why = format!("RingFrame would not record it: {message}. Nothing was typed.");
+                return fail(self, "not_recorded", why);
+            }
+        }
+        if let Some(into) = into {
+            let pane = match into.to {
+                Into::Pane(pane) => pane,
+                Into::Start(harness) => {
+                    if let Some(job) = &job {
+                        job.to("step.starting");
+                    }
+                    match self.start_for(client, at, &harness) {
+                        Some(pane) => pane,
+                        None => {
+                            return fail(
+                                self,
+                                "no_pane",
+                                format!("Weft could not start {harness}"),
+                            );
+                        }
+                    }
+                }
+            };
+            (w.pane, w.payload, w.how) = (pane, into.built.payload, into.built.how);
+        }
+        // The Ask it sends and the agent it goes to are known now.
+        if let Some(job) = &job {
+            let harness = self.projects[at].slot(w.pane).map(|s| s.map.harness.clone());
+            let ask = w.sends.clone();
+            job.on(weft_proto::JobOn { ask, pane: Some(w.pane), harness, ..Default::default() });
+        }
+        self.type_it(at, w, force);
+        Answer::nothing()
     }
 
     /// Put a built prompt in front of everyone watching, and answer with its id.
@@ -417,6 +572,8 @@ impl Session {
             stop: built.stop,
             go: built.go,
             hidden: built.hidden,
+            job: None,
+            reads: built.reads,
         });
         self.clients.broadcast(at, &message);
         Answer::Ok(serde_json::json!({"pending": id}))

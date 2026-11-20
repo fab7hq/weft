@@ -37,6 +37,14 @@ impl Remote {
             Some("read") => self.read(conn, m, &req),
             Some("settings") => self.settings(conn, m, &req),
             Some("set") => self.set(conn, m, &req),
+            Some("skip_check") => self.skip(conn, m, &req, Call::SkipCheck),
+            Some("skip_add") => match (m["file"].as_str(), m["line"].as_str()) {
+                (Some(file), Some(line)) => {
+                    let call = Call::SkipAdd { file: file.into(), line: line.into() };
+                    self.skip(conn, m, &req, call)
+                }
+                _ => Err(("bad_request", "skip_add names a file and a line".into())),
+            },
             Some("seen") => self.seen(conn, m),
             Some("follow") => self.follow(conn, m),
             Some("push") => self.push_subscription(conn, m),
@@ -87,6 +95,10 @@ impl Remote {
 
     pub(super) fn answered(&mut self, at: usize, id: u64, answer: Result<Value, (String, String)>) {
         let Some(asked) = self.calls.remove(&(at, id)) else { return };
+        if !asked.req.is_null() {
+            let kept = (asked.conn, asked.req.clone(), std::time::Instant::now());
+            self.answered.insert((at, id), kept);
+        }
         if let Carries::Follow(conn, at, pane) = asked.carries {
             return self.followed(conn, (at, pane), answer.ok());
         }
@@ -131,17 +143,35 @@ impl Remote {
                         return;
                     }
                     Carries::Settings => ok["settings"] = v,
+                    Carries::Skip => ok["findings"] = v["findings"].clone(),
+                    Carries::Sessions => {
+                        let Some(open) = self.projects.get_mut(at).and_then(Option::as_mut) else {
+                            return;
+                        };
+                        ok["sessions"] = open.agents.sessions(&v, now_millis());
+                    }
                     Carries::Sealed(what) => ok[what.as_str()] = v,
+                    Carries::Receipt(id) => {
+                        let Some(open) = self.projects.get(at).and_then(Option::as_ref) else {
+                            return;
+                        };
+                        match open.agents.receipt(&id, &v) {
+                            Ok(r) => ok["receipt"] = r,
+                            Err((code, message)) => {
+                                return self.error(asked.conn, &asked.req, code, &message);
+                            }
+                        }
+                    }
                     Carries::Starts | Carries::Part(..) | Carries::Follow(..) => {}
-                    Carries::Resolve(_) => {}
+                    Carries::Resolve(..) => {}
                 }
                 self.send(asked.conn, ok);
             }
             Err((code, message)) => {
-                if let Carries::Resolve(id) = asked.carries
+                if let Carries::Resolve(id, _) = &asked.carries
                     && code == "not_ready"
                 {
-                    self.not_ready.insert(id);
+                    self.not_ready.insert(id.clone());
                 }
                 self.error(asked.conn, &asked.req, &code, &message)
             }
@@ -332,6 +362,18 @@ impl Remote {
                 (at.ok_or(("no_unit", format!("{id} is not on the board")))?, None)
             }
         };
+        // Acted on again: an Eval of this work that could not open is said
+        // no more, here or on any device.
+        if let (Some(unit), Some(open)) =
+            (m["unit"].as_str(), self.projects.get_mut(at).and_then(Option::as_mut))
+        {
+            let before = open.jobs.all().len();
+            open.jobs.acted_on(unit);
+            if open.jobs.all().len() != before {
+                let told = open.jobs_message();
+                self.to_devices(&told);
+            }
+        }
         let agents = &self.projects[at].as_ref().expect("an open project").agents;
         // No agent of the harness it goes to runs: say so, with the session
         // that route names, as AGENTS reads it, or none.
@@ -346,6 +388,60 @@ impl Remote {
         }
         let call = agents.act(m, pane)?;
         self.ask(at, call, conn, req, Carries::Pending)
+    }
+
+    // --- what takes a while ------------------------------------------------
+
+    /// A job moved in a project: relayed to every device, with its request
+    /// to the device whose request began it.
+    pub(super) fn progress(&mut self, at: usize, job: weft_proto::Job) {
+        let Some(open) = self.projects.get_mut(at).and_then(Option::as_mut) else { return };
+        // The machine's jobs (Updates, Remote) are the desktop's to show.
+        if matches!(job.kind.as_str(), "update" | "remote") {
+            return;
+        }
+        // The device whose call began it, while the call waits or since it
+        // was answered.
+        let asker = job.call.and_then(|call| {
+            match (self.calls.get(&(at, call)), self.answered.get(&(at, call))) {
+                (Some(asked), _) if !asked.req.is_null() => Some((asked.conn, asked.req.clone())),
+                (_, Some((conn, req, _))) => Some((*conn, req.clone())),
+                _ => None,
+            }
+        });
+        let relay = open.jobs.heard(job, asker, std::time::Instant::now());
+        let project = open.agents.name.clone();
+        if let Some(relay) = relay {
+            self.relay(&project, relay);
+        }
+    }
+
+    /// The counts held back that are due now, in every project.
+    pub(super) fn jobs_due(&mut self) {
+        let now = std::time::Instant::now();
+        // A send waits for its agent's receipt up to ten minutes.
+        const ANSWERED_KEPT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+        self.answered.retain(|_, (_, _, at)| now.saturating_duration_since(*at) < ANSWERED_KEPT);
+        let mut due = Vec::new();
+        for open in self.projects.iter_mut().flatten() {
+            let project = open.agents.name.clone();
+            due.extend(open.jobs.due(now).into_iter().map(|r| (project.clone(), r)));
+        }
+        for (project, relay) in due {
+            self.relay(&project, relay);
+        }
+    }
+
+    fn relay(&self, project: &str, relay: crate::jobs::Relay) {
+        let message = json!({"type": "progress", "project": project, "job": relay.job});
+        let asker = relay.asker.as_ref().map(|(conn, _)| *conn);
+        for (id, c) in self.conns.iter().filter(|(_, c)| c.device.is_some()) {
+            let mut message = message.clone();
+            if let Some((_, req)) = relay.asker.as_ref().filter(|_| asker == Some(*id)) {
+                message["req"] = req.clone();
+            }
+            c.outbox.send(message.to_string());
+        }
     }
 
     /// The project a message names by `project`.
@@ -373,6 +469,7 @@ impl Remote {
                 lines: None,
                 before: None,
                 after: None,
+                q: None,
             },
             Some(_) => {
                 return Err((
@@ -399,6 +496,13 @@ impl Remote {
             return Err(("not_allowed", "which program runs is set on the machine".into()));
         }
         self.ask(at, call, conn, req, Carries::Settings)
+    }
+
+    /// Which files an Eval should skip, checked again, or one line the
+    /// daemon's check proposed written: answered with the project's findings.
+    fn skip(&mut self, conn: u64, m: &Value, req: &Value, call: Call) -> Result<bool, Refusal> {
+        let at = self.project_named(m)?;
+        self.ask(at, call, conn, req, Carries::Skip)
     }
 
     fn project_named(&self, m: &Value) -> Result<usize, Refusal> {
@@ -479,8 +583,13 @@ impl Remote {
         }
         // A new agent is waited for by the daemon; one already running has to
         // have said it is ready.
+        // A yes that types nothing into an agent (an Eval, a Seal, an Undo)
+        // waits for no agent to be ready.
         let pane = if start.is_some() { None } else { to.or(staged) };
-        if yes && !force && start.is_none() {
+        let types = to.is_some()
+            || self.pendings.get(id).is_some_and(|(_, p)| !p["sends"].is_null())
+            || pane.is_some_and(|p| self.projects[at].as_ref().is_some_and(|o| o.agents.holds(p)));
+        if yes && !force && start.is_none() && types {
             let turn = self.projects[at].as_ref().zip(pane).and_then(|(o, p)| o.agents.turn_of(p));
             if let Err(why) = weft_core::turns::may_type(turn) {
                 self.not_ready.insert(id.to_string());
@@ -491,13 +600,10 @@ impl Remote {
             }
         }
         self.not_ready.remove(id);
-        self.ask(
-            at,
-            Call::Resolve { pending: id.into(), yes, force: force && yes, to, start },
-            conn,
-            req,
-            Carries::Resolve(id.into()),
-        )
+        let opens =
+            yes && self.pendings.get(id).is_some_and(|(_, p)| p["go"]["word"] == "act.eval");
+        let call = Call::Resolve { pending: id.into(), yes, force: force && yes, to, start };
+        self.ask(at, call, conn, req, Carries::Resolve(id.into(), opens))
     }
 
     fn read(&mut self, conn: u64, m: &Value, req: &Value) -> Result<bool, Refusal> {
@@ -519,6 +625,7 @@ impl Remote {
                 lines: None,
                 before,
                 after: None,
+                q: None,
             };
             let agent = self.agent_id(at, pane);
             return self.ask(at, call, conn, req, Carries::Conversation(agent));
@@ -532,6 +639,7 @@ impl Remote {
                 lines: Some(HISTORY),
                 before: None,
                 after: None,
+                q: None,
             };
             let key = self.projects[at].as_ref().and_then(|o| o.agents.transcript(pane));
             return self.ask(at, call, conn, req, Carries::History(key));
@@ -540,10 +648,25 @@ impl Remote {
             return Err(("bad_request", "a read is answered by its req".into()));
         }
         let after = m["after"].as_str();
+        // The earlier sessions are weftd's to page and search.
+        if what == Some("sessions") {
+            let at = self.project_named(m)?;
+            let call = Call::Read {
+                what: "sessions".into(),
+                unit: String::new(),
+                pane: None,
+                lines: None,
+                before: None,
+                after: after.map(str::to_string),
+                q: m["q"].as_str().map(str::to_string),
+            };
+            return self.ask(at, call, conn, req, Carries::Sessions);
+        }
         // What the device reads of a project it names, answered at once from
-        // what this process holds: no read reaches weftd for a page.
+        // what this process holds: no read reaches weftd for a page. A Seal's
+        // facts come at once; whether its receipt holds is its own read.
         let local = match what {
-            Some("eval" | "work" | "session" | "sealed" | "sessions" | "done") => {
+            Some("eval" | "work" | "session" | "seal" | "sealed" | "done") => {
                 let at = self.project_named(m)?;
                 let agents = &self.projects[at].as_ref().expect("an open project").agents;
                 let id = |k: &str| m[k].as_str().ok_or(("bad_request", format!("no {k}")));
@@ -551,9 +674,9 @@ impl Remote {
                     Some("eval") => json!({"eval": agents.eval(id("eval")?)?}),
                     Some("work") => json!({"work": agents.work(id("unit")?)?}),
                     Some("session") => json!({"session": agents.session(id("session")?)?}),
+                    Some("seal") => json!({"seal": agents.seal(id("seal")?, None, after)?}),
                     Some("sealed") => json!({"sealed": agents.sealed(after)}),
-                    Some("done") => json!({"done": agents.done(m["q"].as_str(), after)}),
-                    _ => json!({"sessions": agents.sessions(m["q"].as_str(), after, now_millis())}),
+                    _ => json!({"done": agents.done(m["q"].as_str(), after)}),
                 })
             }
             _ => None,
@@ -577,13 +700,23 @@ impl Remote {
                 }
                 (at, Gather::Work(Box::new(unit)), reads)
             }
-            Some("seal") => {
+            // Whether a Seal's receipt still holds: RingFrame checks it
+            // against the work as it is now, which takes a while.
+            Some("receipt") => {
                 let at = self.project_named(m)?;
                 let id = m["seal"].as_str().ok_or(("bad_request", "no seal".to_string()))?;
                 let agents = &self.projects[at].as_ref().expect("an open project").agents;
                 agents.seal(id, None, None)?;
-                let of = Gather::Seal { id: id.into(), after: after.map(str::to_string) };
-                (at, of, vec![(Part::Seal, "seal", id.to_string())])
+                let call = Call::Read {
+                    what: "seal".into(),
+                    unit: id.into(),
+                    pane: None,
+                    lines: None,
+                    before: None,
+                    after: None,
+                    q: None,
+                };
+                return self.ask(at, call, conn, req, Carries::Receipt(id.into()));
             }
             // For rejected work: a follow-up's words, from what its Eval
             // found, or the commits Undo offers; for a Seal, the questions its
@@ -598,6 +731,7 @@ impl Remote {
                     lines: None,
                     before: None,
                     after: None,
+                    q: None,
                 };
                 return self.ask(at, call, conn, req, Carries::Sealed(what.into()));
             }
@@ -609,8 +743,8 @@ impl Remote {
             _ => {
                 return Err((
                     "not_allowed",
-                    "a device reads history, detail, work, eval, seal, session, sealed, sessions, \
-                     done, remedy, commits, questions or eval_view"
+                    "a device reads history, detail, work, eval, seal, receipt, session, sealed, \
+                     sessions, done, remedy, commits, questions or eval_view"
                         .into(),
                 ));
             }
@@ -627,7 +761,6 @@ impl Remote {
                 left: 0,
                 source: None,
                 prompt: None,
-                seal: None,
                 view: None,
                 hunks: Default::default(),
             },
@@ -648,6 +781,7 @@ impl Remote {
             lines: None,
             before: None,
             after: None,
+            q: None,
         };
         if let Some(id) = self.call(at, call) {
             self.calls.insert(
@@ -669,7 +803,6 @@ impl Remote {
         match part {
             Part::Source => r.source = text(&answer),
             Part::Prompt => r.prompt = text(&answer),
-            Part::Seal => r.seal = answer,
             Part::Hunk(i) => {
                 let window = r.view.as_ref().and_then(|v| v.windows.get(i)).map(|w| w.id.clone());
                 if let (Some(w), Some(t)) = (window, text(&answer)) {
@@ -706,12 +839,6 @@ impl Remote {
             (Gather::Work(unit), _) => {
                 ok["detail"] = open.agents.detail(unit, r.source.as_deref(), r.prompt.as_deref())
             }
-            (Gather::Seal { id, after }, _) => {
-                match open.agents.seal(id, r.seal.as_ref(), after.as_deref()) {
-                    Ok(v) => ok["seal"] = v,
-                    Err((code, message)) => return self.error(r.conn, &r.req, code, &message),
-                }
-            }
             (Gather::EvalView, None) => {
                 return self.error(r.conn, &r.req, "no_record", "that Eval is not on disk");
             }
@@ -725,10 +852,20 @@ impl Remote {
         let Event::Pending { id, pane, what, why, payload, sends, go } = event else { return };
         // `sends`: the Ask whose prompt this is, which can go to another agent;
         // `go`: its yes button's words key, and whether it stops something.
+        // An Eval's dialog carries what it would read, never text to type.
+        let reads = serde_json::from_slice::<Value>(&payload).ok().and_then(|p| {
+            let eval = go.as_ref().is_some_and(|g| g.word == "act.eval");
+            p.get("reads").filter(|_| eval).cloned()
+        });
         let go = go.map(|g| json!({"word": g.word, "warn": g.warn}));
-        let message = json!({"type": "pending", "id": id, "agent": self.agent_id(at, pane),
-                             "what": what, "why": why,
-                             "text": String::from_utf8_lossy(&payload), "sends": sends, "go": go});
+        let text =
+            if reads.is_some() { String::new() } else { String::from_utf8_lossy(&payload).into() };
+        let mut message = json!({"type": "pending", "id": id, "agent": self.agent_id(at, pane),
+                                 "what": what, "why": why,
+                                 "text": text, "sends": sends, "go": go});
+        if let Some(reads) = reads {
+            message["reads"] = reads;
+        }
         self.to_devices(&message);
         self.pendings.insert(id, (at, message));
     }
@@ -834,6 +971,7 @@ impl Remote {
                 lines: None,
                 before: None,
                 after: Some(after),
+                q: None,
             };
             match self.call(at, call) {
                 Some(id) => {

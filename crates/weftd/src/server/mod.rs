@@ -25,11 +25,13 @@ use crate::turns::Turn;
 
 mod agents;
 mod config;
+mod jobs;
 mod judges;
 mod login;
 mod offers;
 mod remote;
 mod screens;
+mod skip;
 mod typing;
 
 use typing::*;
@@ -172,6 +174,10 @@ struct Waiting {
     go: Option<weft_proto::Go>,
     /// What it types stays out of the dialog.
     hidden: bool,
+    /// Its send, told as it goes, once the person said yes.
+    job: Option<jobs::Handle>,
+    /// An Eval dialog's reads, said again when a line is written.
+    reads: Option<Box<crate::reads::EvalReads>>,
 }
 
 /// One project's panes. Panes are numbered within it, so a client counts from
@@ -186,9 +192,9 @@ struct Project {
     /// The record, followed here rather than in every client. One reader, and
     /// clients are told what it says.
     ledger: crate::ledger::Ledger,
-    /// Each session's first prompt, as RingFrame titles it, and when it was
-    /// read: what names an agent no Ask has titled.
-    first_prompts: (Option<std::time::Instant>, std::collections::BTreeMap<String, String>),
+    /// Each session's first prompt, as RingFrame titles it: what names an
+    /// agent no Ask has titled.
+    first_prompts: agents::Firsts,
     waiting: Vec<Waiting>,
     /// Which harness takes which act here, and what each harness answers
     /// about itself. Both are the machine's, so both are asked here.
@@ -208,6 +214,9 @@ struct Project {
     due: Vec<typing::Due>,
     /// The judges of each Eval opened here.
     benches: Vec<judges::Bench>,
+    /// The works whose Eval RingFrame is opening now, by root Ask: a second
+    /// Eval of one is refused until the first has opened or failed.
+    opening: std::collections::HashSet<String>,
     /// The sessions judges ran here, which are no agent of the person's:
     /// `.fab7/weft/judges.json`.
     judged: std::collections::HashSet<String>,
@@ -218,10 +227,13 @@ struct Project {
     /// the files it could not read.
     harnesses: weft_core::harness::Harnesses,
     unread: Vec<String>,
-    /// Each agent's state, from its hooks' receipts, and what clients were
-    /// last told of it.
+    /// Each agent's state, from its hooks' receipts; the session index built
+    /// from them; and what clients were last told of both.
     turns: crate::turns::Turns,
-    agents: Option<Agents>,
+    index: agents::Index,
+    told: agents::Told,
+    /// When ended sessions were last archived here.
+    archived: Option<std::time::Instant>,
     /// Harness processes a receipt named and that have since gone: one
     /// gone with its start time never comes back, so it is not asked again.
     gone: std::collections::HashSet<(u32, String)>,
@@ -240,6 +252,8 @@ struct Project {
     /// Reopened after an unclean end, at this time: kept open
     /// with no window until someone acts in it or dismisses it.
     reopened: Option<i64>,
+    /// Which files an Eval here should skip, as the read check last found.
+    skip: skip::Skip,
 }
 
 impl Project {
@@ -333,6 +347,28 @@ impl Clients {
         });
     }
 
+    /// A job, to whoever has to show it: a project's to that project's
+    /// clients, the machine's to every client. The client whose call began
+    /// it is sent it with that call.
+    fn send_job(&mut self, send: jobs::Send) {
+        let wire = Line::Event(Out::Progress { job: send.job.clone() }).encode();
+        let asker = send.call.map(|(client, call)| {
+            let job = weft_proto::Job { call: Some(call), ..send.job.clone() };
+            (client, Line::Event(Out::Progress { job }).encode())
+        });
+        let (watching, opening) = (&self.watching, &self.opening);
+        self.sinks.retain(|id, s| {
+            if let Some((client, own)) = &asker
+                && client == id
+            {
+                return deliver(s, own);
+            }
+            let hears =
+                send.project.is_none_or(|p| watching.get(id) == Some(&p) && !opening.contains(id));
+            !hears || deliver(s, &wire)
+        });
+    }
+
     fn send_to(&mut self, id: u64, line: &Line) {
         let wire = line.encode();
         if let Some(s) = self.sinks.get_mut(&id)
@@ -407,6 +443,14 @@ enum Wake {
         harness: String,
         program: String,
     },
+    /// RingFrame's read check of a project ended: its number, what it
+    /// found, and the call to answer with it.
+    SkipChecked {
+        project: usize,
+        check: u64,
+        checked: Box<crate::reads::Checked>,
+        call: Option<(u64, u64)>,
+    },
     /// RingFrame was asked again to set a project up, and this is what it
     /// still needs, if anything, and why an Ask could not finish there.
     Workspace {
@@ -447,12 +491,17 @@ enum Wake {
         project: usize,
         debate: Box<crate::acts::Debate>,
         opened: Result<String, crate::ringframe::Error>,
+        /// The Ask it opens for: its work is refused a second Eval meanwhile.
+        work: String,
+        job: jobs::Handle,
     },
     /// What the judges of an Eval do next, as RingFrame's answers decided.
     Judged {
         project: usize,
         eval_id: String,
         did: Vec<judges::Did>,
+        /// What its readers are doing, as its record says now.
+        seen: Option<judges::Seen>,
     },
     /// A hook, from `weft signal`.
     Signal(Box<weft_core::signal::Sent>),
@@ -465,6 +514,15 @@ enum Wake {
     Unheard {
         harness: String,
     },
+    /// RingFrame read a project's first prompts, off the run loop: its
+    /// reader comes back with what it read.
+    FirstPrompts {
+        project: usize,
+        reader: ringframe::api::FirstPrompts,
+        titles: std::collections::BTreeMap<String, String>,
+    },
+    /// Receipts too old to keep were removed from disk.
+    Pruned(Vec<PathBuf>),
     /// A pane's worker finished typing a send: what it managed, and the Ask
     /// the send was of.
     Typed {
@@ -472,6 +530,31 @@ enum Wake {
         pane: u32,
         typed: Result<crate::pane::Attempt, weft_core::inject::Refusal>,
         sends: Option<String>,
+        job: Option<jobs::Handle>,
+    },
+    /// A job moved.
+    Progress {
+        id: String,
+        change: jobs::Move,
+    },
+    /// The Ask the person drafted was built off the run loop, or would not
+    /// be: staged now, and the call that asked for it answered.
+    Built {
+        client: u64,
+        call_id: u64,
+        project: usize,
+        pane: u32,
+        built: Result<Box<crate::acts::Built>, String>,
+        job: Option<jobs::Handle>,
+    },
+    /// RingFrame recorded the Ask a Send confirmed, or would not: it is
+    /// typed now, and the call answered.
+    Compiled {
+        client: u64,
+        call_id: u64,
+        project: usize,
+        send: Box<Compiling>,
+        compiled: Result<Option<String>, String>,
     },
     /// What RingFrame made of the prompt a pane received after Weft's send of
     /// `ask`.
@@ -536,6 +619,16 @@ pub struct Session {
     /// This daemon's own version, held while it runs so it is never removed
     /// from under it.
     _held: Option<crate::versions::Held>,
+    /// What takes a while, told as it goes: made here, kept on the board.
+    jobs: jobs::Jobs,
+    board: jobs::Board,
+}
+
+/// A Send said yes to, while RingFrame records its Ask off the run loop.
+struct Compiling {
+    w: Waiting,
+    into: Option<Elsewhere>,
+    force: bool,
 }
 
 /// What a call answers with. Everything gets one, so a client is never left
@@ -780,6 +873,81 @@ fn workspace_gap(root: &Path) -> Option<String> {
     }
 }
 
+/// RingFrame's steps of a Seal or a receipt check, on its job: checking,
+/// the worktree's files read, writing.
+fn seal_told(job: &jobs::Handle, p: ringframe::api::SealProgress) {
+    use ringframe::api::SealStep;
+    match p.step {
+        SealStep::Checking => job.now(0),
+        SealStep::Files => {
+            job.now(1);
+            job.count(p.done as u64, Some(p.total as u64));
+        }
+        SealStep::Writing => job.now(2),
+    }
+}
+
+/// An update of a row of the Updates view, as a job of the machine's.
+fn update_job(
+    jobs: &jobs::Jobs,
+    asked: Option<(u64, u64)>,
+    row: &str,
+    steps: &[weft_proto::JobStep],
+) -> jobs::Handle {
+    let on = weft_proto::JobOn { harness: Some(row.to_string()), ..Default::default() };
+    let job = jobs.begin("update", on, None, asked, steps.to_vec());
+    job.now(0);
+    job
+}
+
+/// Sense updated in place: from the bundle at `path` when one is named,
+/// else its newest release, downloaded with each file's bytes told; said
+/// as a job. Why it failed, when it did.
+fn update_sense(
+    weft_dir: &Path,
+    out: &dyn crate::outside::Outside,
+    slot: &SenseModelCell,
+    path: &str,
+    (jobs, asked): (&jobs::Jobs, Option<(u64, u64)>),
+) -> Option<String> {
+    use crate::versions::SenseStep;
+    let job = update_job(
+        jobs,
+        asked,
+        "sense",
+        &[
+            jobs::step("step.finding_release", &[], None),
+            jobs::step("step.downloading", &[], Some("bytes")),
+            jobs::step("step.installing", &[], None),
+        ],
+    );
+    let updated = if !path.is_empty() {
+        job.skip(0);
+        job.skip(1);
+        job.now(2);
+        crate::versions::hot_reload_sense(weft_dir, Path::new(path), slot).map(|_| ())
+    } else {
+        match out.sense_release(true) {
+            None => Err(anyhow::anyhow!("could not reach Sense's releases")),
+            Some(latest) if !crate::versions::sense_wanted(weft_dir, Some(&latest)) => Ok(()),
+            Some(latest) => {
+                let told = |s: SenseStep| match s {
+                    SenseStep::Downloading { done, total } => {
+                        job.now(1);
+                        job.count(done, total);
+                    }
+                    SenseStep::Installing => job.now(2),
+                };
+                crate::versions::hot_reload_from_hub(weft_dir, out, slot, &latest, &told)
+                    .map(|_| ())
+            }
+        }
+    };
+    let note = updated.err().map(|e| format!("Sense update failed: {e}"));
+    job.end(note.clone().map_or(Ok(()), Err));
+    note
+}
+
 /// What a client is told when RingFrame would not open an Eval.
 fn eval_refused(e: crate::ringframe::Error) -> Answer {
     ringframe_error(e)
@@ -944,10 +1112,13 @@ impl Session {
         }
         // Weft's receipts are pruned when it starts and once a day after.
         let receipts = crate::receipts::base_of(config);
-        let pruned = receipts.clone();
+        let (pruned, prune_tx) = (receipts.clone(), tx.clone());
         std::thread::spawn(move || {
             loop {
-                crate::receipts::prune(&pruned, crate::turns::now_millis());
+                let removed = crate::receipts::prune(&pruned, crate::turns::now_millis());
+                if !removed.is_empty() && prune_tx.send(Wake::Pruned(removed)).is_err() {
+                    return;
+                }
                 std::thread::sleep(std::time::Duration::from_secs(24 * 60 * 60));
             }
         });
@@ -968,6 +1139,8 @@ impl Session {
         let machine = harnesses.is_none();
         let fetch = machine && fetches_sense(config, &crate::routing::file());
         let (sense_dir, slot, out) = (weft_dir.clone(), sense.clone(), outside.clone());
+        let session_jobs = jobs::Jobs::new(tx.clone());
+        let startup_jobs = session_jobs.clone();
         std::thread::spawn(move || {
             {
                 // A Sense installed meanwhile stays, and none is loaded for nothing.
@@ -983,7 +1156,26 @@ impl Session {
             if let Some(latest) =
                 latest.filter(|l| crate::versions::sense_wanted(&sense_dir, Some(l)))
             {
-                match crate::versions::hot_reload_from_hub(&sense_dir, &*out, &slot, &latest) {
+                let job = update_job(
+                    &startup_jobs,
+                    None,
+                    "sense",
+                    &[
+                        jobs::step("step.downloading", &[], Some("bytes")),
+                        jobs::step("step.installing", &[], None),
+                    ],
+                );
+                let told = |s: crate::versions::SenseStep| match s {
+                    crate::versions::SenseStep::Downloading { done, total } => {
+                        job.now(0);
+                        job.count(done, total);
+                    }
+                    crate::versions::SenseStep::Installing => job.now(1),
+                };
+                let installed =
+                    crate::versions::hot_reload_from_hub(&sense_dir, &*out, &slot, &latest, &told);
+                job.end(installed.as_ref().map(|_| ()).map_err(|e| e.to_string()));
+                match installed {
                     Ok(current) => eprintln!("weft: Sense {} installed", current.version),
                     Err(e) => eprintln!("weft: Sense not installed: {e}"),
                 }
@@ -1016,6 +1208,8 @@ impl Session {
             sense,
             sensed: LastSensed::default(),
             _held: crate::versions::hold_own(),
+            jobs: session_jobs,
+            board: jobs::Board::default(),
         };
         // Older versions nothing runs any more are removed: never this one,
         // nor the one `weft` points at. A daemon not run from a version
@@ -1074,14 +1268,39 @@ impl Session {
                 Wake::Frames => {
                     self.frames();
                     self.sense_what_settled();
+                    for send in self.board.due(std::time::Instant::now()) {
+                        self.clients.send_job(send);
+                    }
+                }
+                Wake::Progress { id, change } => {
+                    if let Some(send) = self.board.apply(&id, change, std::time::Instant::now()) {
+                        self.clients.send_job(send);
+                    }
+                }
+                Wake::Built { client, call_id, project, pane, built, job } => {
+                    let (answer, ended) = match built {
+                        Ok(built) if !self.projects[project].closed => {
+                            (self.stage(project, pane, *built), Ok(()))
+                        }
+                        Ok(_) => (Answer::no_project(), Err("the project closed".into())),
+                        Err(why) => (Answer::No("refused", why.clone()), Err(why)),
+                    };
+                    if let Some(job) = &job {
+                        self.end_job(job, ended);
+                    }
+                    self.clients.send_to(client, &answer.line(call_id));
+                }
+                Wake::Compiled { client, call_id, project, send, compiled } => {
+                    let answer = self.compiled((client, call_id), project, *send, compiled);
+                    self.clients.send_to(client, &answer.line(call_id));
                 }
                 Wake::Exited { project, pane } => {
                     self.clients.broadcast(project, &Out::Exited { pane });
                     self.judge_exited(project, pane);
                 }
-                Wake::Judged { project, eval_id, did } => {
+                Wake::Judged { project, eval_id, did, seen } => {
                     if !self.projects[project].closed {
-                        self.judged(project, &eval_id, did);
+                        self.judged(project, &eval_id, did, seen);
                     }
                 }
                 Wake::Tick => {
@@ -1095,7 +1314,7 @@ impl Session {
                     let open: Vec<usize> =
                         (0..self.projects.len()).filter(|&at| !self.projects[at].closed).collect();
                     for at in open {
-                        self.setup(Viewer::Project(at), "look", "", "");
+                        self.setup(Viewer::Project(at), ("look", "", ""), None);
                     }
                 }
                 Wake::Readiness { project, harness, state } => {
@@ -1122,6 +1341,9 @@ impl Session {
                     }
                 }
                 Wake::Workspace { project, setup, gap } => self.set_up(project, setup, gap),
+                Wake::SkipChecked { project, check, checked, call } => {
+                    self.skip_checked(project, check, *checked, call)
+                }
                 Wake::Answer { client, call_id, answer } => {
                     self.clients.send_to(client, &answer.line(call_id))
                 }
@@ -1132,6 +1354,12 @@ impl Session {
                 Wake::Opened { client, call_id, project, raw, setup, gap } => {
                     self.set_up(project, setup, gap);
                     let answer = if self.clients.watching.get(&client) == Some(&project) {
+                        // Ended sessions are archived as a project opens, and
+                        // what moved is told to the windows already open, so
+                        // the answer holds what they were told.
+                        self.projects[project].ledger.refresh();
+                        self.archive_when_due(project);
+                        self.tell_agents(project);
                         self.clients.opening.remove(&client);
                         self.opened(project, raw)
                     } else {
@@ -1139,16 +1367,23 @@ impl Session {
                     };
                     self.clients.send_to(client, &answer.line(call_id));
                 }
-                Wake::EvalOpened { client, call_id, project, debate, opened } => {
+                Wake::EvalOpened { client, call_id, project, debate, opened, work, job } => {
+                    self.projects[project].opening.remove(&work);
                     if self.projects[project].closed {
+                        job.end(Err("the project closed".into()));
                         continue;
                     }
                     let answer = match opened {
                         Ok(eval_id) => {
-                            self.seat_judges(project, client, &eval_id, &debate.stage);
+                            job.now(3);
+                            self.seat_judges(project, client, &eval_id, &debate.stage, Some(job));
                             Answer::nothing()
                         }
-                        Err(e) => eval_refused(e),
+                        Err(e) => {
+                            let crate::ringframe::Error::Refused { message, .. } = &e;
+                            self.end_job(&job, Err(message.clone()));
+                            eval_refused(e)
+                        }
                     };
                     self.clients.send_to(client, &answer.line(call_id));
                 }
@@ -1157,9 +1392,20 @@ impl Session {
                 Wake::Unheard { harness } => {
                     self.streams.remove(&harness);
                     self.streamed.retain(|(h, _)| *h != harness);
+                    for p in &mut self.projects {
+                        p.index.stale = true;
+                    }
                 }
-                Wake::Typed { project, pane, typed, sends } => {
-                    self.typed(project, pane, typed, sends)
+                Wake::FirstPrompts { project, reader, titles } => {
+                    self.first_prompts_read(project, reader, titles)
+                }
+                Wake::Pruned(removed) => {
+                    for p in &mut self.projects {
+                        p.turns.forget(&removed);
+                    }
+                }
+                Wake::Typed { project, pane, typed, sends, job } => {
+                    self.typed(project, pane, typed, sends, job)
                 }
                 Wake::Received { project, pane, ask, answer, tie } => {
                     self.received(project, pane, &ask, answer, tie)
@@ -1167,6 +1413,14 @@ impl Session {
             }
         }
         Ok(())
+    }
+
+    /// End a job from the run loop, told before the answer that follows it.
+    fn end_job(&mut self, job: &jobs::Handle, result: Result<(), String>) {
+        let now = std::time::Instant::now();
+        if let Some(send) = self.board.apply(&job.id, jobs::Move::End(result), now) {
+            self.clients.send_job(send);
+        }
     }
 
     fn accept(&mut self, stream: UnixStream) {
@@ -1207,7 +1461,7 @@ impl Session {
             return self.stage_stop(at, eval);
         }
         if act == "undo" {
-            return self.offer(at, unit_id, text);
+            return self.offer((client, call_id), at, unit_id, text);
         }
         let root = self.projects[at].root.clone();
         let units = self.projects[at].ledger.units();
@@ -1305,19 +1559,37 @@ impl Session {
                 let title = project.harnesses.find(&harness).map_or(&harness, |h| &h.title).clone();
                 let words = text.unwrap_or_default().to_string();
                 let sensed = sensed_for(&self.sensed, (&harness, &words));
-                let drafted = (draft, sensed);
+                let draft = draft.cloned();
                 let model = Arc::clone(&self.sense);
-                let pick_plan = |w: &str, c: &[(String, String)]| sense_plan(&model, w, c);
+                let on = weft_proto::JobOn {
+                    work: mine.map(|u| u.root.clone()),
+                    pane: Some(pane),
+                    harness: Some(harness.clone()),
+                    ..Default::default()
+                };
+                let steps = ["step.reading_words", "step.choosing_plan", "step.writing_prompt"];
+                let steps = steps.iter().map(|k| jobs::step(k, &[], None)).collect();
+                let job = self.jobs.begin("ask", on, Some(at), Some((client, call_id)), steps);
+                job.now(0);
                 let asked = (harness, words, self.plan_scope(at, pane));
-                let draft =
-                    match ask_draft(&root, over.as_deref(), asked, drafted, link, &pick_plan) {
-                        Ok(draft) => draft,
-                        Err(why) => return Answer::No("refused", why),
+                let tx = self.tx.clone();
+                // Sense and RingFrame read the words off the run loop: the
+                // Ask sheet's Send answers once its dialog is staged.
+                std::thread::spawn(move || {
+                    let pick_plan = |w: &str, c: &[(String, String)]| {
+                        job.now(1);
+                        sense_plan(&model, w, c)
                     };
-                match crate::acts::ask(&root, draft, over.as_deref(), &title) {
-                    Ok(built) => (built, pane),
-                    Err(why) => return Answer::No("refused", why),
-                }
+                    let drafted = (draft.as_ref(), sensed);
+                    let built = ask_draft(&root, over.as_deref(), asked, drafted, link, &pick_plan)
+                        .and_then(|draft| {
+                            job.now(2);
+                            crate::acts::ask(&root, draft, over.as_deref(), &title).map(Box::new)
+                        });
+                    let (project, job) = (at, Some(job));
+                    let _ = tx.send(Wake::Built { client, call_id, project, pane, built, job });
+                });
+                return Answer::Later;
             }
             "send" => {
                 let Some(unit) = unit else {
@@ -1377,34 +1649,64 @@ impl Session {
                     let judged_by = eval.as_deref().and_then(|e| {
                         record.evals.iter().find(|v| v.id == e).and_then(|v| v.judged_by.clone())
                     });
+                    let on = weft_proto::JobOn {
+                        work: mine.map(|u| u.root.clone()),
+                        eval: eval.clone(),
+                        ..Default::default()
+                    };
+                    let steps = vec![
+                        jobs::step("step.checking_work", &[], None),
+                        jobs::step("step.reading_files_now", &[], Some("files")),
+                        jobs::step("step.writing_decision", &[], None),
+                        jobs::step("step.noting_git", &[], None),
+                    ];
+                    let job = self.jobs.begin("seal", on, Some(at), Some((client, call_id)), steps);
+                    if !export.git_note {
+                        job.skip(3);
+                    }
+                    job.now(0);
                     std::thread::spawn(move || {
                         let sealed = crate::ringframe::seal(
                             &root,
                             &disposition,
-                            eval.as_deref(),
-                            reason.as_deref(),
-                            answers.as_deref(),
+                            (eval.as_deref(), reason.as_deref(), answers.as_deref()),
+                            &|p| seal_told(&job, p),
                         );
                         let answer = match sealed {
                             Ok(receipt) => {
                                 let by = judged_by.as_deref();
+                                if export.git_note {
+                                    job.now(3);
+                                }
                                 if let Err(e) = crate::export::seal(&root, &receipt, export, by) {
                                     eprintln!(
                                         "weft: the Seal's record was not written to Git: {e}"
                                     );
                                 }
+                                job.end(Ok(()));
                                 Answer::Ok(serde_json::json!({"receipt": receipt}))
                             }
-                            Err(e) => ringframe_error(e),
+                            Err(e) => {
+                                let crate::ringframe::Error::Refused { message, .. } = &e;
+                                job.end(Err(message.clone()));
+                                ringframe_error(e)
+                            }
                         };
                         let _ = tx.send(Wake::Answer { client, call_id, answer });
                     });
                     return Answer::Later;
                 }
-                let debate = weft_core::eval_stages::resolve(
-                    project.routing.eval_stages.as_ref(),
-                    project.routing.get("eval"),
-                    &unit.harness,
+                // The harness the person picked in the Eval dialog, when one.
+                if let Some(h) = start.filter(|h| project.harnesses.find(h).is_none()) {
+                    return Answer::No("no_harness", format!("{h} is not set up here"));
+                }
+                let debate = weft_core::eval_stages::picked(
+                    weft_core::eval_stages::resolve(
+                        project.routing.eval_stages.as_ref(),
+                        project.routing.get("eval"),
+                        &unit.harness,
+                    ),
+                    start,
                 );
                 // The unit's own open Eval is debated again; one opened over
                 // other work too is left, and RingFrame opens the unit's.
@@ -1415,8 +1717,13 @@ impl Session {
                     .map(|g| g.eval_id.clone());
                 let (title, asks) =
                     mine.map_or((unit.title.clone(), 1), |u| (root_of(u).title, u.asks.len()));
+                // Pressed again: an earlier Eval of it that could not open
+                // is said no more.
+                if let Some(u) = mine {
+                    self.board.forget_failed_open(at, &u.root);
+                }
                 let debate = crate::acts::Debate { unit, stage: debate, open };
-                return self.stage_eval(at, debate, &title, asks);
+                return self.stage_eval((client, call_id), at, debate, (&title, asks));
             }
             other => return Answer::No("unknown_act", format!("there is no act {other}")),
         };
@@ -1428,10 +1735,10 @@ impl Session {
     /// no pane: its judges are sessions of their own.
     fn stage_eval(
         &mut self,
+        (client, call_id): (u64, u64),
         at: usize,
         debate: crate::acts::Debate,
-        title: &str,
-        asks: usize,
+        (title, asks): (&str, usize),
     ) -> Answer {
         // Every role's harness needs its harness file, or its judges cannot start.
         let mut titles = Vec::new();
@@ -1444,8 +1751,34 @@ impl Session {
             };
             titles.push(h.title.clone());
         }
-        let built = crate::acts::eval(debate, title, asks, &titles.join(" + "));
-        self.stage(at, NO_PANE, built)
+        // What it would read, and which files it should skip, are asked of
+        // RingFrame off the run loop; the dialog is staged with them, and
+        // the project's own findings are kept as any check's.
+        let (root, tx, judges) =
+            (self.projects[at].root.clone(), self.tx.clone(), titles.join(" + "));
+        let title = title.to_string();
+        let check = self.projects[at].skip.begin();
+        std::thread::spawn(move || {
+            let ask = debate.unit.ask_id.clone();
+            let mut checked = crate::reads::check(&root, std::slice::from_ref(&ask));
+            let (preview, work) = checked.works.pop().map(|(_, p, w)| (p, w)).unwrap_or_default();
+            let reads = crate::reads::EvalReads::new(&ask, preview, work);
+            let mut built = crate::acts::eval(debate, &title, asks, &judges);
+            built.payload = reads.payload();
+            built.reads = Some(Box::new(reads));
+            let checked = Box::new(checked);
+            let _ = tx.send(Wake::SkipChecked { project: at, check, checked, call: None });
+            let (project, pane, job) = (at, NO_PANE, None);
+            let _ = tx.send(Wake::Built {
+                client,
+                call_id,
+                project,
+                pane,
+                built: Ok(Box::new(built)),
+                job,
+            });
+        });
+        Answer::Later
     }
 
     /// The person said yes to an Eval: open it through RingFrame, off the run
@@ -1457,9 +1790,30 @@ impl Session {
         debate: crate::acts::Debate,
     ) -> Answer {
         if let Some(eval_id) = debate.open.clone() {
-            self.seat_judges(at, client, &eval_id, &debate.stage);
+            self.seat_judges(at, client, &eval_id, &debate.stage, None);
             return Answer::nothing();
         }
+        let work = debate.unit.ask_id.clone();
+        if !self.projects[at].opening.insert(work.clone()) {
+            return Answer::No("opening", "This work's Eval is already opening".into());
+        }
+        let root_ask = self.root_of(at, &work);
+        self.board.forget_failed_open(at, &root_ask);
+        let reader = debate.stage.harness_of("read").to_string();
+        let on = weft_proto::JobOn {
+            work: Some(root_ask),
+            ask: Some(work.clone()),
+            harness: Some(reader.clone()),
+            ..Default::default()
+        };
+        let steps = vec![
+            jobs::step("step.reading_change", &[], Some("files")),
+            jobs::step("step.dividing", &[], None),
+            jobs::step("step.preparing_readers", &[], None),
+            jobs::step("step.starting_readers", &[("harness", &reader)], Some("readers")),
+        ];
+        let job = self.jobs.begin("eval_open", on, Some(at), Some((client, call_id)), steps);
+        job.now(0);
         let project = &self.projects[at];
         let stage = weft_core::eval_stages::agents(&debate.stage);
         let (root, over, tx) = (project.root.clone(), project.ringframe.clone(), self.tx.clone());
@@ -1475,17 +1829,56 @@ impl Session {
                     Some(serde_json::json!({"session": session, "text": text}))
                 })
                 .collect();
-            let opened = crate::ringframe::eval_open(
-                &root,
-                &debate.unit.ask_id,
-                stage.as_ref(),
-                over.as_deref(),
-                statements,
-            );
+            // Each of RingFrame's steps, and the files of the change read.
+            let told = |p: ringframe::api::OpenProgress| {
+                use ringframe::api::OpenStep;
+                match p.step {
+                    OpenStep::Changes => {
+                        job.now(0);
+                        if p.total > 0 {
+                            job.count(p.done as u64, Some(p.total as u64));
+                            if p.untracked > 0 {
+                                job.arg("new", p.untracked.to_string());
+                            }
+                        }
+                    }
+                    OpenStep::Windows => job.now(1),
+                    OpenStep::Brief => job.now(2),
+                }
+            };
+            // RingFrame runs in this thread: should it panic, the open still
+            // ends, so the work is no longer shown opening anywhere.
+            let opened = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                crate::ringframe::eval_open(
+                    &root,
+                    &debate.unit.ask_id,
+                    stage.as_ref(),
+                    over.as_deref(),
+                    statements,
+                    &told,
+                )
+            }))
+            .unwrap_or_else(|_| {
+                Err(crate::ringframe::Error::Refused {
+                    code: 1,
+                    message: "RingFrame stopped while opening this Eval".into(),
+                })
+            });
             let debate = Box::new(debate);
-            let _ = tx.send(Wake::EvalOpened { client, call_id, project: at, debate, opened });
+            let project = at;
+            let _ =
+                tx.send(Wake::EvalOpened { client, call_id, project, debate, opened, work, job });
         });
         Answer::Later
+    }
+
+    /// The root Ask of the work an Ask is in; the Ask itself when the board
+    /// has no work for it.
+    fn root_of(&self, at: usize, ask: &str) -> String {
+        let p = &self.projects[at];
+        let units = p.ledger.units();
+        let work = weft_core::work::work(&units, &p.ledger.record());
+        work.of_ask(ask).map_or_else(|| ask.to_string(), |u| u.root.clone())
     }
 
     /// Each session one of the unit's open Asks arrived in, once, with its
@@ -1534,7 +1927,7 @@ impl Session {
             let answer = match crate::ringframe::eval_void(&root, &eval_id, "stopped in Weft") {
                 Ok(()) => {
                     let did = vec![judges::Did::Done];
-                    let _ = tx.send(Wake::Judged { project: at, eval_id, did });
+                    let _ = tx.send(Wake::Judged { project: at, eval_id, did, seen: None });
                     Answer::nothing()
                 }
                 Err(e) => ringframe_error(e),
@@ -1738,11 +2131,26 @@ impl Session {
             // Checking a receipt recomputes its subject: off the run loop.
             "seal" => {
                 let (tx, unit) = (self.tx.clone(), unit.to_string());
+                let on = weft_proto::JobOn { seal: Some(unit.clone()), ..Default::default() };
+                let steps = vec![
+                    jobs::step("step.checking_work", &[], None),
+                    jobs::step("step.reading_files_now", &[], Some("files")),
+                ];
+                let job =
+                    self.jobs.begin("seal_check", on, Some(at), Some((client, call_id)), steps);
+                job.now(0);
                 std::thread::spawn(move || {
-                    let answer = match crate::ringframe::seal_checked(&root, &unit) {
-                        Ok(v) => Answer::Ok(v),
-                        Err(e) => {
-                            Answer::No("refused", format!("RingFrame would not check it: {e:?}"))
+                    let checked =
+                        crate::ringframe::seal_checked(&root, &unit, &|p| seal_told(&job, p));
+                    let answer = match checked {
+                        Ok(v) => {
+                            job.end(Ok(()));
+                            Answer::Ok(v)
+                        }
+                        // RingFrame's own words for why, as the person reads them.
+                        Err(crate::ringframe::Error::Refused { message, .. }) => {
+                            job.end(Err(message.clone()));
+                            Answer::No("refused", message)
                         }
                     };
                     let _ = tx.send(Wake::Answer { client, call_id, answer });
@@ -1759,7 +2167,14 @@ impl Session {
     /// harness by title). Off the run loop: asking a harness costs processes,
     /// and its commands can take a minute. Every change goes to the clients as
     /// `Event::Setup`, and each harness's readiness is told as it is asked.
-    fn setup(&mut self, to: Viewer, act: &str, harness: &str, path: &str) -> Answer {
+    /// A client's call is answered once it is all done, so the client knows
+    /// while it runs; one Weft asks of itself is answered by no one.
+    fn setup(
+        &mut self,
+        to: Viewer,
+        (act, harness, path): (&str, &str, &str),
+        asked: Option<(u64, u64)>,
+    ) -> Answer {
         let tx = self.tx.clone();
         let config_path = self.config.clone();
         let sense_slot = Arc::clone(&self.sense);
@@ -1770,6 +2185,7 @@ impl Session {
         let (act, harness, path) = (act.to_string(), harness.to_string(), path.to_string());
         let out = self.outside.clone();
         let waits = self.update.as_ref().map(|u| u.version.clone());
+        let jobs = self.jobs.clone();
         if !matches!(act.as_str(), "look" | "locate" | "run" | "all" | "sense") {
             return Answer::No("unknown_act", format!("the RingFrame view has no {act}"));
         }
@@ -1784,7 +2200,7 @@ impl Session {
             );
         }
         std::thread::spawn(move || {
-            use crate::onboarding::{look, look_as_they_answer, pending, proceed, run, runs, with};
+            use crate::onboarding::{look, look_as_they_answer, pending, run, runs, with};
             let weft_dir = config_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
             let show = |v: &weft_core::onboarding::View| {
                 let view = serde_json::to_value(v).unwrap_or_default();
@@ -1826,80 +2242,45 @@ impl Session {
                     Err(e) => note = Some(e),
                 },
                 "sense" => {
-                    if !path.is_empty() {
-                        if let Err(e) = crate::versions::hot_reload_sense(
-                            &weft_dir,
-                            Path::new(&path),
-                            &sense_slot,
-                        ) {
-                            note = Some(format!("Sense update failed: {e}"));
-                        }
-                    } else {
-                        let step = vec![weft_core::sync::Step::new("weft", &["update", "--sense"])];
-                        if let Some(weft_core::onboarding::State::Failed { step, said }) =
-                            proceed(out, step, |_| {})
-                        {
-                            note = Some(format!("{step} failed: {said}"));
-                        } else {
-                            crate::versions::load_into(&weft_dir, &sense_slot);
-                        }
-                    }
+                    note = update_sense(&weft_dir, out, &sense_slot, &path, (&jobs, asked));
                 }
                 "run" | "all" => {
                     if act == "run" && harness == "sense" {
-                        if !path.is_empty() {
-                            if let Err(e) = crate::versions::hot_reload_sense(
-                                &weft_dir,
-                                Path::new(&path),
-                                &sense_slot,
-                            ) {
-                                note = Some(format!("Sense update failed: {e}"));
-                            }
-                        } else {
-                            let step =
-                                vec![weft_core::sync::Step::new("weft", &["update", "--sense"])];
-                            if let Some(weft_core::onboarding::State::Failed { step, said }) =
-                                proceed(out, step, |_| {})
-                            {
-                                note = Some(format!("{step} failed: {said}"));
-                            } else {
-                                crate::versions::load_into(&weft_dir, &sense_slot);
-                            }
-                        }
+                        note = update_sense(&weft_dir, out, &sense_slot, &path, (&jobs, asked));
                     } else {
                         // Weft is the person's to update, as they installed it.
                         let (base, _) = look(out, &harnesses, &check, &weft);
                         let sync_it = (act == "all" && base.configuration_behind)
                             || (act == "run" && harness == "ringframe");
                         if sync_it {
-                            if let Err(said) = out.sync() {
+                            let job = update_job(
+                                &jobs,
+                                asked,
+                                "ringframe",
+                                &[
+                                    jobs::step("step.finding_release", &[], None),
+                                    jobs::step("step.downloading", &[], None),
+                                    jobs::step("step.installing", &[], None),
+                                ],
+                            );
+                            let synced = out.sync(&|step| {
+                                use ringframe::api::SyncStep;
+                                job.now(match step {
+                                    SyncStep::Finding => 0,
+                                    SyncStep::Downloading => 1,
+                                    SyncStep::Installing => 2,
+                                })
+                            });
+                            if let Err(said) = &synced {
                                 note = Some(format!("ringframe sync failed: {said}"));
                             }
+                            job.end(synced);
                             check = out.release(true);
                         }
                         let (base, _) = look(out, &harnesses, &check, &weft);
                         if act == "all" && base.sense_behind {
-                            if !path.is_empty() {
-                                if let Err(e) = crate::versions::hot_reload_sense(
-                                    &weft_dir,
-                                    Path::new(&path),
-                                    &sense_slot,
-                                ) {
-                                    note = Some(format!("Sense update failed: {e}"));
-                                }
-                            } else {
-                                let step = vec![weft_core::sync::Step::new(
-                                    "weft",
-                                    &["update", "--sense"],
-                                )];
-                                if let Some(weft_core::onboarding::State::Failed { step, said }) =
-                                    proceed(out, step, |_| {})
-                                {
-                                    note = Some(format!("{step} failed: {said}"));
-                                } else {
-                                    crate::versions::load_into(&weft_dir, &sense_slot);
-                                }
-                            }
+                            note = update_sense(&weft_dir, out, &sense_slot, &path, (&jobs, asked))
+                                .or(note);
                         }
                         let (base, _) = look(out, &harnesses, &check, &weft);
                         let todo: Vec<String> = base
@@ -1911,12 +2292,29 @@ impl Session {
                         for name in todo {
                             let h = harnesses.find(&name).cloned().expect("a row is a harness");
                             let latest = base.plugin.clone();
-                            if let Some(state) = run(out, &h, latest.as_deref(), |state| {
+                            let step =
+                                jobs::step("step.running", &[("command", "")], Some("steps"));
+                            let job = update_job(&jobs, asked, &name, &[step]);
+                            let ran = run(out, &h, latest.as_deref(), |state, (i, n)| {
+                                if let weft_core::onboarding::State::Running(line) = &state {
+                                    job.now(0);
+                                    job.arg("command", line.clone());
+                                    job.count(i as u64, Some(n as u64));
+                                }
                                 show(&with(base.clone(), &name, state));
-                            }) {
+                            });
+                            if let Some(state) = ran {
+                                let why = match &state {
+                                    weft_core::onboarding::State::Failed { said, .. } => {
+                                        said.clone()
+                                    }
+                                    _ => String::new(),
+                                };
+                                job.end(Err(why));
                                 failed = Some((name, state));
                                 break;
                             }
+                            job.end(Ok(()));
                         }
                     }
                 }
@@ -1946,8 +2344,11 @@ impl Session {
                 }
             }
             show(&v);
+            if let Some((client, call_id)) = asked {
+                let _ = tx.send(Wake::Answer { client, call_id, answer: Answer::nothing() });
+            }
         });
-        Answer::nothing()
+        if asked.is_some() { Answer::Later } else { Answer::nothing() }
     }
 
     /// Ask one harness what it has, off the run loop.
@@ -2004,18 +2405,9 @@ impl Session {
                 let board = self.board_of(at);
                 self.clients.broadcast(at, &board);
             }
+            self.archive_when_due(at);
             self.tell_agents(at);
-        }
-    }
-
-    /// Tell a project's clients each agent's state, when it moved.
-    fn tell_agents(&mut self, at: usize) {
-        let agents = self.agents_of(at);
-        if self.projects[at].agents.as_ref() != Some(&agents) {
-            self.projects[at].agents = Some(agents.clone());
-            let (panes, sessions) = agents;
-            let zone = crate::turns::zone();
-            self.clients.broadcast(at, &Out::Agents { panes, sessions, zone });
+            self.read_first_prompts(at);
         }
     }
 
@@ -2252,6 +2644,7 @@ impl Session {
             }
             self.clients.watching.remove(&c);
         }
+        self.board.forget_project(at);
         self.write_projects();
     }
 
@@ -2271,6 +2664,9 @@ impl Session {
             }
             None => {
                 let ledger = crate::ledger::Ledger::at(&root);
+                // Every receipt read once, now: weftd writes the rest.
+                let turns =
+                    crate::turns::Turns::load(&crate::receipts::project_dir(&self.receipts, &root));
                 let (harnesses, unread) = self.harness_files_read();
                 let config = crate::routing::read_at(&self.config, &harnesses);
                 let judged = judges::sessions(&root);
@@ -2299,12 +2695,15 @@ impl Session {
                     starting: Vec::new(),
                     due: Vec::new(),
                     benches: Vec::new(),
+                    opening: Default::default(),
                     judged,
                     unseated,
-                    turns: crate::turns::Turns::default(),
+                    turns,
                     harnesses,
                     unread,
-                    agents: None,
+                    index: Default::default(),
+                    told: Default::default(),
+                    archived: None,
                     gone: Default::default(),
                     // Set up for RingFrame on the way in, when it can be,
                     // off the run loop: the person is not asked, and the tree
@@ -2315,6 +2714,7 @@ impl Session {
                     asking: false,
                     closed: false,
                     reopened: None,
+                    skip: Default::default(),
                 });
                 let at = self.projects.len() - 1;
                 // A map a daemon before this one left names panes that are gone.
@@ -2330,7 +2730,8 @@ impl Session {
         self.projects[at].ledger.refresh();
         let Out::Units { units, records, work } = self.board_of(at) else { unreachable!() };
         let panes = self.pane_infos(at);
-        let (agent_panes, sessions) = self.agents_of(at);
+        let told = &self.projects[at].told;
+        let (agent_panes, sessions, earlier) = (told.panes(), &told.shown, told.earlier);
         // Everything comes back in the answer — the board, the panes,
         // and each pane's screen with its history — rather than as
         // events sent before it. A client that waits for its answer
@@ -2376,8 +2777,11 @@ impl Session {
                 })
                 .collect::<Vec<_>>(),
             "readiness": readiness_json(&self.projects[at].readiness),
+            // Which files an Eval here should skip, as last found; a
+            // `skip` event follows once the check this open began is done.
+            "skip": self.projects[at].skip.shown(),
             "routing": routing_json(&self.projects[at].routing),
-            "agents": {"panes": agent_panes, "sessions": sessions,
+            "agents": {"panes": agent_panes, "sessions": sessions, "earlier": earlier,
                        "zone": crate::turns::zone()},
             "notify": self.projects[at].notify,
             "turbo": self.projects[at].turbo,
@@ -2391,6 +2795,8 @@ impl Session {
             "gap": self.projects[at].gap,
             // What it still needs before RingFrame is set up in it.
             "setup": self.projects[at].setup,
+            // What takes a while here and on the machine, as `progress` says.
+            "jobs": self.board.of(at, std::time::Instant::now()),
         }))
     }
 
@@ -2402,7 +2808,11 @@ impl Session {
             Call::Hello { client: name, protocol } => {
                 self.clients.names.insert(client, name);
                 return Ok(if protocol == PROTOCOL {
-                    Answer::Ok(serde_json::json!({"protocol": PROTOCOL}))
+                    Answer::Ok(serde_json::json!({
+                        "protocol": PROTOCOL,
+                        "name": self.machine_name(),
+                        "system_name": crate::machine::system_name(),
+                    }))
                 } else {
                     Answer::No(
                         "protocol",
@@ -2436,6 +2846,9 @@ impl Session {
                 // Read now, so a call the window makes before its answer
                 // sees the record.
                 self.projects[at].ledger.refresh();
+                // Which files an Eval here should skip, asked off the run
+                // loop: clients are told once it is known.
+                self.check_skip_on_open(at);
                 self.resume_judges(at, client);
                 self.clients.opening.insert(client);
                 // RingFrame is asked, off the run loop, whether it is set up
@@ -2529,6 +2942,8 @@ impl Session {
                     stop: None,
                     go: None,
                     hidden: false,
+                    job: None,
+                    reads: None,
                 });
                 self.clients.broadcast(at, &message);
                 return Ok(Answer::Ok(serde_json::json!({"pending": id})));
@@ -2545,7 +2960,7 @@ impl Session {
                 };
                 return Ok(self.act((client, call_id), at, &act, on));
             }
-            Call::Read { what, unit, pane, lines, before, after } => {
+            Call::Read { what, unit, pane, lines, before, after, q } => {
                 let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
                 if what == "history" {
                     let lines = lines.map_or(HISTORY_MAX, |n| n as usize).min(HISTORY_MAX);
@@ -2559,12 +2974,15 @@ impl Session {
                 if what == "conversation" {
                     return Ok(self.conversation(at, pane, before, after));
                 }
+                if what == "sessions" {
+                    return Ok(self.earlier_sessions(at, after.as_deref(), q.as_deref()));
+                }
                 return Ok(self.read(client, call_id, (at, pane), &what, &unit));
             }
             Call::Setup { act, harness, path } => {
                 // What is installed is the machine's: no project is needed.
                 let to = self.project_of(client).map_or(Viewer::Client(client), Viewer::Project);
-                return Ok(self.setup(to, &act, &harness, &path));
+                return Ok(self.setup(to, (&act, &harness, &path), Some((client, call_id))));
             }
             Call::Available => {
                 let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
@@ -2599,6 +3017,19 @@ impl Session {
                     },
                 );
             }
+            Call::SkipCheck => {
+                let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
+                self.check_skip(at, Some((client, call_id)));
+                return Ok(Answer::Later);
+            }
+            Call::SkipAdd { file, line } => {
+                let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
+                return Ok(self.add_skip_line(
+                    (client, call_id),
+                    at,
+                    weft_core::skip::Fix { file, line },
+                ));
+            }
             Call::ConfigGet => {
                 let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
                 return Ok(Answer::Ok(self.config_json(at)));
@@ -2612,6 +3043,7 @@ impl Session {
                     return Ok(Answer::No("not_remote", "only weft remote has a view".into()));
                 }
                 self.clients.remote = Some((client, view.clone()));
+                self.remote_moved(&view);
                 self.clients.broadcast_all(&Out::Remote { view });
                 // Turned off before it first spoke: it was told nothing then.
                 if !self.remote_wanted() {
@@ -2623,7 +3055,7 @@ impl Session {
                 return Ok(self.turn_start_at_login(on, &program, &path));
             }
             Call::Remote { act } if matches!(act["act"].as_str(), Some("on" | "off")) => {
-                return Ok(self.turn_remote(act["act"] == "on"));
+                return Ok(self.turn_remote(act["act"] == "on", (client, call_id)));
             }
             Call::Remote { act } => {
                 let to = self.clients.remote.as_ref().map(|(c, _)| *c);
@@ -2692,8 +3124,9 @@ impl Session {
                 if let Some(eval_id) = w.stop.take() {
                     return Ok(self.stop_eval((client, call_id), at, eval_id));
                 }
+                w.job = Some(self.send_job(client, call_id, at, &w, into.as_ref(), typed_into));
                 // Send is the confirmation: the Ask is compiled as it was
-                // shown, and its prompt is what is typed.
+                // shown, off the run loop, and its prompt is what is typed.
                 if let Some(mut draft) = w.compile.take() {
                     // The session it is typed into, so the agent's own act on
                     // it is matched to it; a new agent has none yet.
@@ -2701,38 +3134,20 @@ impl Session {
                     draft.session =
                         slot.and_then(|s| s.map.session.as_ref()).map(|b| b.session.clone());
                     let over = self.projects[at].ringframe.clone();
-                    match crate::ringframe::compile(&root, &draft, over.as_deref()) {
-                        Ok(ask_id) => {
-                            w.sends = Some(ask_id);
-                            // Counted off the send: what the person kept teaches Sense.
-                            let (model, root) = (Arc::clone(&self.sense), root.clone());
-                            let weft_dir = self.weft_dir();
-                            std::thread::spawn(move || {
-                                crate::memory::after_compile(&model, &weft_dir, &root)
-                            });
-                        }
-                        Err(crate::ringframe::Error::Refused { message, .. }) => {
-                            let why = format!(
-                                "RingFrame would not record it: {message}. Nothing was typed."
-                            );
-                            return Ok(Answer::No("not_recorded", why));
-                        }
-                    }
+                    let tx = self.tx.clone();
+                    let send = Box::new(Compiling { w, into, force });
+                    std::thread::spawn(move || {
+                        let compiled = crate::ringframe::compile(&root, &draft, over.as_deref())
+                            .map(Some)
+                            .map_err(|crate::ringframe::Error::Refused { message, .. }| message);
+                        let project = at;
+                        let _ =
+                            tx.send(Wake::Compiled { client, call_id, project, send, compiled });
+                    });
+                    return Ok(Answer::Later);
                 }
-                if let Some(into) = into {
-                    let pane = match into.to {
-                        Into::Pane(pane) => pane,
-                        Into::Start(harness) => match self.start_for(client, at, &harness) {
-                            Some(pane) => pane,
-                            None => {
-                                let why = format!("Weft could not start {harness}");
-                                return Ok(Answer::No("no_pane", why));
-                            }
-                        },
-                    };
-                    (w.pane, w.payload, w.how) = (pane, into.built.payload, into.built.how);
-                }
-                self.type_it(at, w, force);
+                let send = Compiling { w, into, force };
+                return Ok(self.compiled((client, call_id), at, send, Ok(None)));
             }
             // A client leaving is not the session ending. That is the point.
             // What it is done with is when its connection ends (`left`).
@@ -2838,14 +3253,21 @@ mod tests {
         call(3, run("weft"));
         call(4, run("ringframe"));
 
-        let (mut refused, mut synced) = (None, false);
-        while std::time::Instant::now() < deadline && (refused.is_none() || !synced) {
+        // RingFrame's step is answered only once it has ended: after the view
+        // that says what the sync came to, and nothing of it after.
+        let (mut refused, mut synced, mut answered) = (None, false, None);
+        let mut after = 0;
+        while std::time::Instant::now() < deadline && (refused.is_none() || answered.is_none()) {
             match reader.next() {
                 Ok(Some(Line::Error { id: 3, code, .. })) => refused = Some(code),
-                Ok(Some(Line::Event(Out::Setup { view })))
-                    if view["note"].as_str().is_some_and(|n| n.contains("the sync ran")) =>
-                {
-                    synced = true;
+                Ok(Some(Line::Result { id: 4, .. })) => answered = Some(synced),
+                Ok(Some(Line::Event(Out::Setup { view }))) => {
+                    if answered.is_some() {
+                        after += 1;
+                    }
+                    if view["note"].as_str().is_some_and(|n| n.contains("the sync ran")) {
+                        synced = true;
+                    }
                 }
                 Ok(None) => break,
                 _ => {}
@@ -2853,6 +3275,87 @@ mod tests {
         }
         assert_eq!(refused.as_deref(), Some("unknown_harness"), "Weft's row has no act");
         assert!(synced, "RingFrame's row ran its configuration sync");
+        assert_eq!(answered, Some(true), "answered once the sync had ended, not when asked");
+        assert_eq!(after, 0, "nothing of the step comes after its answer");
+        let _ = UnixStream::connect(&sock).map(|mut s| {
+            weft_proto::send(&mut s, &Line::Call { id: 1, call: Call::Shutdown }.encode())
+        });
+    }
+
+    /// The machine's name is the system's until set; set, every answer says
+    /// it, and emptied or set to the system's own again, the file forgets it.
+    #[test]
+    fn the_machine_s_name_is_the_system_s_until_set_and_kept_only_while_it_differs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (weft_dir, proj_dir) = (tmp.path().join("weft"), tmp.path().join("proj"));
+        std::fs::create_dir_all(&weft_dir).unwrap();
+        std::fs::create_dir_all(&proj_dir).unwrap();
+        let (sock, cfg) = (weft_dir.join("weft.sock"), weft_dir.join("config.toml"));
+        std::fs::write(&cfg, "").unwrap();
+        let world = crate::outside::Fixed::new()
+            .with_release(Err("no release in this world".into()))
+            .shared();
+        let harnesses = weft_core::harness::fixture::harnesses();
+        let (sock_srv, cfg_srv) = (sock.clone(), cfg.clone());
+        std::thread::spawn(move || {
+            let _ = Session::serve_in(&sock_srv, &cfg_srv, Some(harnesses), world);
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !weft_proto::is_live(&sock) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let stream = UnixStream::connect(&sock).unwrap();
+        let mut reader = Lines::new(stream.try_clone().unwrap());
+        let mut writer = stream;
+        let mut ask = |id: u64, call: Call| {
+            weft_proto::send(&mut writer, &Line::Call { id, call }.encode()).unwrap();
+            loop {
+                match reader.next() {
+                    Ok(Some(Line::Result { id: got, result })) if got == id => return Ok(result),
+                    Ok(Some(Line::Error { id: got, message, .. })) if got == id => {
+                        return Err(message);
+                    }
+                    Ok(Some(_)) => {}
+                    other => panic!("no answer to {id}: {other:?}"),
+                }
+            }
+        };
+        let system = crate::machine::system_name();
+        let hello = ask(1, Call::Hello { client: "test".into(), protocol: PROTOCOL }).unwrap();
+        assert_eq!(
+            (hello["name"].as_str(), hello["system_name"].as_str()),
+            (Some(&*system), Some(&*system))
+        );
+        let path = proj_dir.display().to_string();
+        ask(2, Call::Open { path, rows: 24, cols: 80, raw: true }).unwrap();
+        let set = |value: Option<serde_json::Value>| Call::ConfigSet {
+            scope: "machine".into(),
+            key: vec!["name".into()],
+            value,
+        };
+
+        let said = ask(3, set(Some(serde_json::json!("  Studio  ")))).unwrap();
+        assert_eq!(said["effective"]["name"], "Studio");
+        assert!(std::fs::read_to_string(&cfg).unwrap().contains("name = \"Studio\""));
+        let hello = ask(4, Call::Hello { client: "test".into(), protocol: PROTOCOL }).unwrap();
+        assert_eq!(hello["name"], "Studio", "{hello}");
+
+        for (id, value) in [(5, serde_json::json!("")), (7, serde_json::json!(system))] {
+            ask(id, set(Some(serde_json::json!("Studio")))).unwrap();
+            let said = ask(id + 1, set(Some(value))).unwrap();
+            assert_eq!(said["effective"]["name"], system.as_str());
+            assert!(!std::fs::read_to_string(&cfg).unwrap().contains("name"), "the key went");
+        }
+        let refused = ask(
+            9,
+            Call::ConfigSet {
+                scope: "project".into(),
+                key: vec!["name".into()],
+                value: Some(serde_json::json!("Mine")),
+            },
+        );
+        assert!(refused.is_err(), "the name is the machine's");
+        assert!(ask(10, set(Some(serde_json::json!(7)))).is_err(), "a name is words");
         let _ = UnixStream::connect(&sock).map(|mut s| {
             weft_proto::send(&mut s, &Line::Call { id: 1, call: Call::Shutdown }.encode())
         });
@@ -3079,6 +3582,7 @@ mod tests {
                         lines: Some(50),
                         before: None,
                         after: None,
+                        q: None,
                     },
                 }
                 .encode(),
@@ -3497,6 +4001,7 @@ mod tests {
             lines: None,
             before: None,
             after: None,
+            q: None,
         };
         // Sense loads in the background once weftd starts.
         let started = std::time::Instant::now();
@@ -3583,6 +4088,7 @@ mod tests {
             lines: None,
             before: None,
             after: None,
+            q: None,
         };
         assert_eq!(call(read(pane))["scope"], serde_json::Value::Null, "at the root");
         let sent = weft_core::signal::Sent {

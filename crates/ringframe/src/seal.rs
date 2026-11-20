@@ -117,6 +117,26 @@ pub fn create(
     create_with(ws, disposition, eval_id, reason, note, actor, None)
 }
 
+/// What sealing, or checking a receipt, is doing, in order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SealStep {
+    /// Reading the open work and the Eval it records, or the receipt.
+    Checking,
+    /// Reading every file of the worktree as it is now.
+    Files,
+    /// Writing the receipt.
+    Writing,
+}
+
+/// How far a Seal or a receipt check is: its step, and while the worktree is
+/// read, how many of its files are (`done` of `total`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SealProgress {
+    pub step: SealStep,
+    pub done: usize,
+    pub total: usize,
+}
+
 /// `create`, with the person's answers to the Eval's questions
 /// (`{"answers": [{question, answer, words, ms}]}`): each question becomes a
 /// decision, `not_sure` where it has no answer. The disposition and reason
@@ -130,6 +150,19 @@ pub fn create_with(
     actor: Option<&Value>,
     answers: Option<&Value>,
 ) -> Result<Value, SealError> {
+    create_told(ws, (disposition, eval_id, reason, note), actor, answers, &|_| {})
+}
+
+/// `create_with`, telling `progress` each step as it starts, and while the
+/// worktree is read, how many of its files are.
+pub fn create_told(
+    ws: &Workspace,
+    (disposition, eval_id, reason, note): (&str, Option<&str>, Option<&str>, Option<&str>),
+    actor: Option<&Value>,
+    answers: Option<&Value>,
+    progress: &dyn Fn(SealProgress),
+) -> Result<Value, SealError> {
+    progress(SealProgress { step: SealStep::Checking, done: 0, total: 0 });
     if !DISPOSITIONS.contains(&disposition) {
         return Err(ledger(
             "seal.disposition",
@@ -159,14 +192,6 @@ pub fn create_with(
     if ask_ids.is_empty() {
         codes.push("seal.no_open_ask".into());
     }
-    // Not a Git repository: the receipt still records the decision.
-    let subject = match evaluate::default_subject(ws) {
-        Ok((kind, reference)) => match evaluate::subject_digest(ws, &kind, &reference) {
-            Ok(sha) => json!({"kind": kind, "ref": reference, "sha256": sha}),
-            Err(_) => json!({"kind": null, "ref": null, "sha256": null}),
-        },
-        Err(_) => json!({"kind": null, "ref": null, "sha256": null}),
-    };
     let mut record = match eval_id {
         Some(id) => evaluate::load_record(ws, id)?,
         None => evaluate::latest_for(ws, &ask_ids)?,
@@ -204,6 +229,20 @@ pub fn create_with(
         &seal_id,
     )
     .map_err(|e| ledger("seal.answers", e))?;
+    // Not a Git repository: the receipt still records the decision.
+    let subject = match evaluate::default_subject(ws) {
+        Ok((kind, reference)) => {
+            let files = |done, total| {
+                progress(SealProgress { step: SealStep::Files, done, total });
+            };
+            match evaluate::subject_digest_with(ws, &kind, &reference, &files) {
+                Ok(sha) => json!({"kind": kind, "ref": reference, "sha256": sha}),
+                Err(_) => json!({"kind": null, "ref": null, "sha256": null}),
+            }
+        }
+        Err(_) => json!({"kind": null, "ref": null, "sha256": null}),
+    };
+    progress(SealProgress { step: SealStep::Writing, done: 0, total: 0 });
     let fact = eval_fact(ws, record.as_ref(), &subject["sha256"]);
     let mut authority_block = actor.clone();
     if is_the_person(&actor) {
@@ -279,6 +318,17 @@ pub fn create_with(
 /// Re-verify the receipt and its Eval record now, and say whether the subject
 /// still matches. It decides nothing.
 pub fn check(ws: &Workspace, seal_id: &str) -> Result<Value, SealError> {
+    check_told(ws, seal_id, &|_| {})
+}
+
+/// `check`, telling `progress` each step as it starts, and while the
+/// worktree is read, how many of its files are.
+pub fn check_told(
+    ws: &Workspace,
+    seal_id: &str,
+    progress: &dyn Fn(SealProgress),
+) -> Result<Value, SealError> {
+    progress(SealProgress { step: SealStep::Checking, done: 0, total: 0 });
     let mut codes: Vec<String> = Vec::new();
     let p = ws.rf_dir().join(format!("seals/{seal_id}.json"));
     let created = store::events(ws)?
@@ -306,7 +356,9 @@ pub fn check(ws: &Workspace, seal_id: &str) -> Result<Value, SealError> {
     let now_digest = if subject["kind"].is_null() {
         None
     } else {
-        evaluate::subject_digest(ws, &str_of(&subject, "kind"), &str_of(&subject, "ref")).ok()
+        let files = |done, total| progress(SealProgress { step: SealStep::Files, done, total });
+        let (kind, reference) = (str_of(&subject, "kind"), str_of(&subject, "ref"));
+        evaluate::subject_digest_with(ws, &kind, &reference, &files).ok()
     };
     Ok(json!({
         "seal_id": seal_id, "fresh": codes.is_empty(), "codes": codes,

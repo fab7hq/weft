@@ -15,7 +15,7 @@ use crate::ui::{
 
 pub(super) fn render(props: &SheetProps, project: &Path, session_id: &str) -> Element {
     let client = props.client(project);
-    let row = client.and_then(|c| c.sessions.iter().find(|r| r.id == session_id));
+    let row = client.and_then(|c| c.session(session_id));
     let (Some(c), Some(row)) = (client, row) else {
         return sheet(
             "sheet SessionDetail",

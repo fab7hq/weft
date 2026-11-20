@@ -21,7 +21,11 @@ use weft_core::readiness::Readiness;
 use weft_core::routing::Routing;
 use weft_core::turns::Turn;
 use weft_core::work::Work;
-use weft_proto::{Call, Event, Line, Lines, PROTOCOL, clear_dead, is_live, socket_path};
+use weft_proto::{Call, Event, Job, Line, Lines, PROTOCOL, clear_dead, is_live, socket_path};
+
+/// The jobs whose failure the bar says when no wait of this window shows
+/// it: a work's. Updates, Remote and a Seal's receipt say theirs in place.
+const SAID_IN_THE_BAR: [&str; 6] = ["eval_open", "readers", "seal", "send", "ask", "undo"];
 
 /// One pane, as `weft-desktop` sees it.
 pub struct PaneView {
@@ -203,11 +207,30 @@ pub struct Staged {
     pub go: Option<weft_proto::Go>,
 }
 
+impl Staged {
+    /// What a dialog that types nothing says of itself in its payload: an
+    /// Eval's, what it will read (`reads`).
+    pub fn data(&self) -> Option<Value> {
+        if self.payload.first() != Some(&b'{') {
+            return None;
+        }
+        let v: Value = serde_json::from_slice(&self.payload).ok()?;
+        v.get("reads").is_some_and(Value::is_object).then_some(v)
+    }
+
+    /// The bytes its yes types: none for a dialog whose payload says what it is.
+    pub fn typed(&self) -> &[u8] {
+        if self.data().is_some() { &[] } else { &self.payload }
+    }
+}
+
 /// What a call's answer is for, kept until the answer comes.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Then {
-    /// An agent started: show its pane; it resumes `session` when it names one.
+    /// An agent of `harness` started: show its pane; it resumes `session`
+    /// when it names one.
     Started {
+        harness: String,
         session: Option<String>,
     },
     /// A pane's conversation, read again.
@@ -244,6 +267,15 @@ pub enum Then {
     },
     /// Nothing but a refusal, which the person is shown.
     Refusal,
+    /// Which files an Eval of the project should skip, looked at again.
+    SkipCheck,
+    /// A line a finding proposed, written into its file.
+    SkipAdd {
+        file: String,
+        line: String,
+    },
+    /// An Eval's dialog staged: its pending id, or why not.
+    Eval,
     /// RingFrame's practices and rules: every project's, or this project's too.
     Rules {
         project: bool,
@@ -274,6 +306,110 @@ pub enum Then {
     Questions {
         eval: String,
     },
+    /// A page of the earlier sessions: every one, or what a search for `q`
+    /// finds.
+    Sessions {
+        q: String,
+    },
+    /// A step of Updates (`look`, `run`, `all`, `locate`) for `target`: the
+    /// daemon answers once it has ended.
+    Setup {
+        act: String,
+        target: String,
+    },
+    /// A yes that waits on the machine: said in the bar, and on its work's
+    /// row, until its answer comes; a refusal is said where it was.
+    Working(Working),
+}
+
+impl Then {
+    /// What Settings asks RingFrame, and the open Ask's sheet: asked again
+    /// each time they open, so a refusal of them is forgotten then.
+    pub fn is_settings(&self) -> bool {
+        matches!(
+            self,
+            Then::Rules { .. }
+                | Then::Preview { .. }
+                | Then::Profile { .. }
+                | Then::AskSheet { .. }
+        )
+    }
+
+    /// A read whose answer is kept in [`ProjectClient::read`], or its
+    /// refusal in [`ProjectClient::refused`].
+    fn is_kept(&self) -> bool {
+        self.is_settings()
+            || matches!(
+                self,
+                Then::Judges { .. }
+                    | Then::EvalView { .. }
+                    | Then::Window { .. }
+                    | Then::Seal { .. }
+                    | Then::Source { .. }
+                    | Then::Wording { .. }
+            )
+    }
+}
+
+/// What a yes waits on the machine for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Doing {
+    /// A dialog being made ready: an Eval's, a stop's, a send's.
+    Preparing,
+    /// RingFrame opening an Eval, then its readers starting.
+    Opening,
+    Sealing,
+    Sending,
+    Asking,
+    Stopping,
+    Undoing,
+    Saving,
+}
+
+impl Doing {
+    /// What the bar says while it works.
+    pub fn said(self) -> &'static str {
+        weft_core::words::word(match self {
+            Doing::Preparing => "wait.preparing",
+            Doing::Opening => "wait.opening_eval",
+            Doing::Sealing => "wait.sealing",
+            Doing::Sending => "wait.sending",
+            Doing::Asking => "wait.asking",
+            Doing::Stopping => "wait.stopping_eval",
+            Doing::Undoing => "wait.undoing",
+            Doing::Saving => "wait.saving",
+        })
+    }
+
+    /// The kind of job the machine runs for it, when it runs one.
+    pub fn job(self) -> Option<&'static str> {
+        match self {
+            Doing::Opening => Some("eval_open"),
+            Doing::Sealing => Some("seal"),
+            Doing::Sending => Some("send"),
+            Doing::Asking => Some("ask"),
+            Doing::Undoing => Some("undo"),
+            Doing::Preparing | Doing::Stopping | Doing::Saving => None,
+        }
+    }
+
+    /// What its work's row says while it works, when its row says so.
+    pub fn row(self) -> Option<&'static str> {
+        match self {
+            Doing::Opening => Some(weft_core::words::word("wait.row_opening_eval")),
+            Doing::Sealing => Some(weft_core::words::word("wait.row_sealing")),
+            _ => None,
+        }
+    }
+}
+
+/// A yes waiting on the machine: what it does, what about, and the work it
+/// is for, by its root Ask.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Working {
+    pub doing: Doing,
+    pub about: String,
+    pub work: Option<String>,
 }
 
 /// An answer the daemon gave, with what it was for.
@@ -281,6 +417,8 @@ pub enum Then {
 pub struct Answered {
     pub then: Then,
     pub answer: std::result::Result<Value, String>,
+    /// A refusal's code, which a program branches on; empty for an answer.
+    pub code: String,
 }
 
 /// The connection to the daemon: lines in from its reader thread, and lines
@@ -292,13 +430,23 @@ struct Link {
     stream: UnixStream,
 }
 
-/// What a pump took: whether anything came, whether an event moved the
-/// project (not only a pane's output), and the answers.
+/// What a pump took: whether something other than a pane's terminal
+/// changed, whether an event moved the project (not only a pane's output),
+/// the panes whose terminal output came, and the answers.
 #[derive(Debug, Default)]
 pub struct Pumped {
     pub changed: bool,
     pub moved: bool,
+    pub output: Vec<u32>,
     pub answered: Vec<Answered>,
+}
+
+/// What the window redraws after a pump: all of it, or only the terminals
+/// of these panes.
+#[derive(Debug, Default, PartialEq)]
+pub struct Redraw {
+    pub window: bool,
+    pub terminals: Vec<(PathBuf, u32)>,
 }
 
 impl Link {
@@ -347,8 +495,19 @@ pub struct ProjectClient {
     pub root: PathBuf,
     pub name: String,
     link: Option<Link>,
-    /// What each call still unanswered is for.
-    owed: HashMap<u64, Then>,
+    /// What each call still unanswered is for, and since when.
+    owed: HashMap<u64, (Then, Instant)>,
+    /// The jobs the daemon says run here, and those that failed, until the
+    /// person acts on them again.
+    pub jobs: Vec<crate::waiting::Progress>,
+    /// What failed of a job no wait of this window shows: said once, in
+    /// the bar.
+    pub jobs_failed: Vec<String>,
+    /// Typing a message was refused, while no dialog was there to say so:
+    /// the window says it, once.
+    pub typing_refused: Option<String>,
+    /// How many times the daemon has said what `weft remote` is at.
+    pub remotes: u64,
     told: HashMap<u32, (u16, u16)>,
     pub panes: Vec<PaneView>,
     pub last_refusal: Option<String>,
@@ -367,13 +526,27 @@ pub struct ProjectClient {
     pub gap: Option<String>,
     pub needs: Option<weft_core::workspace::Needs>,
     pub waiting: Vec<Staged>,
+    /// Which files an Eval of the project should skip, as the daemon's
+    /// latest check found them: never a nested repository.
+    pub skip: Vec<weft_core::skip::Finding>,
+    /// Why the last line asked for was not written, or the check not run.
+    pub skip_refused: Option<String>,
+    /// The sessions the daemon carries as they are (the running, those
+    /// panes hold, and the newest of today's), how many earlier ones it
+    /// lists a page at a time, the pages of those read, and the pages a
+    /// search through them found.
     pub sessions: Vec<weft_core::sessions::Row>,
+    pub earlier: usize,
+    pub earlier_rows: crate::earlier::Pages,
+    pub earlier_found: Option<crate::earlier::Pages>,
     pub zone: i64,
     pub notify: bool,
     pub turbo: bool,
     pub start_at_login: bool,
     /// This project's settings, as the daemon last told them (`config`).
     pub config: Option<serde_json::Value>,
+    /// What the daemon called this machine when it answered.
+    pub machine_name: Option<String>,
     pub update: Option<String>,
     pub reopened_since: Option<i64>,
     pub harnesses: Harnesses,
@@ -426,6 +599,10 @@ impl ProjectClient {
             name: name.into(),
             link: None,
             owed: HashMap::new(),
+            jobs: Vec::new(),
+            jobs_failed: Vec::new(),
+            typing_refused: None,
+            remotes: 0,
             told: HashMap::new(),
             panes: Vec::new(),
             last_refusal: None,
@@ -442,12 +619,18 @@ impl ProjectClient {
             gap: None,
             needs: None,
             waiting: Vec::new(),
+            skip: Vec::new(),
+            skip_refused: None,
             sessions: Vec::new(),
+            earlier: 0,
+            earlier_rows: Default::default(),
+            earlier_found: None,
             zone: 0,
             notify: true,
             turbo: false,
             start_at_login: false,
             config: None,
+            machine_name: None,
             update: None,
             reopened_since: None,
             harnesses: Default::default(),
@@ -498,7 +681,10 @@ impl ProjectClient {
             protocol: PROTOCOL,
         })?;
         match client.wait(hello)? {
-            Ok(_) => Ok(client),
+            Ok(said) => {
+                client.machine_name = said["name"].as_str().map(String::from);
+                Ok(client)
+            }
             Err(no) => {
                 if let Some(link) = client.link.take() {
                     link.cut();
@@ -550,8 +736,9 @@ impl ProjectClient {
             client: concat!("weft-desktop/", env!("CARGO_PKG_VERSION")).to_string(),
             protocol: PROTOCOL,
         })?;
-        if let Err(no) = client.wait(hello)? {
-            return Err(OtherVersion(no).into());
+        match client.wait(hello)? {
+            Ok(said) => client.machine_name = said["name"].as_str().map(String::from),
+            Err(no) => return Err(OtherVersion(no).into()),
         }
         let open = client.send(Call::Open {
             rows,
@@ -589,7 +776,7 @@ impl ProjectClient {
         }
     }
 
-    fn take_opened(&mut self, opened: &Value) {
+    pub(crate) fn take_opened(&mut self, opened: &Value) {
         if let Some(panes) = opened.get("panes").and_then(weft_proto::panes_of) {
             self.panes = panes.into_iter().map(PaneView::of).collect();
             self.opened = true;
@@ -624,11 +811,23 @@ impl ProjectClient {
         if let Some(r) = opened.get("routing") {
             self.routing = Routing::opened(r);
         }
+        // The jobs running, and those that ended a moment ago or failed.
+        self.jobs.clear();
+        let jobs: Vec<Job> = opened
+            .get("jobs")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+        for job in jobs {
+            self.take_job(job);
+        }
+        if let Some(skip) = opened.get("skip") {
+            self.take_skip(serde_json::from_value(skip.clone()).unwrap_or_default());
+        }
         for p in opened.get("pendings").and_then(|v| v.as_array()).into_iter().flatten() {
             if let Some(Event::Pending { id, pane, what, why, payload, sends, go }) =
                 weft_proto::pending_of(p)
             {
-                self.waiting.push(Staged { id, pane, what, why, payload, sends, go });
+                self.stage(Staged { id, pane, what, why, payload, sends, go });
             }
         }
         for screen in opened.get("screens").and_then(|v| v.as_array()).into_iter().flatten() {
@@ -638,6 +837,38 @@ impl ProjectClient {
                 p.show(&s);
             }
         }
+    }
+
+    /// A dialog staged, in the place of the one with its id, which the
+    /// daemon says again once what it shows has moved.
+    fn stage(&mut self, staged: Staged) {
+        match self.waiting.iter_mut().find(|w| w.id == staged.id) {
+            Some(w) => *w = staged,
+            None => self.waiting.push(staged),
+        }
+    }
+
+    /// What the daemon's latest check found an Eval should skip.
+    fn take_skip(&mut self, mut findings: Vec<weft_core::skip::Finding>) {
+        findings.retain(weft_core::skip::Finding::in_settings);
+        self.skip = findings;
+    }
+
+    /// Look again at which files an Eval of the project should skip.
+    pub fn skip_check(&mut self) -> Result<u64> {
+        self.skip_refused = None;
+        self.tell(Call::SkipCheck, Then::SkipCheck)
+    }
+
+    /// Write the line a finding proposed; once while it is being written.
+    pub fn skip_add(&mut self, file: &str, line: &str) -> Result<Option<u64>> {
+        let then = Then::SkipAdd { file: file.to_string(), line: line.to_string() };
+        if self.owes(&then) {
+            return Ok(None);
+        }
+        self.skip_refused = None;
+        let call = Call::SkipAdd { file: file.to_string(), line: line.to_string() };
+        self.tell(call, then).map(Some)
     }
 
     pub fn is_connected(&self) -> bool {
@@ -656,6 +887,98 @@ impl ProjectClient {
         self.set_turns(serde_json::from_value(field("panes")).unwrap_or_default());
         self.sessions = serde_json::from_value(field("sessions")).unwrap_or_default();
         self.zone = field("zone").as_i64().unwrap_or(0);
+        self.earlier_moved(field("earlier").as_u64().unwrap_or(0) as usize);
+    }
+
+    /// How many earlier sessions there are now: the pages read of them, and
+    /// of a search through them, are read again when that moved.
+    fn earlier_moved(&mut self, earlier: usize) {
+        let was = std::mem::replace(&mut self.earlier, earlier);
+        if earlier == 0 {
+            self.earlier_rows = Default::default();
+            self.earlier_found = None;
+            return;
+        }
+        let unread = self.earlier_rows.rows.is_empty() && !self.earlier_rows.asking();
+        if was != earlier || unread {
+            let after = self.earlier_rows.restart();
+            self.read_sessions(String::new(), after);
+            if let Some(found) = &mut self.earlier_found {
+                let (q, after) = (found.q.clone(), found.restart());
+                self.read_sessions(q, after);
+            }
+        }
+    }
+
+    /// A session by its id: one carried as it is, or an earlier one read.
+    pub fn session(&self, id: &str) -> Option<&weft_core::sessions::Row> {
+        let found = self.earlier_found.iter().flat_map(|f| &f.rows);
+        self.sessions.iter().chain(&self.earlier_rows.rows).chain(found).find(|r| r.id == id)
+    }
+
+    /// Search the earlier sessions for `q` through the daemon, among them
+    /// all; nothing to search for drops what was found.
+    pub fn search_earlier(&mut self, q: &str) {
+        let q = q.trim();
+        if q.is_empty() || self.earlier == 0 {
+            self.earlier_found = None;
+            return;
+        }
+        if self.earlier_found.as_ref().is_some_and(|f| f.q == q) {
+            return;
+        }
+        let mut found = crate::earlier::Pages::new(q);
+        let after = found.restart();
+        self.earlier_found = Some(found);
+        self.read_sessions(q.to_string(), after);
+    }
+
+    /// A page more of the earlier sessions, or of what the search found.
+    pub fn more_earlier(&mut self, found: bool) {
+        let pages = if found { self.earlier_found.as_mut() } else { Some(&mut self.earlier_rows) };
+        if let Some(pages) = pages {
+            let (q, after) = (pages.q.clone(), pages.more());
+            self.read_sessions(q, after);
+        }
+    }
+
+    /// The read of earlier sessions that failed, or of what the search
+    /// found, sent again.
+    pub fn earlier_again(&mut self, found: bool) {
+        let pages = if found { self.earlier_found.as_mut() } else { Some(&mut self.earlier_rows) };
+        if let Some(pages) = pages {
+            let (q, after) = (pages.q.clone(), pages.again());
+            self.read_sessions(q, after);
+        }
+    }
+
+    /// The pages of earlier sessions a search for `q` reads, or every
+    /// earlier session's when `q` is empty.
+    fn earlier_pages(&mut self, q: &str) -> Option<&mut crate::earlier::Pages> {
+        if q.is_empty() {
+            Some(&mut self.earlier_rows)
+        } else {
+            self.earlier_found.as_mut().filter(|f| f.q == q)
+        }
+    }
+
+    /// Read the page of earlier sessions after `after`, when one is to be
+    /// read, for the pages a search for `q` reads.
+    fn read_sessions(&mut self, q: String, after: Option<crate::earlier::After>) {
+        let Some(after) = after else { return };
+        let call = Call::Read {
+            what: "sessions".into(),
+            unit: String::new(),
+            pane: None,
+            lines: None,
+            before: None,
+            after,
+            q: (!q.is_empty()).then(|| q.clone()),
+        };
+        let id = self.tell(call, Then::Sessions { q: q.clone() }).ok();
+        if let Some(pages) = self.earlier_pages(&q) {
+            pages.sent(id);
+        }
     }
 
     pub fn set_turns(&mut self, turns: Vec<Option<Turn>>) {
@@ -707,25 +1030,130 @@ impl ProjectClient {
     /// Write `call`, keeping what its answer is for.
     pub fn tell(&mut self, call: Call, then: Then) -> Result<u64> {
         let id = self.send(call)?;
-        self.owed.insert(id, then);
+        self.owed.insert(id, (then, Instant::now()));
         Ok(id)
+    }
+
+    /// The answer to call `id`, still to come, is for `then`: a yes that
+    /// waits says what it does.
+    pub fn owed_for(&mut self, id: u64, then: Then) {
+        if let Some((t, _)) = self.owed.get_mut(&id) {
+            *t = then;
+        }
     }
 
     /// Whether an answer for `then` is still to come.
     pub fn owes(&self, then: &Then) -> bool {
-        self.owed.values().any(|t| t == then)
+        self.owed.values().any(|(t, _)| t == then)
     }
 
     /// Whether any answer still to come is for something `kind` picks.
     pub fn owes_any(&self, kind: impl Fn(&Then) -> bool) -> bool {
-        self.owed.values().any(kind)
+        self.owed.values().any(|(t, _)| kind(t))
+    }
+
+    /// Every answer still to come: what it is for, and since when.
+    pub fn owed(&self) -> impl Iterator<Item = (&Then, Instant)> {
+        self.owed.values().map(|(t, at)| (t, *at))
+    }
+
+    /// Every answer still to come, by its call: what it is for, and since
+    /// when.
+    pub fn owed_calls(&self) -> impl Iterator<Item = (u64, &Then, Instant)> {
+        self.owed.iter().map(|(id, (t, at))| (*id, t, *at))
+    }
+
+    /// A job as the daemon says it now: kept by its id, in the place of one
+    /// that failed on the same thing. One that ended well goes, its result
+    /// shown where it was; one that failed stays, and is said in the bar
+    /// when no wait of this window shows it.
+    fn take_job(&mut self, mut job: Job) {
+        let now = Instant::now();
+        let at = match self.jobs.iter().position(|p| p.job.id == job.id) {
+            Some(i) => {
+                let p = &mut self.jobs[i];
+                if job.call.is_none() {
+                    job.call = p.job.call;
+                }
+                if p.failed().is_some() {
+                    return;
+                }
+                p.job = job;
+                p.got = now;
+                i
+            }
+            None => {
+                self.jobs.retain(|p| {
+                    p.failed().is_none() || p.job.kind != job.kind || p.job.on != job.on
+                });
+                self.jobs.push(crate::waiting::Progress::of(job, now));
+                self.jobs.len() - 1
+            }
+        };
+        let p = &self.jobs[at];
+        if p.job.end.as_ref().is_some_and(|e| e.ok) {
+            self.jobs.remove(at);
+            return;
+        }
+        // A refusal of this window's own call says it, where it was asked.
+        let asked_here = p.job.call.is_some_and(|id| self.owed.contains_key(&id));
+        if !asked_here
+            && SAID_IN_THE_BAR.contains(&p.job.kind.as_str())
+            && let Some(said) = p.failure()
+        {
+            self.jobs_failed.push(said);
+        }
+    }
+
+    /// The job running that the call `id` began.
+    pub fn job_of_call(&self, id: u64) -> Option<&crate::waiting::Progress> {
+        self.jobs.iter().find(|p| p.running() && p.job.call == Some(id))
+    }
+
+    /// The first job running that `pick` picks.
+    pub fn job(&self, pick: impl Fn(&Job) -> bool) -> Option<&crate::waiting::Progress> {
+        self.jobs.iter().find(|p| p.running() && pick(&p.job))
+    }
+
+    /// The job that failed that `pick` picks, still shown.
+    pub fn job_failed(&self, pick: impl Fn(&Job) -> bool) -> Option<&crate::waiting::Progress> {
+        self.jobs.iter().find(|p| p.failed().is_some() && pick(&p.job))
+    }
+
+    /// The person acted again on what failed: its failure goes.
+    pub fn forget_failed(&mut self, pick: impl Fn(&Job) -> bool) {
+        self.jobs.retain(|p| p.failed().is_none() || !pick(&p.job));
+    }
+
+    /// Whether a job runs here.
+    pub fn jobs_run(&self) -> bool {
+        self.jobs.iter().any(crate::waiting::Progress::running)
+    }
+
+    /// What the work `root`'s row says while something is done to it: its
+    /// Eval opening, or its Seal, here or from anywhere.
+    pub fn row_doing(&self, root: &str) -> Option<&'static str> {
+        let on = self.job(|j| j.on.work.as_deref() == Some(root)).and_then(|p| {
+            match p.job.kind.as_str() {
+                "eval_open" => Doing::Opening.row(),
+                "seal" => Doing::Sealing.row(),
+                _ => None,
+            }
+        });
+        if on.is_some() {
+            return on;
+        }
+        self.owed.values().find_map(|(t, _)| match t {
+            Then::Working(w) if w.work.as_deref() == Some(root) => w.doing.row(),
+            _ => None,
+        })
     }
 
     /// Take every line the daemon sent since: events change this project, a
     /// read is kept in [`ProjectClient::read`], and every other answer is
-    /// handed back with what it was for. Whether anything
-    /// came, and the answers. A link that broke is dropped, so the project
-    /// is connected again.
+    /// handed back with what it was for. What changed, the panes whose
+    /// output came, and the answers. A link that broke is dropped, so the
+    /// project is connected again.
     pub fn pump(&mut self) -> Pumped {
         let mut p = Pumped::default();
         loop {
@@ -734,10 +1162,20 @@ impl ProjectClient {
                 None => return p,
             };
             match next {
+                // Output redraws its pane's terminal; the window only when the
+                // pane came back to its end or left it, which its button shows.
+                Ok(Line::Event(Event::Output { pane, seq, bytes })) => {
+                    let back = |c: &Self| c.view(pane).map(|v| v.scroll_offset() > 0);
+                    let before = back(self);
+                    self.take(Line::Event(Event::Output { pane, seq, bytes }));
+                    p.changed |= back(self) != before;
+                    if !p.output.contains(&pane) {
+                        p.output.push(pane);
+                    }
+                }
                 Ok(line) => {
                     p.changed = true;
-                    p.moved |=
-                        matches!(&line, Line::Event(e) if !matches!(e, Event::Output { .. }));
+                    p.moved |= matches!(&line, Line::Event(_));
                     if let Some(a) = self.take(line) {
                         p.answered.push(a);
                     }
@@ -757,7 +1195,12 @@ impl ProjectClient {
         self.lost = true;
         self.link = None;
         self.owed.clear();
+        self.jobs.clear();
         self.told.clear();
+        self.earlier_rows.sent(None);
+        if let Some(found) = &mut self.earlier_found {
+            found.sent(None);
+        }
     }
 
     /// One line from the daemon; an answer, with what it was for.
@@ -765,38 +1208,47 @@ impl ProjectClient {
         let event = match line {
             Line::Event(e) => e,
             Line::Result { id, result } => {
-                let then = self.owed.remove(&id)?;
-                if matches!(
-                    then,
-                    Then::Judges { .. }
-                        | Then::EvalView { .. }
-                        | Then::Window { .. }
-                        | Then::Seal { .. }
-                        | Then::Source { .. }
-                        | Then::Wording { .. }
-                        | Then::Rules { .. }
-                        | Then::Preview { .. }
-                        | Then::Profile { .. }
-                        | Then::AskSheet { .. }
-                ) {
+                let (then, _) = self.owed.remove(&id)?;
+                if let Then::Sessions { q } = then {
+                    let after = self.earlier_pages(&q).and_then(|p| p.answered(id, &result));
+                    self.read_sessions(q, after);
+                    return None;
+                }
+                if matches!(then, Then::SkipCheck | Then::SkipAdd { .. }) {
+                    self.take_skip(
+                        serde_json::from_value(result["findings"].clone()).unwrap_or_default(),
+                    );
+                    return None;
+                }
+                self.refused.remove(&then);
+                if then.is_kept() {
                     self.read.insert(then, result);
                     return None;
                 }
-                return Some(Answered { then, answer: Ok(result) });
+                return Some(Answered { then, answer: Ok(result), code: String::new() });
             }
-            Line::Error { id, message, .. } => {
-                let then = self.owed.remove(&id)?;
-                if matches!(
-                    then,
-                    Then::Rules { .. }
-                        | Then::Preview { .. }
-                        | Then::Profile { .. }
-                        | Then::AskSheet { .. }
-                ) {
-                    self.refused.insert(then, message);
+            Line::Error { id, message, code } => {
+                let (then, _) = self.owed.remove(&id)?;
+                if matches!(then, Then::SkipCheck | Then::SkipAdd { .. }) {
+                    self.skip_refused = Some(message);
                     return None;
                 }
-                return Some(Answered { then, answer: Err(message) });
+                if let Then::Sessions { q } = &then {
+                    if let Some(pages) = self.earlier_pages(q) {
+                        pages.refused(id, &message);
+                    }
+                    return None;
+                }
+                // A read that failed says why where it would be shown, until
+                // it is read again.
+                if then.is_kept() || matches!(then, Then::Conversation { .. } | Then::Older { .. })
+                {
+                    self.refused.insert(then.clone(), message.clone());
+                }
+                if then.is_kept() {
+                    return None;
+                }
+                return Some(Answered { then, answer: Err(message), code });
             }
             Line::Call { .. } => return None,
         };
@@ -832,7 +1284,7 @@ impl ProjectClient {
                         Then::Rules { .. } | Then::Preview { .. } | Then::Profile { .. }
                     )
                 });
-                self.refused.clear();
+                self.refused.retain(|then, _| !then.is_settings());
             }
             Event::StartAtLogin { on } => self.start_at_login = on,
             Event::Reopened { since } => self.reopened_since = since,
@@ -841,7 +1293,10 @@ impl ProjectClient {
             | Event::Presence { .. }
             | Event::RemoteAct { .. }
             | Event::Signal(_) => {}
-            Event::Remote { view } => self.remote = Some(view),
+            Event::Remote { view } => {
+                self.remote = Some(view);
+                self.remotes += 1;
+            }
             Event::Added { pane, harness, spec, turbo } => {
                 if self.view(pane).is_none() {
                     self.panes.push(PaneView::new(pane, harness, spec));
@@ -862,20 +1317,31 @@ impl ProjectClient {
                 self.boards += 1;
             }
             Event::Pending { id, pane, what, why, payload, sends, go } => {
-                self.waiting.push(Staged { id, pane, what, why, payload, sends, go });
+                self.stage(Staged { id, pane, what, why, payload, sends, go });
             }
+            Event::Skip { findings } => self.take_skip(findings),
+            Event::Progress { job } => self.take_job(job),
             Event::Resolved { id, .. } => self.waiting.retain(|w| w.id != id),
             Event::Injected { refusal, unrecorded, .. } => {
+                // With no dialog to say it, a message's refusal is the window's.
+                if self.waiting.is_empty() && refusal.is_some() {
+                    self.typing_refused = refusal.clone();
+                }
                 self.last_refusal = refusal;
                 self.unrecorded = unrecorded;
             }
             Event::Readiness { states } => self.readiness = states,
             Event::Setup { view } => self.setup = serde_json::from_value(view).ok(),
             Event::Workspace { setup, gap } => (self.needs, self.gap) = (setup, gap),
-            Event::Agents { panes, sessions, zone } => {
+            Event::Agents { panes, changed, gone, earlier, zone } => {
                 self.set_turns(panes);
-                (self.sessions, self.zone) = (sessions, zone);
+                weft_core::sessions::apply(&mut self.sessions, &changed, &gone);
+                self.zone = zone;
+                self.earlier_moved(earlier);
             }
+            // What the daemon no longer sends, or does not send to a window.
+            #[allow(unreachable_patterns)]
+            _ => {}
         }
         None
     }
@@ -887,7 +1353,9 @@ impl ProjectClient {
             spec: spec.to_string(),
             session: session.map(str::to_string),
         };
-        self.tell(call, Then::Started { session: session.map(str::to_string) })
+        let then =
+            Then::Started { harness: harness.to_string(), session: session.map(str::to_string) };
+        self.tell(call, then)
     }
 
     pub fn input(&mut self, pane: u32, bytes: &[u8]) -> Result<()> {
@@ -903,7 +1371,7 @@ impl ProjectClient {
         if let Some(p) = self.view_mut(pane) {
             p.scroll_to_bottom();
         }
-        self.send(Call::Say { pane, text: text.to_string() }).map(|_| ())
+        self.tell(Call::Say { pane, text: text.to_string() }, Then::Refusal).map(|_| ())
     }
 
     pub fn scroll(&mut self, pane: u32, delta: i32) {
@@ -975,6 +1443,23 @@ impl ProjectClient {
         self.tell(call, Then::Refusal)
     }
 
+    /// Eval the work `unit` names, read by `start` when the person picked a
+    /// harness in its dialog; the answer names the dialog staged.
+    pub fn eval(&mut self, unit: &str, pane: Option<u32>, start: Option<&str>) -> Result<u64> {
+        self.last_refusal = None;
+        self.unrecorded = None;
+        let call = Call::Act {
+            act: "eval".into(),
+            unit: Some(unit.to_string()),
+            pane,
+            text: None,
+            eval: None,
+            start: start.map(str::to_string),
+            draft: None,
+        };
+        self.tell(call, Then::Eval)
+    }
+
     /// Ask, or follow up, with what the person kept of the sheet's draft.
     pub fn ask(
         &mut self,
@@ -1040,6 +1525,7 @@ impl ProjectClient {
             lines: None,
             before: None,
             after: None,
+            q: None,
         };
         self.tell(call, then).map(|_| ())
     }
@@ -1064,6 +1550,7 @@ impl ProjectClient {
             lines: None,
             before,
             after,
+            q: None,
         };
         self.tell(call, then).map(|_| ())
     }
@@ -1081,6 +1568,7 @@ impl ProjectClient {
             lines: None,
             before: None,
             after: None,
+            q: None,
         };
         self.tell(call, then).map(|_| ())
     }
@@ -1092,7 +1580,7 @@ impl ProjectClient {
         force: bool,
         to: Option<u32>,
         start: Option<&str>,
-    ) -> Result<()> {
+    ) -> Result<u64> {
         let call = Call::Resolve {
             pending: pending.to_string(),
             yes,
@@ -1100,7 +1588,7 @@ impl ProjectClient {
             to,
             start: start.map(str::to_string),
         };
-        self.tell(call, Then::Refusal).map(|_| ())
+        self.tell(call, Then::Refusal)
     }
 
     pub fn setup(&mut self, act: &str, harness: &str, path: &str) -> Result<()> {
@@ -1109,7 +1597,8 @@ impl ProjectClient {
             harness: harness.to_string(),
             path: path.to_string(),
         };
-        self.tell(call, Then::Refusal).map(|_| ())
+        let then = Then::Setup { act: act.to_string(), target: harness.to_string() };
+        self.tell(call, then).map(|_| ())
     }
 
     pub fn remote_act(&mut self, act: Value) -> Result<()> {
@@ -1243,6 +1732,139 @@ fn libc_setsid() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn job(id: &str, kind: &str, work: &str, age_ms: u64) -> Job {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "kind": kind, "on": {"work": work}, "age_ms": age_ms,
+            "steps": [{"key": "step.reading_change", "state": "now", "ms": 1000,
+                       "done": 38, "total": 103, "unit": "files"}],
+        }))
+        .unwrap()
+    }
+
+    /// Opening a project, the daemon names the jobs that run: they show at
+    /// once, timed from their age, and each keeps its time as it moves.
+    #[test]
+    fn the_jobs_come_with_the_project_and_keep_their_time() {
+        let mut c = ProjectClient::disconnected("/work/weft", "weft");
+        c.take_opened(&serde_json::json!({"jobs": [job("job_1", "eval_open", "ask_1", 18_000)]}));
+        let first = c.jobs[0].since;
+        assert!(first.elapsed() >= Duration::from_secs(18), "begun 18 s ago");
+        assert_eq!(c.row_doing("ask_1"), Some(weft_core::words::word("wait.row_opening_eval")));
+        c.take(Line::Event(Event::Progress { job: job("job_1", "eval_open", "ask_1", 19_000) }));
+        c.take(Line::Event(Event::Progress { job: job("job_2", "seal", "ask_3", 500) }));
+        assert_eq!(c.jobs.len(), 2);
+        assert_eq!(c.jobs[0].since, first, "the same job keeps its time");
+        assert_eq!(c.row_doing("ask_3"), Some(weft_core::words::word("wait.row_sealing")));
+        // Ended well: it goes, and its row says nothing more.
+        let mut done = job("job_1", "eval_open", "ask_1", 20_000);
+        done.end = Some(weft_proto::JobEnd { ok: true, why: None });
+        c.take(Line::Event(Event::Progress { job: done }));
+        assert!(c.row_doing("ask_1").is_none());
+        assert!(c.jobs_failed.is_empty());
+    }
+
+    /// A job that failed stays, said once in the bar when no wait here
+    /// asked for it, until one on the same thing begins or the person acts.
+    #[test]
+    fn a_failed_job_stays_and_is_said_once() {
+        let mut c = ProjectClient::disconnected("/work/weft", "weft");
+        let mut failed = job("job_1", "eval_open", "ask_1", 3_000);
+        failed.end = Some(weft_proto::JobEnd { ok: false, why: Some("git exited 128".into()) });
+        c.take_opened(&serde_json::json!({"jobs": [failed.clone()]}));
+        let said = weft_core::words::fill("wait.could_not_open_eval", &[("why", "git exited 128")]);
+        assert_eq!(c.jobs_failed, vec![said]);
+        c.take(Line::Event(Event::Progress { job: failed }));
+        assert_eq!(c.jobs_failed.len(), 1, "said once");
+        assert!(c.job_failed(|j| j.kind == "eval_open").is_some());
+        assert!(c.row_doing("ask_1").is_none(), "it no longer runs");
+        // Opened again: the new job takes the failed one's place.
+        c.take(Line::Event(Event::Progress { job: job("job_2", "eval_open", "ask_1", 400) }));
+        assert!(c.job_failed(|j| j.kind == "eval_open").is_none());
+        assert_eq!(c.jobs.len(), 1);
+        // Acted on: forgotten.
+        let mut again = job("job_2", "eval_open", "ask_1", 900);
+        again.end = Some(weft_proto::JobEnd { ok: false, why: Some("no".into()) });
+        c.take(Line::Event(Event::Progress { job: again }));
+        c.forget_failed(|j| j.on.work.as_deref() == Some("ask_1"));
+        assert!(c.jobs.is_empty());
+    }
+
+    /// An Eval dialog's payload says what it will read; it types nothing.
+    #[test]
+    fn an_eval_dialogs_payload_says_what_it_reads_and_types_nothing() {
+        let staged = |payload: &[u8]| Staged {
+            id: "p1".into(),
+            pane: 0,
+            what: String::new(),
+            why: String::new(),
+            payload: payload.to_vec(),
+            sends: None,
+            go: None,
+        };
+        let eval = staged(br#"{"reads": {"commits": 3, "files": 14}}"#);
+        assert_eq!(eval.data().unwrap()["reads"]["files"], 14);
+        assert!(eval.typed().is_empty());
+        let prompt = staged(b"{ not json, a prompt");
+        assert!(prompt.data().is_none());
+        assert_eq!(prompt.typed(), b"{ not json, a prompt");
+    }
+
+    /// A dialog the daemon says again, under the same id, takes the place of
+    /// the one it was: it is never shown twice.
+    #[test]
+    fn a_dialog_said_again_replaces_the_one_with_its_id() {
+        let pending = |id: &str, files: u64| {
+            Line::Event(Event::Pending {
+                id: id.into(),
+                pane: u32::MAX,
+                what: "Eval this work?".into(),
+                why: String::new(),
+                payload: serde_json::to_vec(&serde_json::json!({"reads": {"files": files}}))
+                    .unwrap(),
+                sends: None,
+                go: None,
+            })
+        };
+        let mut c = ProjectClient::disconnected("/work/weft", "weft");
+        c.take(pending("p1", 14_181));
+        c.take(pending("p2", 3));
+        c.take(pending("p1", 13_852));
+        let ids: Vec<&str> = c.waiting.iter().map(|w| w.id.as_str()).collect();
+        assert_eq!(ids, ["p1", "p2"], "once each, in its place");
+        assert_eq!(c.waiting[0].data().unwrap()["reads"]["files"], 13_852, "as said again");
+        // Said again as a project opens: the same.
+        let again = weft_proto::pending_json("p2", u32::MAX, "Eval", "", b"x", None, None);
+        c.take_opened(&serde_json::json!({ "pendings": [again] }));
+        assert_eq!(c.waiting.len(), 2);
+        assert_eq!(c.waiting[1].payload, b"x");
+    }
+
+    /// What an Eval should skip comes as the project opens and as the
+    /// daemon says it again; a nested repository is never kept here. A line
+    /// refused says why until another is asked for.
+    #[test]
+    fn the_findings_come_as_the_project_opens_and_as_they_move() {
+        let finding = |kind: &str, path: &str| {
+            serde_json::json!({"kind": kind, "path": path, "files": 3,
+                               "fix": {"file": ".gitignore", "line": format!("/{path}")}})
+        };
+        let mut c = ProjectClient::disconnected("/work/weft", "weft");
+        c.take_opened(&serde_json::json!({
+            "skip": [finding("untracked_bulk", "output/"), finding("sub_repo", "site/")],
+        }));
+        let paths: Vec<&str> = c.skip.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, ["output/"]);
+        c.take(Line::Event(Event::Skip { findings: Vec::new() }));
+        assert!(c.skip.is_empty());
+        c.owed.insert(
+            7,
+            (Then::SkipAdd { file: ".gitignore".into(), line: "/a/".into() }, Instant::now()),
+        );
+        assert!(c.skip_add(".gitignore", "/a/").unwrap().is_none(), "once while it is written");
+        c.take(Line::Error { id: 7, code: "refused".into(), message: "read-only".into() });
+        assert_eq!(c.skip_refused.as_deref(), Some("read-only"));
+    }
 
     /// A `weft` this app starts is waited for once it ends, so none lingers
     /// as a zombie: one that found a daemon already listening ends at once.

@@ -6,8 +6,10 @@
 use super::*;
 
 /// Keys only the machine has: a project's would be ignored. Turbo is every
-/// project's only (weft-after-desktop ADR-0003 D4).
-const MACHINE_ONLY: [&str; 5] = ["notify", "service", "remote", "harnesses", "turbo"];
+/// project's only (weft-after-desktop ADR-0003 D4), and the name and how long
+/// ended sessions are kept are the machine's own.
+const MACHINE_ONLY: [&str; 7] =
+    ["notify", "service", "remote", "harnesses", "turbo", "name", "sessions"];
 
 impl Session {
     /// This project's settings: the file's machine tables and this project's
@@ -31,16 +33,25 @@ impl Session {
             "machine": machine,
             "project": project,
             "effective": {
+                "name": weft_core::machine::effective(read.name(), &crate::machine::system_name()),
                 "routing": routing_json(&p.routing),
                 "turbo": p.turbo,
                 "notify": p.notify,
                 "ringframe": ringframe,
                 "export": read.export(&p.root),
+                "keep_days": read.keep_days(),
             },
             "unknown": read.unknown,
             "ignored": read.ignored,
             "leftover": read.leftover,
         })
+    }
+
+    /// What Weft and the person's devices call this machine: the name set in
+    /// Settings, else the system's own.
+    pub(super) fn machine_name(&self) -> String {
+        let read = crate::routing::read_at(&self.config, &Default::default());
+        weft_core::machine::effective(read.name(), &crate::machine::system_name())
     }
 
     /// `config.set`: a `ringframe` key is asked of RingFrame first, off the
@@ -69,6 +80,19 @@ impl Session {
                 }
                 other => other,
             };
+        }
+        // The name is kept only while it differs from the system's own:
+        // emptied, or set to the system's again, it goes.
+        if scope == "machine" && key == ["name"] {
+            let value = match &value {
+                None => None,
+                Some(serde_json::Value::String(typed)) => {
+                    weft_core::machine::to_keep(typed, &crate::machine::system_name())
+                        .map(serde_json::Value::String)
+                }
+                Some(_) => return Answer::No("config", "a machine's name is words".into()),
+            };
+            return self.change_config(at, &scope, &key, value.as_ref());
         }
         if key.first().map(String::as_str) != Some("ringframe") {
             return self.change_config(at, &scope, &key, value.as_ref());
@@ -160,6 +184,8 @@ impl Session {
             p.routing = config.routing(&p.root);
             p.ringframe = config.ringframe_override(&p.root);
             p.notify = config.notify();
+            // How long ended sessions are kept may have moved: looked at again.
+            p.archived = None;
             let turbo = config.turbo(&p.root);
             let moved = turbo != p.turbo;
             p.turbo = turbo;

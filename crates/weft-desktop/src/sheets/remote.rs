@@ -93,6 +93,37 @@ fn tunnel_why(title: &str, said: &str) -> Element {
         .child(div().font_mono().font_size(12).color(palette::AMBER).text(said))
 }
 
+/// Remote turning on: the dot, its words and the tunnel, the time so far,
+/// the bar, and its steps.
+fn turning_on(p: &crate::waiting::Progress, tunnel: &str) -> Element {
+    let now = std::time::Instant::now();
+    let head = div()
+        .self_stretch()
+        .flex_row()
+        .gap(10)
+        .items_center()
+        .child(crate::waiting::dot())
+        .child(div().font_weight(600).font_size(15).text(word("wait.turning_on_remote")))
+        .child(div().font_size(13).color(palette::MUTED).text(tunnel))
+        .child(div().flex_1())
+        .child(
+            div()
+                .layer("working time")
+                .font_mono()
+                .font_size(12)
+                .color(palette::DIM)
+                .text(crate::waiting::elapsed(p.since, now)),
+        );
+    div()
+        .layer("remote turning on")
+        .self_stretch()
+        .flex_col()
+        .gap(10)
+        .child(head)
+        .child(crate::waiting::share_bar(p.job.share))
+        .child(crate::waiting::steps(p, now, false))
+}
+
 pub(super) fn render(props: &SheetProps) -> Element {
     let view = props.clients.iter().find_map(|c| c.remote.as_ref());
     // No view from a daemon that answered: Remote is not running. From none
@@ -343,6 +374,25 @@ pub(super) fn render(props: &SheetProps) -> Element {
     }
     if state != "on" && !s("tunnel_why").is_empty() {
         body = body.child(tunnel_why(&s("tunnel_title"), &s("tunnel_why")));
+    }
+    // Turning on, as the machine says it goes: its steps, each with its time,
+    // and the bar filled by the share done. Failed, why, until asked again.
+    let job = props.machine_job("remote", None);
+    let tunnel = Some(s("tunnel_title"))
+        .filter(|t| !t.is_empty())
+        .or_else(|| view.and_then(|v| v["tunnel"]["title"].as_str()).map(str::to_string))
+        .unwrap_or_default();
+    if let Some(p) = job.filter(|p| p.running()) {
+        body.children.insert(0, turning_on(p, &tunnel));
+    } else if let Some(why) = job.and_then(crate::waiting::Progress::failure) {
+        body.children.insert(0, crate::waiting::failed(why, None).layer("remote failed"));
+    }
+    // Asked of `weft remote`: said at once, until what it says moves.
+    if props.remote_asked && !job.is_some_and(crate::waiting::Progress::running) {
+        body.children.insert(
+            0,
+            crate::waiting::busy_line(word("wait.asking"), palette::MUTED).layer("remote asked"),
+        );
     }
     sheet(
         "sheet Remote",

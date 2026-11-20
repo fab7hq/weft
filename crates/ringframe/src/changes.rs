@@ -1468,6 +1468,7 @@ mod tests {
             anchor_from: "workspace",
             subject_kind: "git_commit".into(),
             subject_ref: subject.into(),
+            since: None,
         };
         units(&gather(&[r], 0).unwrap())
     }
@@ -1484,6 +1485,7 @@ mod tests {
             anchor_from: "workspace",
             subject_kind: "git_commit".into(),
             subject_ref: subject.into(),
+            since: None,
         };
         let ev = gather(&[r], 0).unwrap();
         let mut us = units(&ev);
@@ -1504,6 +1506,7 @@ mod tests {
             anchor_from: "workspace",
             subject_kind: "git_commit".into(),
             subject_ref: b,
+            since: None,
         };
         let mut ev = gather(&[r], 0).unwrap();
         let mut us = units(&ev);
@@ -1715,6 +1718,7 @@ mod tests {
                 anchor_from: "workspace",
                 subject_kind: "git_commit".into(),
                 subject_ref: b.clone(),
+                since: None,
             }],
             0,
         )
@@ -1861,6 +1865,7 @@ mod tests {
                 anchor_from: "workspace",
                 subject_kind: "git_commit".into(),
                 subject_ref: b,
+                since: None,
             }],
             0,
         )

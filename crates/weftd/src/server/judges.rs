@@ -55,7 +55,18 @@ pub(super) struct Bench {
     /// Seated again after Weft started again: the tasks still out went with
     /// the old judges, and are handed back first.
     reclaim: bool,
+    /// The work it judges, by its root Ask.
+    work: Option<String>,
+    /// Its opening, until every judge it started first has been handed its
+    /// task, with the count last told.
+    opening: Option<(jobs::Handle, (usize, usize))>,
+    /// Its readers at work, told until it settles.
+    readers: Option<jobs::Handle>,
 }
+
+/// What the readers of an Eval are doing, as its record says: each step,
+/// the reading one counted, and the harness of the one under way.
+pub(super) type Seen = (Vec<weft_proto::JobStep>, String);
 
 /// One judge pane.
 struct Seat {
@@ -163,6 +174,9 @@ impl Bench {
             again: false,
             looked: Instant::now(),
             reclaim: false,
+            work: None,
+            opening: None,
+            readers: None,
         }
     }
 
@@ -229,6 +243,41 @@ fn takes(hosts: &Hosts) -> Vec<(Option<&str>, &str)> {
         Some(one) if each.all(|h| h == one) => vec![(None, one.as_str())],
         _ => ROLES.iter().map(|r| (Some(*r), host(hosts, r))).collect(),
     }
+}
+
+/// What the readers of an Eval are doing, read from its record: none once it
+/// has closed.
+fn readers_seen(look: &Look) -> Option<Seen> {
+    use weft_core::eval_view::Light;
+    use weft_proto::StepState;
+    let view = crate::record::eval_view(&look.root, &look.eval_id)?;
+    let progress = view.running()?;
+    let (read, of) = progress.reads;
+    let steps: Vec<weft_proto::JobStep> = progress
+        .steps
+        .iter()
+        .enumerate()
+        .map(|(i, lit)| {
+            // The whole reading is the step that counts what is read.
+            let counted = i == 1 && of > 0;
+            weft_proto::JobStep {
+                key: lit.key.clone(),
+                args: Default::default(),
+                state: match lit.light {
+                    Light::Done => StepState::Done,
+                    Light::Now => StepState::Now,
+                    Light::Next => StepState::Next,
+                },
+                ms: None,
+                done: counted.then_some(read as u64),
+                total: counted.then_some(of as u64),
+                unit: counted.then(|| "reads".to_string()),
+            }
+        })
+        .collect();
+    let questions = steps.last().is_some_and(|s| s.state == StepState::Now);
+    let role = if questions { "question" } else { "read" };
+    Some((steps, host(&look.hosts, role).to_string()))
 }
 
 /// One step: settle what each judge finished, give idle judges what they can
@@ -334,14 +383,68 @@ impl Session {
         client: u64,
         eval_id: &str,
         stage: &weft_core::eval_stages::Stage,
+        opening: Option<jobs::Handle>,
     ) {
-        let benches = &mut self.projects[at].benches;
-        if benches.iter().any(|b| b.eval_id == eval_id) {
+        if self.projects[at].benches.iter().any(|b| b.eval_id == eval_id) {
+            if let Some(job) = opening {
+                job.end(Ok(()));
+            }
             return;
         }
-        benches.push(Bench::new(eval_id.to_string(), hosts(stage), stage.judges, client));
+        let bench = Bench::new(eval_id.to_string(), hosts(stage), stage.judges, client);
+        let bench = Bench { opening: opening.map(|job| (job, (0, 0))), ..bench };
+        self.bench(at, bench);
         keep(&self.projects[at]);
         self.step_judges(at, eval_id);
+    }
+
+    /// An Eval's judges, from now on: its readers at work are told as a job.
+    fn bench(&mut self, at: usize, mut bench: Bench) {
+        let units = self.projects[at].ledger.units();
+        let work = weft_core::work::work(&units, &self.projects[at].ledger.record());
+        bench.work = work.of_eval(&bench.eval_id).map(|u| u.root.clone());
+        let on = weft_proto::JobOn {
+            work: bench.work.clone(),
+            eval: Some(bench.eval_id.clone()),
+            harness: Some(host(&bench.hosts, "read").to_string()),
+            ..Default::default()
+        };
+        let steps = [
+            "eval_view.step.asked",
+            "eval_view.step.reading",
+            "eval_view.step.again_next",
+            "eval_view.step.questions_next",
+        ];
+        let steps = steps.iter().map(|k| jobs::step(k, &[], None)).collect();
+        bench.readers = Some(self.jobs.begin("readers", on, Some(at), None, steps));
+        self.projects[at].benches.push(bench);
+    }
+
+    /// How many of the judges an Eval's opening started have been handed
+    /// their task: told while it opens, and it has opened once they all have,
+    /// or once it started none.
+    fn tell_judges_started(&mut self, at: usize) {
+        for bench in &mut self.projects[at].benches {
+            let Some((job, told)) = &mut bench.opening else { continue };
+            let total = bench.seats.len();
+            // Its first step has not said yet what it starts.
+            if total == 0 && bench.stepping {
+                continue;
+            }
+            let started = bench
+                .seats
+                .iter()
+                .filter(|s| s.gone || s.held.as_ref().is_none_or(|h| h.typed > 0))
+                .count();
+            if (started, total) != *told {
+                job.count(started as u64, Some(total as u64));
+                *told = (started, total);
+            }
+            if started == total {
+                job.end(Ok(()));
+                bench.opening = None;
+            }
+        }
     }
 
     /// The project opened in a Weft started again: the Evals the last one
@@ -352,7 +455,7 @@ impl Session {
             let judges = weft_core::eval_stages::resolve(stages, None, "").judges;
             let bench =
                 Bench { reclaim: true, ..Bench::new(eval_id.clone(), hosts, judges, client) };
-            self.projects[at].benches.push(bench);
+            self.bench(at, bench);
             self.step_judges(at, &eval_id);
         }
     }
@@ -375,16 +478,27 @@ impl Session {
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let did = step(&look);
-            let _ = tx.send(Wake::Judged { project: at, eval_id: look.eval_id, did });
+            let seen = readers_seen(&look);
+            let _ = tx.send(Wake::Judged { project: at, eval_id: look.eval_id, did, seen });
         });
     }
 
     /// Do what a step decided.
-    pub(super) fn judged(&mut self, at: usize, eval_id: &str, did: Vec<Did>) {
+    pub(super) fn judged(&mut self, at: usize, eval_id: &str, did: Vec<Did>, seen: Option<Seen>) {
         let Some(i) = self.projects[at].benches.iter().position(|b| b.eval_id == eval_id) else {
             return;
         };
         self.projects[at].benches[i].stepping = false;
+        let bench = &self.projects[at].benches[i];
+        if let (Some(job), Some((steps, harness))) = (&bench.readers, seen) {
+            job.steps(steps);
+            job.on(weft_proto::JobOn {
+                work: bench.work.clone(),
+                eval: Some(bench.eval_id.clone()),
+                harness: Some(harness),
+                ..Default::default()
+            });
+        }
         for d in did {
             let bench = &mut self.projects[at].benches[i];
             match d {
@@ -411,6 +525,9 @@ impl Session {
                 Did::Start { task } => self.start_judge(at, i, task),
                 Did::Done => {
                     let bench = self.projects[at].benches.remove(i);
+                    for job in bench.opening.iter().map(|(j, _)| j).chain(&bench.readers) {
+                        job.end(Ok(()));
+                    }
                     keep(&self.projects[at]);
                     for s in bench.seats {
                         self.close(at, s.pane);
@@ -423,6 +540,7 @@ impl Session {
             self.step_judges(at, eval_id);
         }
         self.type_judges(at);
+        self.tell_judges_started(at);
     }
 
     /// Start a judge pane for a task, in its role's harness, on the model and
@@ -474,7 +592,7 @@ impl Session {
         if !seats.any(|s| s.held.as_ref().is_some_and(|h| h.to_type)) {
             return;
         }
-        let (states, _) = self.agents_of(at);
+        let states = self.states_of(at);
         let states: HashMap<u32, Option<crate::turns::Turn>> = self.projects[at]
             .panes
             .iter()
@@ -503,6 +621,7 @@ impl Session {
                     project: at,
                     pane: seat.pane,
                     sends: None,
+                    job: None,
                 };
                 if slot.typer.get_or_insert_with(|| typing::typer(tx.clone())).send(job).is_ok() {
                     (h.to_type, h.over, h.typed) = (false, false, h.typed + 1);
@@ -554,6 +673,7 @@ impl Session {
             self.step_judges(at, &eval_id);
         }
         self.type_judges(at);
+        self.tell_judges_started(at);
     }
 
     /// The Eval whose judge this pane is, after `f` saw the task it holds.
@@ -809,7 +929,7 @@ mod tests {
                 .unwrap();
             assert!(ok.success(), "git {args:?}");
         }
-        let eval_id = eval_open(&repo, &ask, None, None, Vec::new()).unwrap();
+        let eval_id = eval_open(&repo, &ask, None, None, Vec::new(), &|_| {}).unwrap();
         let ws = ringframe::api::workspace(&repo).unwrap();
         let debate = json!({"debate": {"harness": "sh-a", "question": {"harness": "sh-b"}}});
         let stage = weft_core::eval_stages::resolve(Some(&debate), None, "sh");

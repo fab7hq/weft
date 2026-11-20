@@ -128,14 +128,20 @@ pub fn config_check() -> Result<Value, Error> {
 
 /// Install the latest configuration, as `sync` does.
 pub fn config_sync() -> Result<Value, Error> {
-    crate::workspace::install_config(None).map_err(workspace_error)
+    config_sync_with(&|_| {})
+}
+
+pub use crate::workspace::SyncStep;
+
+/// As `config_sync`, telling `progress` each step as it starts.
+pub fn config_sync_with(progress: &dyn Fn(SyncStep)) -> Result<Value, Error> {
+    crate::workspace::install_config_with(None, progress).map_err(workspace_error)
 }
 
 /// Each session's first prompt that says something, by session id: what
-/// names an agent no Ask has titled.
-pub fn first_prompts(ws: &Workspace) -> std::collections::BTreeMap<String, String> {
-    crate::sessions::first_prompts(ws)
-}
+/// names an agent no Ask has titled. Keep one per workspace and ask it for
+/// the sessions listed: each file is read once, and again only when it changed.
+pub use crate::sessions::FirstPrompts;
 
 // ---- What a harness was seen doing ------------------------------------------------
 
@@ -425,7 +431,20 @@ pub struct EvalOpened {
     pub brief_path: PathBuf,
 }
 
+pub use crate::evaluate::{OpenProgress, OpenStep};
+
 pub fn eval_open(ws: &Workspace, req: EvalOpen<'_>) -> Result<EvalOpened, Error> {
+    eval_open_with(ws, req, &|_| {})
+}
+
+/// As `eval_open`, telling `progress` each step as it starts, and while the
+/// change is read, how many of its files are read: at most every tenth of a
+/// second, and once all are.
+pub fn eval_open_with(
+    ws: &Workspace,
+    req: EvalOpen<'_>,
+    progress: &dyn Fn(OpenProgress),
+) -> Result<EvalOpened, Error> {
     let out = evaluate::open_eval(
         ws,
         evaluate::Open {
@@ -435,6 +454,7 @@ pub fn eval_open(ws: &Workspace, req: EvalOpen<'_>) -> Result<EvalOpened, Error>
             ask: req.ask,
             deny: req.overrides.eval_deny().map(|(from, rules)| (from, rules.to_vec())),
             statements: req.statements,
+            progress: Some(progress),
             ..evaluate::Open::default()
         },
     )?;
@@ -442,6 +462,30 @@ pub fn eval_open(ws: &Workspace, req: EvalOpen<'_>) -> Result<EvalOpened, Error>
         eval_id: str_of(&out, "eval_id"),
         brief_path: PathBuf::from(str_of(&out, "brief_path")),
     })
+}
+
+pub use crate::reads::{EvalPreview, NotRead, Skipped};
+
+/// What the Eval of the work `ask` is in would read now, recording nothing:
+/// where its range starts, its commits and files, what it counts and does
+/// not read, the folder most of it is in, and whether it is large.
+pub fn eval_preview(ws: &Workspace, ask: &str) -> Result<EvalPreview, Error> {
+    Ok(crate::reads::preview(ws, ask)?)
+}
+
+pub use crate::read_check::{Finding, Fix};
+
+/// What the readers would read that `.gitignore` or `.gitattributes` could
+/// keep out, in the project and, with `ask`, in the range of that Ask's
+/// work; each with the line that does it, where one can without hiding a
+/// file a person wrote. Nothing is written. Empty outside Git.
+pub fn read_check(ws: &Workspace, ask: Option<&str>) -> Vec<Finding> {
+    crate::read_check::check(ws, ask)
+}
+
+/// Add a finding's line to its file at the project's root, once.
+pub fn apply_fix(ws: &Workspace, fix: &Fix) -> Result<(), Error> {
+    Ok(crate::read_check::apply(ws, fix)?)
 }
 
 /// A task handed out to a judge.
@@ -649,14 +693,25 @@ pub struct Sealed {
 }
 
 pub fn seal_create(ws: &Workspace, req: SealCreate<'_>) -> Result<Sealed, Error> {
-    let receipt = seal::create_with(
+    seal_create_with(ws, req, &|_| {})
+}
+
+pub use crate::seal::{SealProgress, SealStep};
+
+/// As `seal_create`, telling `progress` each step as it starts, and while
+/// the worktree is read, how many of its files are: at most every tenth of a
+/// second, and once all are.
+pub fn seal_create_with(
+    ws: &Workspace,
+    req: SealCreate<'_>,
+    progress: &dyn Fn(SealProgress),
+) -> Result<Sealed, Error> {
+    let receipt = seal::create_told(
         ws,
-        req.disposition,
-        req.eval_id,
-        req.reason,
-        req.note,
+        (req.disposition, req.eval_id, req.reason, req.note),
         Some(&person()),
         req.answers.as_ref(),
+        progress,
     )?;
     Ok(Sealed { seal_id: str_of(&receipt, "seal_id"), receipt })
 }
@@ -675,7 +730,16 @@ pub struct SealCheck {
 }
 
 pub fn seal_check(ws: &Workspace, seal_id: &str) -> Result<SealCheck, Error> {
-    let report = seal::check(ws, seal_id)?;
+    seal_check_with(ws, seal_id, &|_| {})
+}
+
+/// As `seal_check`, telling `progress` as `seal_create_with` does.
+pub fn seal_check_with(
+    ws: &Workspace,
+    seal_id: &str,
+    progress: &dyn Fn(SealProgress),
+) -> Result<SealCheck, Error> {
+    let report = seal::check_told(ws, seal_id, progress)?;
     Ok(SealCheck {
         fresh: report["fresh"] == json!(true),
         subject_matches: report["subject_matches"] == json!(true),
@@ -715,8 +779,98 @@ pub fn events(ws: &Workspace) -> Result<Vec<Value>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Opening an Eval tells its steps in order, and the files read reach
+    /// all the change's files, the untracked ones counted.
+    #[test]
+    fn opening_an_eval_tells_each_step_in_order() {
+        eval_bench(|ws| {
+            crate::testing::two_asks_and_work(ws);
+            std::fs::write(ws.root.join("src/uptime.js"), "export const uptime = () => 2;\n")
+                .unwrap();
+            for i in 0..3 {
+                std::fs::write(ws.root.join(format!("notes{i}.txt")), "a note\n").unwrap();
+            }
+            let seen = std::cell::RefCell::new(Vec::new());
+            let req = EvalOpen {
+                ask: None,
+                host: "weft",
+                agents: None,
+                overrides: &Overrides::default(),
+                statements: Vec::new(),
+            };
+            eval_open_with(ws, req, &|p| seen.borrow_mut().push(p)).unwrap();
+            let seen = seen.into_inner();
+            let steps: Vec<OpenStep> = seen.iter().map(|p| p.step).collect();
+            assert!(steps.is_sorted(), "{steps:?}");
+            assert_eq!(steps.first(), Some(&OpenStep::Changes));
+            assert!(steps.contains(&OpenStep::Windows));
+            assert_eq!(steps.last(), Some(&OpenStep::Brief));
+            let read: Vec<&OpenProgress> =
+                seen.iter().filter(|p| p.step == OpenStep::Changes && p.total > 0).collect();
+            assert!(read.windows(2).all(|w| w[0].done <= w[1].done), "{read:?}");
+            let last = read.last().expect("the files were counted");
+            // The work commit's three files and the three notes.
+            assert_eq!((last.done, last.total, last.untracked), (6, 6, 3));
+        });
+    }
     use crate::config::Overrides;
     use crate::testing::{answer_task, commit, eval_bench, repo, ws_for};
+
+    /// Sealing tells its steps in order, and while it reads the worktree,
+    /// the files read of all its files; checking the receipt reads them again.
+    #[test]
+    fn sealing_and_checking_a_receipt_tell_the_files_read() {
+        eval_bench(|ws| {
+            crate::testing::two_asks_and_work(ws);
+            std::fs::write(ws.root.join("notes.txt"), "a note\n").unwrap();
+            let files = |seen: &[SealProgress]| -> Vec<(usize, usize)> {
+                seen.iter()
+                    .filter(|p| p.step == SealStep::Files)
+                    .map(|p| (p.done, p.total))
+                    .collect()
+            };
+            let seen = std::cell::RefCell::new(Vec::new());
+            let req = SealCreate {
+                disposition: "accepted",
+                eval_id: None,
+                reason: None,
+                note: None,
+                answers: None,
+            };
+            let sealed = seal_create_with(ws, req, &|p| seen.borrow_mut().push(p)).unwrap();
+            let seen = seen.into_inner();
+            let steps: Vec<SealStep> = seen.iter().map(|p| p.step).collect();
+            assert!(steps.is_sorted(), "{steps:?}");
+            assert_eq!(steps.first(), Some(&SealStep::Checking));
+            assert_eq!(steps.last(), Some(&SealStep::Writing));
+            let read = files(&seen);
+            let total = read.first().expect("the files were counted").1;
+            // The repository's own files, the work's three, and the note.
+            assert!(total >= 4, "{read:?}");
+            assert_eq!(read.first(), Some(&(0, total)), "the total comes first");
+            assert_eq!(read.last(), Some(&(total, total)));
+            assert!(read.windows(2).all(|w| w[0].0 <= w[1].0), "{read:?}");
+
+            let seen = std::cell::RefCell::new(Vec::new());
+            let check = seal_check_with(ws, &sealed.seal_id, &|p| seen.borrow_mut().push(p));
+            assert!(check.unwrap().subject_matches);
+            let seen = seen.into_inner();
+            assert_eq!(seen.first().map(|p| p.step), Some(SealStep::Checking));
+            assert_eq!(files(&seen).last(), Some(&(total, total)));
+        });
+    }
+
+    /// The preview of an Eval through the API, as Weft asks for it.
+    #[test]
+    fn an_evals_preview_says_where_its_range_starts() {
+        eval_bench(|ws| {
+            let (a, _, _) = crate::testing::two_asks_and_work(ws);
+            let seen = eval_preview(ws, &a).unwrap();
+            assert_eq!((seen.since, seen.commits, seen.files, seen.large), ("ask", 1, 3, false));
+            assert_eq!(seen.skipped.total(), 0);
+        });
+    }
 
     const PLAN: &str = "# Uptime\n\n## Phase 1\n\n| # | Step | Done when |\n| --- | --- | --- |\n\
                         | 1 | Add `uptime_seconds` to the server. | A test calls `uptime_seconds`. |\n";

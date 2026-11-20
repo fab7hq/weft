@@ -234,6 +234,7 @@ fn each_offer_types_what_its_dialog_shows() {
             lines: None,
             before: None,
             after: None,
+            q: None,
         })
         .expect("Done");
     let rows: Vec<(String, String, String)> = done["done"]
@@ -266,6 +267,7 @@ fn each_offer_types_what_its_dialog_shows() {
             lines: None,
             before: None,
             after: None,
+            q: None,
         })
         .expect("the commits");
     let commits: Vec<(String, String, bool)> = listed["commits"]
@@ -297,6 +299,7 @@ fn each_offer_types_what_its_dialog_shows() {
             lines: None,
             before: None,
             after: None,
+            q: None,
         })
         .expect("the follow-up's words");
     let words = remedy["words"].as_str().unwrap_or_default().to_string();

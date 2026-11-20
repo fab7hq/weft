@@ -164,10 +164,7 @@ fn sends(props: &SheetProps, host: &str) -> Element {
     let profile = props.clients.iter().find_map(|c| c.read.get(&then));
     let Some(p) = profile else {
         let refused = props.clients.iter().find_map(|c| c.refused.get(&then));
-        return div()
-            .font_size(12)
-            .color(palette::MUTED)
-            .text(super::ringframe::unanswered(refused));
+        return super::ringframe::unanswered(refused, then.clone());
     };
     let mut rows = Vec::new();
     for cap in p["capabilities"].as_array().into_iter().flatten() {
@@ -240,10 +237,7 @@ fn route_rules(props: &SheetProps, host: &str) -> Element {
     let then = Then::Rules { project: false };
     let Some(rules) = props.clients.iter().find_map(|c| c.read.get(&then)) else {
         let refused = props.clients.iter().find_map(|c| c.refused.get(&then));
-        return div()
-            .font_size(12)
-            .color(palette::MUTED)
-            .text(super::ringframe::unanswered(refused));
+        return super::ringframe::unanswered(refused, then.clone());
     };
     let catalog = Some(rules)
         .and_then(|r| r["catalogs"].as_array())

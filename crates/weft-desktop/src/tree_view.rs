@@ -95,38 +95,23 @@ pub fn render_tree(props: &TreeProps) -> Element {
     if !q.is_empty() {
         let mut any_match = false;
         for Listed { root, project: proj, .. } in props.projects {
-            let mut all_agents: Vec<Agent> = proj.agents.rows.clone();
-            if let Some(client) = props.clients.iter().find(|c| c.root == *root) {
-                let (_, earlier_rows) = weft_core::sessions::split(&client.sessions);
-                for r in earlier_rows {
-                    all_agents.push(Agent {
-                        pane: r.pane,
-                        session: r.id.clone(),
-                        harness: r.harness.clone(),
-                        title: r.title.clone(),
-                        state: r.state,
-                        turn: None,
-                        asked: false,
-                        at: r.last,
-                        asks: r.asks,
-                        ask: None,
-                    });
-                }
-            }
+            let client = props.clients.iter().find(|c| c.root == *root);
             let matching_agents: Vec<&Agent> =
-                all_agents.iter().filter(|a| tree::agent_matches(a, q)).collect();
+                proj.agents.rows.iter().filter(|a| tree::agent_matches(a, q)).collect();
+            // The earlier sessions the daemon found, among them all.
+            let found = client.and_then(|c| c.earlier_found.as_ref()).filter(|f| f.q == q);
+            let found_total = found.map_or(0, |f| f.total);
             let matching_asks: Vec<&WorkRow> =
                 proj.work.units.iter().filter(|w| tree::work_matches(w, q)).collect();
-            let total = matching_agents.len() + matching_asks.len();
+            let total = matching_agents.len() + found_total + matching_asks.len();
             if total == 0 {
                 continue;
             }
             any_match = true;
-            let client = props.clients.iter().find(|c| c.root == *root);
             let turbo = client.map_or(props.turbo, |c| c.turbo);
             let zone = client.map_or(0, |c| c.zone);
             tree_el = tree_el.child(render_search_project_row(proj, total));
-            if !matching_agents.is_empty() {
+            if !matching_agents.is_empty() || found_total > 0 {
                 tree_el = tree_el
                     .child(render_section_header("section AGENTS", words::word("tree.agents")));
                 for a in matching_agents {
@@ -135,7 +120,11 @@ pub fn render_tree(props: &TreeProps) -> Element {
                             project: root.clone(),
                             session: a.session.clone(),
                         });
-                    tree_el = tree_el.child(render_agent_row(root, a, selected, turbo, zone));
+                    tree_el =
+                        tree_el.child(render_agent_row(root, a, selected, turbo, zone, false));
+                }
+                if let Some(found) = found {
+                    tree_el = render_earlier_pages(tree_el, root, found, props.selection, zone);
                 }
             }
             if !matching_asks.is_empty() {
@@ -147,11 +136,21 @@ pub fn render_tree(props: &TreeProps) -> Element {
                             project: root.clone(),
                             unit: ask.unit.clone(),
                         });
-                    tree_el = tree_el.child(render_work_row(root, ask, selected));
+                    let doing = client.and_then(|c| c.row_doing(&ask.unit));
+                    tree_el = tree_el.child(render_work_row(root, ask, selected, doing));
                 }
             }
         }
-        if !any_match {
+        // The earlier sessions still searched: not "nothing matches" yet.
+        let searching = props.clients.iter().any(|c| {
+            c.earlier_found.as_ref().is_some_and(|f| f.q == q && f.asking() && f.rows.is_empty())
+        });
+        if searching {
+            tree_el =
+                tree_el.child(div().layer("search searching").self_stretch().pad(16, 16).child(
+                    crate::waiting::busy_line(words::word("wait.searching"), palette::MUTED),
+                ));
+        } else if !any_match {
             tree_el = tree_el.child(
                 div()
                     .layer("search empty")
@@ -213,7 +212,7 @@ pub fn render_tree(props: &TreeProps) -> Element {
                     project: root.clone(),
                     session: a.session.clone(),
                 });
-            tree_el = tree_el.child(render_agent_row(root, a, selected, turbo, zone));
+            tree_el = tree_el.child(render_agent_row(root, a, selected, turbo, zone, false));
         }
         if proj.agents.earlier > 0 {
             let earlier_unfolded = props.unfolded_earlier.contains(root);
@@ -223,7 +222,7 @@ pub fn render_tree(props: &TreeProps) -> Element {
                 } else {
                     format!(
                         "{} ›",
-                        words::fill("tree.earlier", &[("n", &proj.agents.earlier.to_string())])
+                        words::fill("tree.earlier", &[("n", &words::count(proj.agents.earlier))])
                     )
                 };
                 tree_el = tree_el.child(
@@ -239,27 +238,42 @@ pub fn render_tree(props: &TreeProps) -> Element {
                         .border_bottom(palette::LINE)
                         .child(div().font_size(12).color(palette::BLUE_BORDER).text(earlier_label)),
                 );
-            } else if let Some(client) = props.clients.iter().find(|c| c.root == *root) {
-                let (_, earlier_rows) = weft_core::sessions::split(&client.sessions);
-                for r in earlier_rows {
-                    let a = Agent {
-                        pane: r.pane,
-                        session: r.id.clone(),
-                        harness: r.harness.clone(),
-                        title: r.title.clone(),
-                        state: r.state,
-                        turn: None,
-                        asked: false,
-                        at: r.last,
-                        asks: r.asks,
-                        ask: None,
-                    };
-                    let selected = props.selection
-                        == Some(&TreeSelection::Agent {
-                            project: root.clone(),
-                            session: a.session.clone(),
-                        });
-                    tree_el = tree_el.child(render_agent_row(root, &a, selected, turbo, zone));
+            } else {
+                tree_el = tree_el.child(
+                    div()
+                        .layer("row earlier sessions")
+                        .on_click(TreeAct::OpenEarlier(root.clone()))
+                        .self_stretch()
+                        .shrink_0()
+                        .h(36)
+                        .flex_row()
+                        .gap(10)
+                        .style("padding", "0 16px 0 32px")
+                        .items_center()
+                        .justify_between()
+                        .border_bottom(palette::LINE)
+                        .child(div().font_size(12).color(palette::BLUE_BORDER).text(format!(
+                            "{} {}",
+                            caret(false),
+                            words::word("tree.earlier_title")
+                        )))
+                        .child(
+                            div()
+                                .shrink_0()
+                                .font_mono()
+                                .font_size(11)
+                                .color(palette::DIM)
+                                .text(words::count(proj.agents.earlier)),
+                        ),
+                );
+                if let Some(client) = client {
+                    tree_el = render_earlier_pages(
+                        tree_el,
+                        root,
+                        &client.earlier_rows,
+                        props.selection,
+                        zone,
+                    );
                 }
             }
         }
@@ -269,7 +283,8 @@ pub fn render_tree(props: &TreeProps) -> Element {
         for w in &proj.work.units {
             let selected = props.selection
                 == Some(&TreeSelection::Work { project: root.clone(), unit: w.unit.clone() });
-            tree_el = tree_el.child(render_work_row(root, w, selected));
+            let doing = client.and_then(|c| c.row_doing(&w.unit));
+            tree_el = tree_el.child(render_work_row(root, w, selected, doing));
         }
         if proj.work.earlier > 0 {
             let selected =
@@ -664,7 +679,14 @@ pub fn status_shape(state: State, needs_you: bool) -> (&'static str, &'static st
 /// An agent's row (card 11.12): its status shape and name, the latest Ask's
 /// title or its first prompt, else its harness; then its harness, state and
 /// time.
-fn render_agent_row(project: &Path, a: &Agent, selected: bool, turbo: bool, zone: i64) -> Element {
+fn render_agent_row(
+    project: &Path,
+    a: &Agent,
+    selected: bool,
+    turbo: bool,
+    zone: i64,
+    earlier: bool,
+) -> Element {
     let layer_name = match &a.title {
         Some(t) => format!("row agent {} {t}", a.harness),
         None => format!("row agent {}", a.harness),
@@ -687,7 +709,7 @@ fn render_agent_row(project: &Path, a: &Agent, selected: bool, turbo: bool, zone
     if turbo && running {
         first = first.child(div().shrink_0().font_size(11).color(palette::AMBER).text("⚡"));
     }
-    let about = line(agent_about(a, zone))
+    let about = line(if earlier { earlier_about(a, zone) } else { agent_about(a, zone) })
         .layer("agent about")
         .font_mono()
         .font_size(11)
@@ -704,9 +726,10 @@ fn render_agent_row(project: &Path, a: &Agent, selected: bool, turbo: bool, zone
     } else {
         mark
     };
-    row(layer_name, 52, 32, selected)
+    let indent = if earlier { 48 } else { 32 };
+    row(layer_name, 52, indent, selected)
         .style("align-items", "flex-start")
-        .style("padding", "8px 16px 8px 32px")
+        .style("padding", format!("8px 16px 8px {indent}px"))
         .on_click(TreeAct::SelectAgent {
             project: project.to_path_buf(),
             session: a.session.clone(),
@@ -716,10 +739,116 @@ fn render_agent_row(project: &Path, a: &Agent, selected: bool, turbo: bool, zone
         .child(text)
 }
 
+/// The earlier sessions read, under their row, a page at a time: each
+/// indented, newest first; then "Show N more" while some are not shown.
+fn render_earlier_pages(
+    mut el: Element,
+    root: &Path,
+    pages: &crate::earlier::Pages,
+    selection: Option<&TreeSelection>,
+    zone: i64,
+) -> Element {
+    for r in &pages.rows {
+        let a = Agent {
+            pane: r.pane,
+            session: r.id.clone(),
+            harness: r.harness.clone(),
+            title: r.title.clone(),
+            state: r.state,
+            turn: None,
+            asked: false,
+            at: r.last,
+            asks: r.asks,
+            ask: None,
+        };
+        let selected = selection
+            == Some(&TreeSelection::Agent { project: root.to_path_buf(), session: r.id.clone() });
+        el = el.child(render_agent_row(root, &a, selected, false, zone, true));
+    }
+    // A read that failed says why, with Try again.
+    if let Some(why) = &pages.failed {
+        let again = TreeAct::EarlierAgain(root.to_path_buf());
+        el = el.child(div().self_stretch().style("padding", "8px 16px 8px 48px").child(
+            crate::waiting::failed(crate::waiting::could_not_read(why), Some(again.into())),
+        ));
+    }
+    let more = pages.more_count();
+    if more == 0 {
+        // The first page still coming: a line breathes where it will be.
+        if pages.asking() && pages.rows.is_empty() {
+            el = el.child(
+                div()
+                    .layer("row earlier reading")
+                    .self_stretch()
+                    .h(32)
+                    .flex_row()
+                    .items_center()
+                    .style("padding", "0 16px 0 48px")
+                    .child(crate::waiting::dot()),
+            );
+        }
+        return el;
+    }
+    let shown = words::fill(
+        "tree.earlier_shown",
+        &[("shown", &words::count(pages.rows.len())), ("total", &words::count(pages.total))],
+    );
+    el.child(
+        div()
+            .layer("row earlier more")
+            .on_click(TreeAct::MoreEarlier(root.to_path_buf()))
+            .self_stretch()
+            .shrink_0()
+            .h(32)
+            .flex_row()
+            .gap(10)
+            .style("padding", "0 16px 0 48px")
+            .items_center()
+            .justify_between()
+            .border_bottom(palette::LINE)
+            .child(
+                div()
+                    .flex_row()
+                    .gap(8)
+                    .items_center()
+                    .children(pages.asking().then(crate::waiting::dot))
+                    .child(
+                        div()
+                            .font_size(12)
+                            .color(palette::BLUE_BORDER)
+                            .text(words::fill("tree.earlier_more", &[("n", &words::count(more))])),
+                    ),
+            )
+            .child(div().shrink_0().font_mono().font_size(11).color(palette::DIM).text(shown)),
+    )
+}
+
+/// What time it is, in milliseconds since the epoch.
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64)
+}
+
+/// An earlier session's second line: its harness (when its name is not)
+/// and its time, with its day.
+fn earlier_about(a: &Agent, zone: i64) -> String {
+    let mut parts = Vec::new();
+    if a.title.is_some() {
+        parts.push(a.harness.clone());
+    }
+    if a.at > 0 {
+        parts.push(weft_core::sessions::day_time(a.at, now_millis(), zone));
+    }
+    parts.join(" · ")
+}
+
 /// An agent's second line: its harness (when its name is not), its state
-/// and its time.
+/// and its time, with its day.
 fn agent_about(a: &Agent, zone: i64) -> String {
-    let time = clock(a.at, zone);
+    let now = now_millis();
+    let time =
+        if a.at > 0 { weft_core::sessions::day_time(a.at, now, zone) } else { String::new() };
     let state = match a.state {
         State::Running if turns::needs_you(a.turn, a.asked) => {
             words::word("turn.waiting").to_string()
@@ -751,8 +880,12 @@ pub fn status_colour(s: &Status) -> &'static str {
 
 /// A unit of work (card 11.10): its title, its harness, and its one status;
 /// and, while it has Asks no Seal closed, a second line counting them.
-fn render_work_row(project: &Path, w: &WorkRow, selected: bool) -> Element {
-    let colour = status_colour(&w.status);
+fn render_work_row(project: &Path, w: &WorkRow, selected: bool, doing: Option<&str>) -> Element {
+    // While its Eval opens or it is sealed, it says so in its status's place.
+    let (colour, status) = match doing {
+        Some(said) => (palette::BLUE_BORDER, said.to_string()),
+        None => (status_colour(&w.status), tree::status_word(&w.status)),
+    };
     let first = div()
         .self_stretch()
         .flex_row()
@@ -774,14 +907,7 @@ fn render_work_row(project: &Path, w: &WorkRow, selected: bool) -> Element {
                         .text(format!("· {}", w.harness)),
                 ),
         )
-        .child(
-            div()
-                .shrink_0()
-                .font_mono()
-                .font_size(11)
-                .color(colour)
-                .text(tree::status_word(&w.status)),
-        );
+        .child(div().shrink_0().font_mono().font_size(11).color(colour).text(status));
     let click = TreeAct::SelectWork { project: project.to_path_buf(), unit: w.unit.clone() };
     let layer = format!("row unit {}", w.title);
     if w.open == 0 || matches!(w.status, Status::Sealed { .. }) {

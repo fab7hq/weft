@@ -30,6 +30,8 @@ struct Client {
     stream: UnixStream,
     lines: Lines<UnixStream>,
     id: u64,
+    /// Every session an `agents` event told of, however it was read.
+    told: BTreeSet<String>,
 }
 
 impl Client {
@@ -43,7 +45,14 @@ impl Client {
             std::thread::sleep(Duration::from_millis(20));
         };
         let lines = Lines::new(stream.try_clone().expect("clone"));
-        Client { stream, lines, id: 0 }
+        Client { stream, lines, id: 0, told: BTreeSet::new() }
+    }
+
+    /// The sessions an `agents` event tells of, noted.
+    fn note(&mut self, line: &Line) {
+        if let Line::Event(Event::Agents { changed, .. }) = line {
+            self.told.extend(changed.iter().map(|s| s.id.clone()));
+        }
     }
 
     fn call(&mut self, call: Call) -> u64 {
@@ -59,6 +68,7 @@ impl Client {
         while Instant::now() < deadline {
             self.stream.set_read_timeout(Some(Duration::from_millis(20))).expect("timeout");
             if let Ok(Some(line)) = self.lines.next() {
+                self.note(&line);
                 got.push(line);
             }
         }
@@ -70,7 +80,11 @@ impl Client {
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
             self.stream.set_read_timeout(Some(Duration::from_millis(100))).expect("timeout");
-            match self.lines.next() {
+            let line = self.lines.next();
+            if let Ok(Some(line)) = &line {
+                self.note(line);
+            }
+            match line {
                 Ok(Some(Line::Event(e))) => {
                     if let Some(found) = pick(&e) {
                         return found;
@@ -233,7 +247,6 @@ fn the_judges_of_an_eval_are_sessions_weft_starts() {
     let mut judges: BTreeMap<u32, Judge> = BTreeMap::new();
     let mut alive: BTreeSet<u32> = BTreeSet::from([first]);
     let (mut most, mut refused, mut exited) = (0, None::<String>, None::<String>);
-    let mut sessions_seen: BTreeSet<String> = BTreeSet::new();
     let deadline = Instant::now() + Duration::from_secs(120);
     let eval = loop {
         if Instant::now() >= deadline {
@@ -259,9 +272,6 @@ fn the_judges_of_an_eval_are_sessions_weft_starts() {
                 }
                 Line::Event(Event::Panes { panes }) => {
                     alive = panes.iter().map(|p| p.pane).filter(|p| *p != work).collect();
-                }
-                Line::Event(Event::Agents { sessions, .. }) => {
-                    sessions_seen.extend(sessions.into_iter().map(|s| s.id));
                 }
                 _ => {}
             }
@@ -304,6 +314,7 @@ fn the_judges_of_an_eval_are_sessions_weft_starts() {
                         lines: Some(50),
                         before: None,
                         after: None,
+                        q: None,
                     });
                     let screen =
                         other.pump(Duration::from_millis(500)).into_iter().find_map(|l| match l {
@@ -377,8 +388,10 @@ fn the_judges_of_an_eval_are_sessions_weft_starts() {
     assert!(rereads > 0, "a second reading ran");
 
     // No judge is an agent; the work's own agent is.
-    assert!(sessions_seen.contains("work-1"), "{sessions_seen:?}");
-    assert!(!sessions_seen.iter().any(|s| s.starts_with("j-")), "{sessions_seen:?}");
+    // Every session the agents were ever told of.
+    let told = &c.told;
+    assert!(told.contains("work-1"), "{told:?}");
+    assert!(!told.iter().any(|s| s.starts_with("j-")), "{told:?}");
     let kept: Value = serde_json::from_str(
         &std::fs::read_to_string(root.join(".fab7/weft/judges.json")).expect("judges.json"),
     )
@@ -408,6 +421,7 @@ fn the_judges_of_an_eval_are_sessions_weft_starts() {
         lines: Some(200),
         before: None,
         after: None,
+        q: None,
     });
     let text = c
         .pump(Duration::from_millis(500))

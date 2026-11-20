@@ -1,8 +1,10 @@
-//! Reading Weft's own session receipts for one project,
-//! `~/.fab7/weft/sessions/<project key>/<harness>/<id>.jsonl` ([`crate::receipts`]).
+//! Weft's own session receipts for one project,
+//! `~/.fab7/weft/sessions/<project key>/<harness>/<id>.jsonl` ([`crate::receipts`]),
+//! kept in memory.
 //!
-//! What a receipt means lives in [`weft_core::turns`]; walking the directory
-//! happens here.
+//! weftd writes every receipt itself, so they are read from disk once, when
+//! a project opens, and then again only one file at a time, as weftd writes
+//! it. What a receipt means lives in [`weft_core::turns`].
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -11,18 +13,22 @@ use std::time::SystemTime;
 use weft_core::sessions::{Heard, Process};
 pub use weft_core::turns::*;
 
-/// Every session's receipts in one project, re-read only when a file moved.
+/// Every session's receipts in one project, as their files last read.
 #[derive(Default)]
 pub struct Turns {
-    seen: HashMap<PathBuf, (SystemTime, u64, Option<Session>, Option<Process>)>,
+    dir: PathBuf,
+    /// By harness and session id: its latest event, and the process its
+    /// receipts name last.
+    seen: HashMap<(String, String), (Option<Session>, Option<Process>)>,
+    /// How many times what they say has changed: what was built from them
+    /// is built again only when this moved.
+    moves: u64,
 }
 
 impl Turns {
-    /// Look again at one project's receipts (`dir`), and answer every
-    /// session whose latest receipt is new.
-    pub fn refresh(&mut self, dir: &Path) -> Vec<Session> {
-        let mut found = HashMap::new();
-        let mut heard = Vec::new();
+    /// Read every receipt of one project (`dir`), once.
+    pub fn load(dir: &Path) -> Self {
+        let mut turns = Turns { dir: dir.to_path_buf(), ..Default::default() };
         for harness in std::fs::read_dir(dir).into_iter().flatten().flatten() {
             let h = harness.file_name().to_string_lossy().into_owned();
             for session in std::fs::read_dir(harness.path()).into_iter().flatten().flatten() {
@@ -30,35 +36,69 @@ impl Turns {
                 if path.extension().is_none_or(|e| e != "jsonl") {
                     continue;
                 }
-                let Ok(meta) = std::fs::metadata(&path) else { continue };
-                let stamp = (meta.modified().unwrap_or(SystemTime::UNIX_EPOCH), meta.len());
-                let entry = match self.seen.remove(&path) {
-                    Some(old) if (old.0, old.1) == stamp => old,
-                    old => {
-                        let id =
-                            path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-                        let text = std::fs::read_to_string(&path).unwrap_or_default();
-                        let now = read(&h, &id, &text);
-                        let before = old.and_then(|o| o.2).map(|s| (s.latest, s.at));
-                        if let Some(s) = now.as_ref().filter(|s| Some((s.latest, s.at)) != before) {
-                            heard.push(s.clone());
-                        }
-                        (stamp.0, stamp.1, now, weft_core::sessions::process(&text))
-                    }
-                };
-                found.insert(path, entry);
+                let id = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+                turns.reread(&h, &id);
             }
         }
-        self.seen = found;
-        heard.sort_by_key(|s| s.at);
-        heard
+        turns
+    }
+
+    /// The folder these receipts are in.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// Read one session's receipts again, after weftd wrote them. True when
+    /// what they say changed.
+    pub fn reread(&mut self, harness: &str, id: &str) -> bool {
+        let key = (harness.to_string(), id.to_string());
+        let path = self.dir.join(harness).join(format!("{id}.jsonl"));
+        let now = match std::fs::read_to_string(&path) {
+            Ok(text) => Some((read(harness, id, &text), weft_core::sessions::process(&text))),
+            Err(_) => None,
+        };
+        let changed = match now {
+            Some(now) => self.seen.insert(key, now.clone()).is_none_or(|was| was != now),
+            None => self.seen.remove(&key).is_some(),
+        };
+        if changed {
+            self.moves += 1;
+        }
+        changed
+    }
+
+    /// Forget the sessions whose receipts were removed from disk. True when
+    /// one of them was this project's.
+    pub fn forget(&mut self, removed: &[PathBuf]) -> bool {
+        let mut changed = false;
+        for path in removed {
+            let (Ok(rest), Some(id)) = (path.strip_prefix(&self.dir), path.file_stem()) else {
+                continue;
+            };
+            let Some(harness) = rest.parent().and_then(Path::to_str) else { continue };
+            let key = (harness.to_string(), id.to_string_lossy().into_owned());
+            changed |= self.seen.remove(&key).is_some();
+        }
+        if changed {
+            self.moves += 1;
+        }
+        changed
+    }
+
+    /// How many times what the receipts say has changed.
+    pub fn moves(&self) -> u64 {
+        self.moves
+    }
+
+    /// One session's latest event.
+    pub fn session(&self, harness: &str, id: &str) -> Option<&Session> {
+        self.seen.get(&(harness.to_string(), id.to_string()))?.0.as_ref()
     }
 
     /// Every session's latest event, in a fixed order, so the same receipts
-    /// always make the same answer and nothing is told twice.
+    /// always make the same answer.
     pub fn sessions(&self) -> Vec<Session> {
-        let mut all: Vec<Session> =
-            self.seen.values().filter_map(|(_, _, s, _)| s.clone()).collect();
+        let mut all: Vec<Session> = self.seen.values().filter_map(|(s, _)| s.clone()).collect();
         all.sort_by(|a, b| (&a.harness, &a.id).cmp(&(&b.harness, &b.id)));
         all
     }
@@ -67,7 +107,7 @@ impl Turns {
     pub fn heard(&self) -> Vec<Heard> {
         self.seen
             .values()
-            .filter_map(|(_, _, s, p)| {
+            .filter_map(|(s, p)| {
                 Some(Heard { session: s.clone()?, process: p.clone(), streamed: false })
             })
             .collect()
@@ -153,32 +193,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_receipt_is_read_once_and_again_only_when_it_moves() {
+    fn receipts_are_read_when_a_project_opens_and_then_one_file_at_a_time_as_weftd_writes() {
         let base = tempfile::tempdir().unwrap();
         let (base, root) = (base.path(), Path::new("/work/thing"));
         let dir = crate::receipts::project_dir(base, root);
-        let signal = |state: &str, at: i64| {
+        let signal = |session: &str, state: &str, at: i64| {
             let sent = weft_core::signal::Sent {
                 harness: "claude-code".into(),
-                session: "s1".into(),
+                session: session.into(),
                 state: Some(state.into()),
                 ..Default::default()
             };
             crate::receipts::record(base, root, &sent, at).unwrap();
         };
-        signal("ready", 1_000);
-        let mut turns = Turns::default();
-        assert_eq!(turns.refresh(&dir).len(), 1, "first sight");
-        assert!(turns.refresh(&dir).is_empty(), "nothing moved");
-        assert_eq!(turns.sessions()[0].latest, Turn::Ready);
-        signal("working", 2_000);
-        assert_eq!(turns.refresh(&dir)[0].latest, Turn::Working, "the new receipt");
+        signal("s1", "ready", 1_000);
+        signal("s2", "ended", 1_000);
+        let mut turns = Turns::load(&dir);
+        assert_eq!(turns.sessions().len(), 2, "every receipt, once");
+        assert_eq!(turns.session("claude-code", "s1").map(|s| s.latest), Some(Turn::Ready));
+        let moves = turns.moves();
+        // Nothing reads the folder again: a file written behind weftd's back
+        // is not seen until weftd reads it.
+        signal("s1", "working", 2_000);
+        assert_eq!(turns.session("claude-code", "s1").map(|s| s.latest), Some(Turn::Ready));
+        assert!(turns.reread("claude-code", "s1"), "the receipt weftd wrote");
+        assert_eq!(turns.session("claude-code", "s1").map(|s| s.latest), Some(Turn::Working));
+        assert!(!turns.reread("claude-code", "s1"), "nothing new");
+        assert_eq!(turns.moves(), moves + 1);
         // A daemon started again reads the same state from the same receipts.
-        let mut again = Turns::default();
-        again.refresh(&dir);
-        assert_eq!(again.sessions(), turns.sessions());
+        assert_eq!(Turns::load(&dir).sessions(), turns.sessions());
+        // Receipts removed from disk are forgotten.
+        let gone = dir.join("claude-code/s2.jsonl");
+        assert!(turns.forget(std::slice::from_ref(&gone)));
+        assert!(turns.session("claude-code", "s2").is_none());
+        assert!(!turns.forget(&[gone]), "forgotten once");
         std::fs::remove_dir_all(&dir).ok();
-        assert!(turns.refresh(&dir).is_empty(), "nothing new was said");
+        assert!(turns.reread("claude-code", "s1"), "its file went");
         assert!(turns.sessions().is_empty());
     }
 

@@ -157,6 +157,100 @@ pub struct Harness {
     pub port: u16,
     /// A client (on) the daemon, hearing the remote view.
     pub app: App,
+    /// What a test adds to what the daemon tells weft remote, when it
+    /// reaches the daemon through [`Harness::proxied`].
+    pub said: Said,
+}
+
+/// Each connection weft remote has on the daemon, toward weft remote, and
+/// the calls the daemon is not to hear, each with what it seems to answer.
+#[derive(Clone, Default)]
+pub struct Said {
+    toward: Arc<Mutex<Vec<Arc<Mutex<UnixStream>>>>>,
+    instead: Arc<Mutex<HashMap<String, Refused>>>,
+}
+
+/// The events a refusal comes after, its code and its message.
+type Refused = (Vec<Event>, String, String);
+
+impl Said {
+    /// A job's call that stands for the call a refusal answers: the proxy
+    /// puts that call's id in its place.
+    pub const THIS_CALL: u64 = u64::MAX;
+
+    /// An event, to each of weft remote's clients, as if the daemon sent it.
+    pub fn event(&self, event: Event) {
+        let line = Line::Event(event).encode();
+        for toward in self.toward.lock().unwrap().iter() {
+            let _ = toward.lock().unwrap().write_all(&line);
+        }
+    }
+
+    /// The next call of `method` never reaches the daemon: these events and
+    /// then its refusal come back instead, as if the daemon said them.
+    pub fn refuse(&self, method: &str, before: Vec<Event>, code: &str, message: &str) {
+        let refused = (before, code.to_string(), message.to_string());
+        self.instead.lock().unwrap().insert(method.to_string(), refused);
+    }
+}
+
+/// A socket in front of the daemon's that passes everything through, the
+/// daemon's side a whole line at a time, so a line a test adds never splits
+/// one of the daemon's.
+fn proxy(daemon: PathBuf) -> (PathBuf, Said) {
+    use std::net::Shutdown;
+    let front = weft_proto::private_socket("wr-front");
+    let listener = std::os::unix::net::UnixListener::bind(&front).unwrap();
+    let said = Said::default();
+    let clients = said.clone();
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(conn) = conn else { return };
+            let Ok(back) = UnixStream::connect(&daemon) else { continue };
+            let (from, mut to) = (conn.try_clone().unwrap(), back.try_clone().unwrap());
+            let toward = Arc::new(Mutex::new(conn));
+            clients.toward.lock().unwrap().push(toward.clone());
+            let (instead, answering) = (clients.instead.clone(), toward.clone());
+            std::thread::spawn(move || {
+                let mut lines = BufReader::new(from);
+                let mut line = Vec::new();
+                while lines.read_until(b'\n', &mut line).is_ok_and(|n| n > 0) {
+                    let call: Value = serde_json::from_slice(&line).unwrap_or_default();
+                    let method = call["method"].as_str().unwrap_or("");
+                    let refused = instead.lock().unwrap().remove(method);
+                    if let Some((before, code, message)) = refused {
+                        let id = call["id"].as_u64().unwrap();
+                        let mut answer = answering.lock().unwrap();
+                        for mut event in before {
+                            if let Event::Progress { job } = &mut event
+                                && job.call == Some(Said::THIS_CALL)
+                            {
+                                job.call = Some(id);
+                            }
+                            let _ = answer.write_all(&Line::Event(event).encode());
+                        }
+                        let _ = answer.write_all(&Line::Error { id, code, message }.encode());
+                    } else if to.write_all(&line).is_err() {
+                        break;
+                    }
+                    line.clear();
+                }
+                let _ = to.shutdown(Shutdown::Write);
+            });
+            std::thread::spawn(move || {
+                let mut lines = BufReader::new(back);
+                let mut line = Vec::new();
+                while lines.read_until(b'\n', &mut line).is_ok_and(|n| n > 0) {
+                    if toward.lock().unwrap().write_all(&line).is_err() {
+                        break;
+                    }
+                    line.clear();
+                }
+                let _ = toward.lock().unwrap().shutdown(Shutdown::Both);
+            });
+        }
+    });
+    (front, said)
 }
 
 pub struct App {
@@ -271,6 +365,23 @@ impl Harness {
         service: &str,
         login: &str,
     ) -> Self {
+        Self::build(name, prepare, state, (service, login), false)
+    }
+
+    /// A daemon and weft remote, as [`Harness::start`], with weft remote
+    /// reaching the daemon through a socket a test can add events to.
+    pub fn proxied(name: &str) -> Self {
+        let none = "http://127.0.0.1:9";
+        Self::build(name, |_| {}, "on", (none, none), true)
+    }
+
+    fn build(
+        name: &str,
+        prepare: impl FnOnce(&Path),
+        state: &str,
+        (service, login): (&str, &str),
+        proxied: bool,
+    ) -> Self {
         let dir = std::env::temp_dir().join(format!("wr-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("remote")).unwrap();
@@ -309,16 +420,18 @@ impl Harness {
             std::thread::sleep(Duration::from_millis(20));
         }
         let mut app = App::connect(&socket);
+        let (front, said) =
+            if proxied { proxy(socket.clone()) } else { (socket.clone(), Said::default()) };
         let settings = weft_remote::run::Settings {
             weft: dir.clone(),
-            socket: socket.clone(),
+            socket: front,
             account: weft_remote::account::Account::at(service, login),
             key: fab7().verifying_key(),
         };
         std::thread::spawn(move || weft_remote::run::serve(settings).unwrap());
         app.wait_view(|v| v["state"] == state);
         if state != "on" {
-            return Harness { dir, socket, port: 0, app };
+            return Harness { dir, socket, port: 0, app, said };
         }
         // Read until the file holds the port: it can be seen before it is written whole.
         let port = loop {
@@ -329,7 +442,7 @@ impl Harness {
             assert!(Instant::now() < deadline, "cloudflared never started");
             std::thread::sleep(Duration::from_millis(20));
         };
-        Harness { dir, socket, port, app }
+        Harness { dir, socket, port, app, said }
     }
 
     pub fn device(&self) -> Device {
@@ -352,6 +465,18 @@ impl Harness {
         let welcome = d.next();
         assert_eq!(welcome["type"], "welcome", "{welcome}");
         d.welcomed = welcome["agents"].as_array().cloned();
+        d.token = token;
+        (d, welcome)
+    }
+
+    /// A device allowed before, connecting again: welcomed.
+    pub fn again(&self, id: &str, token: &str) -> (Device, Value) {
+        let mut d = self.device();
+        d.send(json!({"type": "hello", "v": 2, "device": id, "token": token}));
+        let welcome = d.next();
+        assert_eq!(welcome["type"], "welcome", "{welcome}");
+        d.welcomed = welcome["agents"].as_array().cloned();
+        d.token = token.to_string();
         (d, welcome)
     }
 }
@@ -369,6 +494,8 @@ pub struct Device {
     /// The agents its welcome listed, until `agents` has taken them: an
     /// agent that started before the welcome sends no `agents` after it.
     welcomed: Option<Vec<Value>>,
+    /// The token it was allowed with, once it was.
+    pub token: String,
 }
 
 impl Device {
@@ -378,7 +505,7 @@ impl Device {
         let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
         stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         let (ws, _) = tungstenite::client(request, stream).unwrap();
-        Device { ws, welcomed: None }
+        Device { ws, welcomed: None, token: String::new() }
     }
 
     pub fn send(&mut self, message: Value) {

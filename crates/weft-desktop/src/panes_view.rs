@@ -559,6 +559,16 @@ fn render_pane_group(
             el = el.child(span(glyph).font_mono().font_size(10).color(colour));
         }
         el = el.child(div().style("white-space", "nowrap").text(label.clone()));
+        // A job on its agent, such as a send, breathes beside its name.
+        let busy = props
+            .clients
+            .iter()
+            .find(|c| c.root == tab.project)
+            .and_then(|c| c.job(|j| j.on.pane == Some(tab.pane)));
+        if let Some(p) = busy {
+            let said = p.now_step().map(crate::waiting::step_said).unwrap_or_default();
+            el = el.child(crate::waiting::dot().layer("tab working").attr("title", said));
+        }
         if turbo {
             el = el.child(span("⚡").font_size(11).color(palette::AMBER));
         }
@@ -804,6 +814,12 @@ fn render_conversation_viewport(
                 .text(words::say("web.conversation.unreadable", &harness)),
         );
     } else if let Some(items) = props.conversations.get(&(tab.project.clone(), tab.pane)) {
+        // The page before, while it is read or when it could not be.
+        if let Some(el) =
+            reading(props, &tab.project, crate::daemon::Then::Older { pane: tab.pane })
+        {
+            chat_col.push(el);
+        }
         chat_col.extend(conversation_blocks(
             items,
             &harness,
@@ -813,6 +829,12 @@ fn render_conversation_viewport(
             needs_you,
             zone,
         ));
+    }
+
+    // Nothing read yet: lines that breathe while it comes, or why it could not be.
+    if supports_conversation && !has_items {
+        let then = crate::daemon::Then::Conversation { pane: tab.pane };
+        chat_col.extend(reading(props, &tab.project, then));
     }
 
     if needs_you {
@@ -865,6 +887,21 @@ fn render_conversation_viewport(
         .style("position", "relative")
         .child(scroll)
         .child(to_end(&tab.project, tab.pane).ends("pane conversation", &id))
+}
+
+/// A conversation's read while it comes, or why it could not be read.
+fn reading(
+    props: &PanesProps,
+    project: &std::path::Path,
+    then: crate::daemon::Then,
+) -> Option<Element> {
+    let c = props.clients.iter().find(|c| c.root == project)?;
+    if c.owes(&then) {
+        return Some(crate::waiting::loading(&[520, 640, 380]).style("width", "100%"));
+    }
+    let why = c.refused.get(&then)?;
+    let again = crate::action::SheetAct::TryAgain { project: project.to_path_buf(), then };
+    Some(crate::waiting::failed(crate::waiting::could_not_read(why), Some(again.into())))
 }
 
 /// The conversation's blocks, in order.

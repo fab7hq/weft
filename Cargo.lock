@@ -6624,6 +6624,7 @@ dependencies = [
 name = "weft-proto"
 version = "0.8.0"
 dependencies = [
+ "serde",
  "serde_json",
  "weft-core",
 ]

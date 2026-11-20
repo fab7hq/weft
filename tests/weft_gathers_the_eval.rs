@@ -176,6 +176,7 @@ fn an_eval_is_one_dialog_and_is_opened_by_its_send_once() {
                     lines: Some(50),
                     before: None,
                     after: None,
+                    q: None,
                 },
             );
             std::thread::sleep(Duration::from_millis(100));

@@ -175,6 +175,16 @@ pub fn stub_harness(dir: &Path, name: &str) -> weft_core::harness::Harnesses {
     read
 }
 
+/// A stub harness, as [`stub_harness`], whose hooks say the prompt its
+/// agent received: an Ask can be sent into it.
+pub fn stub_harness_proving(dir: &Path, name: &str) -> weft_core::harness::Harnesses {
+    let file = stub_file(dir, "judge.sh", "Stub")
+        + "[signal]\nsession = \"session_id\"\nworkspace = \"cwd\"\nprompt = [\"said.text\"]\non = []\n";
+    let (read, unread) = weft_core::harness::Harnesses::read(vec![(name.to_string(), file)]);
+    assert!(unread.is_empty(), "the stub harness file reads: {unread:?}");
+    read
+}
+
 /// Stub harnesses, as [`stub_harness`], each titled with its name and run
 /// from its own script, `<dir>/judge-<name>.sh`.
 pub fn stub_harnesses(dir: &Path, names: &[&str]) -> weft_core::harness::Harnesses {

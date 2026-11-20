@@ -10,7 +10,12 @@
 # as cargo leaves them;
 # <fab7-dir> is a fab7 checkout.
 # WEFT_SIGN_IDENTITY names the identity to sign with; without it the bundle
-# is signed ad hoc, which runs on the Mac that made it.
+# is signed ad hoc, which runs on the Mac that made it. An identity signs with
+# the hardened runtime, for notarizing, unless WEFT_HARDENED=0: a self-signed
+# identity has no team, and the hardened runtime would refuse the WebGPU
+# library.
+# WEFT_APP_NAME and WEFT_BUNDLE_ID name another app than Weft
+# (com.getfab7.weft), so it can sit beside it: `bin/reinstall-local`'s.
 set -eu
 
 built=${1:?usage: bin/bundle <built-dir> <out-dir> <fab7-dir>}
@@ -19,7 +24,9 @@ fab7=${3:?usage: bin/bundle <built-dir> <out-dir> <fab7-dir>}
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/Cargo.toml" | head -n 1)
 
-app="$out/Weft.app"
+app_name=${WEFT_APP_NAME:-Weft}
+bundle_id=${WEFT_BUNDLE_ID:-com.getfab7.weft}
+app="$out/$app_name.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 for name in weft-desktop weft ringframe libwebgpu_dawn.dylib; do
@@ -27,7 +34,10 @@ for name in weft-desktop weft ringframe libwebgpu_dawn.dylib; do
     cp "$built/$name" "$app/Contents/MacOS/$name"
     chmod 755 "$app/Contents/MacOS/$name"
 done
-sed "s/VERSION/$version/g" "$root/assets/macos/Info.plist" > "$app/Contents/Info.plist"
+sed -e "s/VERSION/$version/g" \
+    -e "s|<string>Weft</string>|<string>$app_name</string>|" \
+    -e "s|<string>com.getfab7.weft</string>|<string>$bundle_id</string>|" \
+    "$root/assets/macos/Info.plist" > "$app/Contents/Info.plist"
 cp "$root/assets/weft.icns" "$app/Contents/Resources/weft.icns"
 "$root/bin/fab7-files" "$fab7" "$app/Contents/Resources/fab7"
 
@@ -36,7 +46,7 @@ cp "$root/assets/weft.icns" "$app/Contents/Resources/weft.icns"
 # only refuse the WebGPU library, whose signature names no team.
 identity=${WEFT_SIGN_IDENTITY:--}
 hardened=
-[ "$identity" = - ] || hardened="--options runtime"
+[ "$identity" = - ] || [ "${WEFT_HARDENED:-1}" = 0 ] || hardened="--options runtime"
 for name in libwebgpu_dawn.dylib weft ringframe weft-desktop; do
     # shellcheck disable=SC2086 # empty, or two words
     codesign --force $hardened --timestamp=none -s "$identity" "$app/Contents/MacOS/$name"

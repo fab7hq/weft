@@ -307,18 +307,36 @@ fn a_seal_whose_eval_asked_nothing_goes_as_it_always_has() {
 }
 
 #[test]
-fn a_question_read_refused_leaves_the_seal_as_it_always_was() {
+fn a_question_read_refused_leaves_the_seal_as_it_always_was_and_says_why() {
     let (_tmp, mut app, mut wire) = wired_app();
     app.dispatch(SheetAct::SealWork { project: weft(), unit: "ask_3".into() });
     let (id, _) = wire.call();
+    // While they are read, the Seal says so.
+    let reading = app.render().find_layer("Seal disposition bar").unwrap().clone();
+    assert!(reading.find_layer("breathing dot").is_some());
+    assert!(reading.all_text().contains(words::word("seal.q.reading")));
     wire.refuse(id, "RingFrame would not say");
     pumped(&mut app, |a| {
         matches!(
             a.bottom_bar,
-            BottomBarState::SealDisposition { questions: SealQuestions::Unasked, .. }
+            BottomBarState::SealDisposition { questions: SealQuestions::Unread(_), .. }
         )
     });
-    assert!(app.render().find_layer("btn Seal").is_some());
+    let bar = app.render();
+    assert!(bar.find_layer("btn Seal").is_some(), "it seals as with no questions");
+    let failed = bar.find_layer("failed").expect("why, where the questions would be");
+    assert!(failed.all_text().contains("RingFrame would not say"));
+    // Try again reads them again.
+    app.dispatch(SheetAct::TryAgain {
+        project: weft(),
+        then: crate::daemon::Then::Questions { eval: "evl_3".into() },
+    });
+    let (_, call) = wire.call();
+    assert!(matches!(call, Call::Read { ref what, .. } if what == "questions"), "{call:?}");
+    assert!(matches!(
+        app.bottom_bar,
+        BottomBarState::SealDisposition { questions: SealQuestions::Reading, .. }
+    ));
 }
 
 #[test]

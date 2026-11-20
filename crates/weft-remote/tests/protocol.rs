@@ -385,3 +385,262 @@ fn a_device_reads_and_changes_the_machine_s_settings() {
         assert_eq!(answer["code"], "not_allowed", "{key}: {answer}");
     }
 }
+
+/// A job in a project, as weftd sends it: one step, its count, how it ended.
+fn job(kind: &str, state: weft_proto::StepState, done: u64, end: Option<&str>) -> weft_proto::Job {
+    weft_proto::Job {
+        id: "job_1".into(),
+        kind: kind.into(),
+        on: weft_proto::JobOn { work: Some("ask_1".into()), ..Default::default() },
+        call: None,
+        steps: vec![weft_proto::JobStep {
+            key: "step.reading_change".into(),
+            args: Default::default(),
+            state,
+            ms: Some(500),
+            done: Some(done),
+            total: Some(100),
+            unit: Some("files".into()),
+        }],
+        share: None,
+        age_ms: 500,
+        end: end.map(|why| weft_proto::JobEnd { ok: false, why: Some(why.into()) }),
+    }
+}
+
+#[test]
+fn a_device_is_told_each_job_and_the_jobs_there_when_it_connects() {
+    use weft_proto::{Event, StepState};
+    let mut h = Harness::proxied("jobs");
+    let _shell = h.shell("work");
+    let (mut d, _) = h.allowed("d_1");
+    d.agents(1);
+
+    h.said.event(Event::Progress { job: job("seal", StepState::Now, 1, None) });
+    let told = d.next_of("progress");
+    assert_eq!(
+        (told["project"].clone(), told["job"]["id"].clone()),
+        (json!("work"), json!("job_1"))
+    );
+    assert!(told.get("req").is_none(), "no device asked for it: {told}");
+
+    // A device that connects while it runs is told it right after its welcome.
+    let (mut late, _) = h.allowed("d_2");
+    let jobs = late.next_of("jobs");
+    assert_eq!(
+        (jobs["project"].clone(), jobs["jobs"][0]["id"].clone()),
+        (json!("work"), json!("job_1"))
+    );
+
+    // Counts within a second are held back; a step change is not.
+    h.said.event(Event::Progress { job: job("seal", StepState::Now, 2, None) });
+    h.said.event(Event::Progress { job: job("seal", StepState::Done, 100, None) });
+    let next = d.next_of("progress");
+    assert_eq!(next["job"]["steps"][0]["state"], "done", "the count was held back: {next}");
+}
+
+#[test]
+fn the_device_that_asked_is_told_its_job_and_an_eval_that_could_not_open_is_kept() {
+    use weft_proto::{Event, StepState};
+    let mut h = Harness::proxied("refused");
+    let _shell = h.shell("work");
+    let (mut asking, _) = h.allowed("d_1");
+    asking.agents(1);
+    let (mut other, _) = h.allowed("d_2");
+    other.agents(1);
+    let reads = json!({"since": "ask", "when": "2026-11-19T09:12:00.000Z", "commits": 3,
+                       "files": 14, "skipped": {"generated": 1, "vendored": 0, "binary": 1, "lock": 0},
+                       "folder": "src/", "folder_files": 9, "large": false});
+    let eval = Event::Pending {
+        id: "pnd_e".into(),
+        pane: u32::MAX,
+        what: "Eval".into(),
+        why: String::new(),
+        payload: json!({ "reads": reads }).to_string().into_bytes(),
+        sends: None,
+        go: Some(weft_proto::Go { word: "act.eval".into(), warn: false }),
+    };
+    h.said.event(eval);
+    let pending = asking.next_of("pending");
+    assert_eq!((pending["reads"].clone(), pending["text"].clone()), (reads, json!("")));
+
+    // The yes: the opening's job ends failed, then RingFrame's refusal, as
+    // weftd does; the job carries the call it began with.
+    let mut failed = job("eval_open", StepState::Failed, 3, Some("git exited 128"));
+    failed.call = Some(common::Said::THIS_CALL);
+    h.said.refuse(
+        "pending.resolve",
+        vec![Event::Resolved { id: "pnd_e".into(), yes: true }, Event::Progress { job: failed }],
+        "refused",
+        "RingFrame could not read the change",
+    );
+    asking.send(json!({"type": "resolve", "pending": "pnd_e", "yes": true, "req": 1}));
+    let own = asking.next_of("progress");
+    assert_eq!((own["req"].clone(), own["job"]["end"]["ok"].clone()), (json!(1), json!(false)));
+    assert!(own["job"].get("call").is_none(), "the daemon's call is not the device's");
+    assert_eq!(asking.answer(1)["code"], "refused");
+    let theirs = other.next_of("progress");
+    assert!(theirs.get("req").is_none(), "{theirs}");
+    assert_eq!(theirs["job"]["end"]["why"], "git exited 128");
+
+    // The asking phone went to the background and came back: its welcome is
+    // followed by the Eval that could not open, kept until acted on again.
+    let token = asking.token.clone();
+    drop(asking);
+    std::thread::sleep(Duration::from_millis(1100));
+    let (mut back, _) = h.again("d_1", &token);
+    let kept = back.next_of("jobs");
+    assert_eq!(kept["jobs"][0]["end"]["why"], "git exited 128", "{kept}");
+    back.send(json!({"type": "act", "act": "eval", "project": "work", "unit": "ask_1", "req": 2}));
+    let cleared = other.next_of("jobs");
+    assert_eq!(cleared["jobs"], json!([]), "{cleared}");
+}
+
+/// Which files an Eval should skip reach every device: after its welcome,
+/// and each time the daemon's check moves. A device checks again and takes a
+/// line through the daemon, which writes only a line its own check proposed;
+/// an Eval dialog said again under its id replaces the one devices hold.
+#[test]
+fn a_device_is_told_what_to_skip_and_takes_only_a_proposed_line() {
+    use weft_proto::Event;
+    let mut h = Harness::proxied("skip");
+    let _shell = h.shell("work");
+    let (mut d, _) = h.allowed("d_1");
+    // After its welcome, or once the project opens here.
+    let first = d.next_of("skip");
+    assert_eq!((first["project"].clone(), first["findings"].clone()), (json!("work"), json!([])));
+
+    let finding = json!({"kind": "untracked_bulk", "path": "runs/", "files": 30, "bytes": 2000000,
+                         "commits": 0, "kinds_of_files": [["log", 30]],
+                         "fix": {"file": ".gitignore", "line": "/runs/"}});
+    h.said.event(Event::Skip { findings: vec![serde_json::from_value(finding.clone()).unwrap()] });
+    let told = d.next_of("skip");
+    assert_eq!(told["findings"], json!([finding]), "{told}");
+
+    // The daemon checks again; a line it did not propose is refused there.
+    d.send(json!({"type": "skip_check", "project": "work", "req": 1}));
+    assert_eq!(d.answer(1)["findings"], json!([]), "the project has nothing to skip");
+    d.send(json!({"type": "skip_add", "project": "work", "file": ".gitignore",
+                  "line": "/src/", "req": 2}));
+    assert_eq!(d.answer(2)["code"], "not_proposed");
+    d.send(json!({"type": "skip_add", "project": "work", "file": ".gitignore", "req": 3}));
+    assert_eq!(d.answer(3)["code"], "bad_request");
+
+    // An Eval dialog said again: the same id, its reads as they are now.
+    let dialog = |files: u64, added: bool| {
+        let mut f = finding.clone();
+        if added {
+            f["added"] = json!(true);
+        }
+        let reads = json!({"since": "ask", "files": files, "findings": [f]});
+        Event::Pending {
+            id: "pnd_e".into(),
+            pane: u32::MAX,
+            what: "Eval".into(),
+            why: String::new(),
+            payload: json!({ "reads": reads }).to_string().into_bytes(),
+            sends: None,
+            go: Some(weft_proto::Go { word: "act.eval".into(), warn: false }),
+        }
+    };
+    h.said.event(dialog(31, false));
+    assert_eq!(d.next_of("pending")["reads"]["files"], 31);
+    h.said.event(dialog(1, true));
+    let again = d.next_of("pending");
+    assert_eq!(
+        (again["id"].clone(), again["reads"]["findings"][0]["added"].clone()),
+        (json!("pnd_e"), json!(true))
+    );
+    let (_, welcome) = h.allowed("d_2");
+    let held = welcome["pendings"].as_array().unwrap();
+    assert_eq!(held.len(), 1, "one dialog, said again: {welcome}");
+    assert_eq!(held[0]["reads"]["files"], 1);
+}
+
+/// A project whose ledger holds one Ask, the Eval that judged it and the Seal
+/// that accepted it, `sel_1`.
+fn sealed(project: &std::path::Path) {
+    let rf = project.join(".fab7/rf");
+    std::fs::create_dir_all(&rf).unwrap();
+    let events = [
+        json!({"type": "ask.compiled", "id": "ask_1", "time": "2026-10-08T09:00:00Z",
+               "data": {"title": "build number", "delivery_mode": "native_dispatch",
+                        "host": {"name": "sh"}}}),
+        json!({"type": "eval.opened", "id": "evl_1", "time": "2026-10-08T10:00:00Z",
+               "data": {"basis": {"asks": ["ask_1"]}}}),
+        json!({"type": "eval.completed", "id": "evl_1", "time": "2026-10-08T10:05:00Z",
+               "data": {"basis": {"asks": ["ask_1"]}, "report": {"faults": 0}}}),
+        json!({"type": "seal.created", "id": "sel_1", "time": "2026-10-08T10:06:00Z",
+               "actor": {"kind": "human", "id": "local-user"},
+               "links": [{"rel": "seals", "id": "ask_1"}, {"rel": "seals", "id": "evl_1"}],
+               "data": {"basis": {"asks": ["ask_1"]}, "disposition": "accepted"}}),
+    ];
+    let lines: String = events.iter().map(|e| format!("{e}\n")).collect();
+    std::fs::write(rf.join("ledger.jsonl"), lines).unwrap();
+}
+
+/// A Seal's Details come at once, from what weft remote holds, with nothing
+/// said yet of its receipt; whether the receipt holds is its own read, which
+/// the daemon answers once RingFrame has checked it. Its count reaches the
+/// device that asked, and a check that failed carries RingFrame's reason.
+#[test]
+fn a_seals_facts_come_at_once_and_a_failed_receipt_check_says_why() {
+    use weft_proto::{Event, StepState};
+    let mut h = Harness::proxied("receipt");
+    sealed(&h.dir.join("work"));
+    let _shell = h.shell("work");
+    let (mut d, _) = h.allowed("d_1");
+    d.agents(1);
+    // The daemon's next read is not heard: RingFrame's count, then its refusal.
+    let mut check = job("seal_check", StepState::Now, 40, None);
+    check.on = weft_proto::JobOn { seal: Some("sel_1".into()), ..Default::default() };
+    check.call = Some(common::Said::THIS_CALL);
+    let why = "RingFrame could not read the Seal's record (seals/sel_1.json is missing)";
+    h.said.refuse("read", vec![Event::Progress { job: check }], "refused", why);
+
+    d.send(json!({"type": "read", "what": "seal", "project": "work", "seal": "sel_1", "req": 1}));
+    let facts = d.answer(1);
+    assert_eq!(facts["type"], "ok", "{facts}");
+    let seal = &facts["seal"];
+    assert_eq!(
+        (seal["n"].clone(), seal["decision"].clone(), seal["eval"]["eval"].clone()),
+        (json!(1), json!("accepted"), json!("evl_1"))
+    );
+    assert_eq!((seal["receipt"].clone(), seal["holds"].clone()), (json!("sel_1"), Value::Null));
+    assert_eq!(
+        (seal["total"].clone(), seal["asks"][0]["unit"].clone()),
+        (json!(1), json!("ask_1"))
+    );
+
+    d.send(
+        json!({"type": "read", "what": "receipt", "project": "work", "seal": "sel_1", "req": 2}),
+    );
+    let told = d.next_of("progress");
+    assert_eq!(
+        (told["req"].clone(), told["job"]["kind"].clone(), told["job"]["on"]["seal"].clone()),
+        (json!(2), json!("seal_check"), json!("sel_1")),
+        "{told}"
+    );
+    let failed = d.answer(2);
+    assert_eq!(
+        (failed["type"].clone(), failed["code"].clone(), failed["message"].clone()),
+        (json!("error"), json!("refused"), json!(why))
+    );
+
+    // Through to the daemon: RingFrame checks it, and finds no receipt on disk.
+    d.send(
+        json!({"type": "read", "what": "receipt", "project": "work", "seal": "sel_1", "req": 3}),
+    );
+    let checked = d.answer(3);
+    assert_eq!(
+        checked["receipt"],
+        json!({"receipt": "sel_1", "holds": false, "broken": ["the receipt is not on disk"]}),
+        "{checked}"
+    );
+
+    // A Seal that is not here is refused before anything is checked.
+    d.send(
+        json!({"type": "read", "what": "receipt", "project": "work", "seal": "sel_9", "req": 4}),
+    );
+    assert_eq!(d.answer(4)["code"], "no_seal");
+}

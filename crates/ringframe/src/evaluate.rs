@@ -81,7 +81,74 @@ pub(crate) fn git_bytes(root: &Path, args: &[&str], ok: &[i32]) -> Result<Vec<u8
     Ok(out.stdout)
 }
 
+/// What git prints for `input` on its standard input, or None when it could
+/// not run or failed. For reads that ask once about many files.
+pub(crate) fn git_input(root: &Path, args: &[&str], input: &[u8]) -> Option<Vec<u8>> {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdin = child.stdin.take()?;
+    let input = input.to_vec();
+    // Written beside the read, so neither side waits on a full pipe.
+    let writer = std::thread::spawn(move || {
+        let _ = stdin.write_all(&input);
+    });
+    let out = child.wait_with_output().ok()?;
+    let _ = writer.join();
+    out.status.success().then_some(out.stdout)
+}
+
+/// Each file's content hash, kept for the process while its length and
+/// modification time stay the same, so an unchanged file is read once. A file
+/// changed in the last two seconds is not kept: a later change within the
+/// same clock tick would leave its time as it was.
+fn file_sha256(path: &Path, meta: &std::fs::Metadata) -> Result<String, EvalError> {
+    use std::collections::HashMap;
+    use std::sync::{LazyLock, Mutex};
+    use std::time::{Duration, SystemTime};
+    type Seen = HashMap<PathBuf, (u64, SystemTime, String)>;
+    static SEEN: LazyLock<Mutex<Seen>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+    let (len, modified) = (meta.len(), meta.modified().ok());
+    if let Some(modified) = modified {
+        let seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((l, m, sha)) = seen.get(path)
+            && *l == len
+            && *m == modified
+        {
+            return Ok(sha.clone());
+        }
+    }
+    let sha = digest::sha256_file(path)?;
+    if let Some(modified) = modified
+        && modified + Duration::from_secs(2) < SystemTime::now()
+    {
+        let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+        seen.insert(path.to_path_buf(), (len, modified, sha.clone()));
+    }
+    Ok(sha)
+}
+
 pub fn subject_digest(ws: &Workspace, kind: &str, reference: &str) -> Result<String, EvalError> {
+    subject_digest_with(ws, kind, reference, &|_, _| {})
+}
+
+/// As `subject_digest`, telling `files` how many of the worktree's files are
+/// read (`done` of `total`): once the listing gives the total, then at most
+/// every tenth of a second, and once all are. A commit's digest reads no file.
+pub fn subject_digest_with(
+    ws: &Workspace,
+    kind: &str,
+    reference: &str,
+    files: &dyn Fn(usize, usize),
+) -> Result<String, EvalError> {
     match kind {
         "git_commit" => {
             let prefix = git(&ws.root, &["rev-parse", "--show-prefix"])?.trim().to_string();
@@ -102,15 +169,25 @@ pub fn subject_digest(ws: &Workspace, kind: &str, reference: &str) -> Result<Str
             names.sort_unstable();
             use sha2::{Digest, Sha256};
             let mut h = Sha256::new();
-            for name in names {
+            let total = names.len();
+            files(0, total);
+            let mut told = std::time::Instant::now();
+            for (i, name) in names.into_iter().enumerate() {
+                if told.elapsed() >= std::time::Duration::from_millis(100) {
+                    files(i, total);
+                    told = std::time::Instant::now();
+                }
                 let p = root.join(name);
-                if p.is_file() {
+                if let Ok(meta) = p.metadata()
+                    && meta.is_file()
+                {
                     use std::os::unix::fs::PermissionsExt;
-                    let mode = p.metadata().map(|m| m.permissions().mode() & 0o777).unwrap_or(0);
-                    let line = format!("{name}\0{mode:o}\0{}\n", digest::sha256_file(&p)?);
+                    let mode = meta.permissions().mode() & 0o777;
+                    let line = format!("{name}\0{mode:o}\0{}\n", file_sha256(&p, &meta)?);
                     h.update(line.as_bytes());
                 }
             }
+            files(total, total);
             Ok(format!("{:x}", h.finalize()))
         }
         other => Err(ledger("subject.kind", format!("'{other}' not in {KINDS:?}"))),
@@ -134,7 +211,7 @@ pub fn default_subject(ws: &Workspace) -> Result<(String, String), EvalError> {
 
 /// Where the change starts: the anchor asked for; else the last Seal (of
 /// this unit, when one is judged alone); else the first Ask's base.
-fn anchor_of(
+pub(crate) fn anchor_of(
     ws: &Workspace,
     asks: &[Value],
     unit: Option<&[String]>,
@@ -188,10 +265,46 @@ fn rename_target(path: &str) -> String {
 /// Files changed between the anchor and the subject, with line counts. Never
 /// their content.
 fn count_lines(p: &Path) -> u64 {
+    if !untracked_is_text(p) {
+        return 0;
+    }
     std::fs::read(p).map_or(0, |b| b.iter().filter(|&&c| c == b'\n').count() as u64)
 }
 
-fn changes(ws: &Workspace, anchor: &str, subject: &Value) -> Result<Value, EvalError> {
+/// The largest untracked file read into a diff as text.
+const UNTRACKED_TEXT_MAX: u64 = 1 << 20;
+
+/// Whether an untracked file is read as text: no larger than
+/// [`UNTRACKED_TEXT_MAX`], and no NUL in its first 8 KiB, as git judges a
+/// binary file. Only its size and those first bytes are read.
+pub(crate) fn untracked_is_text(path: &Path) -> bool {
+    use std::io::Read;
+    let Ok(meta) = std::fs::metadata(path) else { return false };
+    if !meta.is_file() || meta.len() > UNTRACKED_TEXT_MAX {
+        return false;
+    }
+    let mut head = [0u8; 8192];
+    let n = std::fs::File::open(path).and_then(|mut f| f.read(&mut head)).unwrap_or(0);
+    !head[..n].contains(&0)
+}
+
+/// An untracked file that is not read as text, as git writes a new binary
+/// file: named, never encoded.
+pub(crate) fn binary_added(name: &str) -> Vec<u8> {
+    format!(
+        "diff --git a/{name} b/{name}\nnew file mode 100644\nBinary files /dev/null and b/{name} differ\n"
+    )
+    .into_bytes()
+}
+
+/// `since` is when the work began, in milliseconds since the epoch: an
+/// untracked file older than that is not part of its change.
+fn changes(
+    ws: &Workspace,
+    anchor: &str,
+    subject: &Value,
+    since: Option<i64>,
+) -> Result<Value, EvalError> {
     let kind = str_of(subject, "kind");
     let reference = str_of(subject, "ref");
     let root = if kind == "git_commit" { ws.root.clone() } else { PathBuf::from(&reference) };
@@ -237,10 +350,10 @@ fn changes(ws: &Workspace, anchor: &str, subject: &Value) -> Result<Value, EvalE
         }
     }
     if kind == "worktree" {
-        for name in git(&root, &["ls-files", "--others", "--exclude-standard", "-z"])?.split('\0') {
-            if !name.is_empty() && !files.contains_key(name) {
+        for name in crate::untracked::listed(&root, since)? {
+            if !files.contains_key(&name) {
                 files.insert(
-                    name.to_string(),
+                    name.clone(),
                     json!({
                         "path": name, "status": "added",
                         "added": count_lines(&root.join(name)), "removed": 0,
@@ -254,30 +367,32 @@ fn changes(ws: &Workspace, anchor: &str, subject: &Value) -> Result<Value, EvalE
     Ok(json!({"files": ordered, "total_added": sum("added"), "total_removed": sum("removed")}))
 }
 
-const PATCH_LIMIT: usize = 1 << 20;
+pub(crate) const PATCH_LIMIT: usize = 1 << 20;
 
 /// The exact anchor-to-subject diff, untracked files as new-file hunks, and
 /// whether it had to be cut to stay under the limit.
-fn patch(anchor: &str, subject: &Value, ws: &Workspace) -> Result<(Vec<u8>, bool), EvalError> {
+fn patch(
+    anchor: &str,
+    subject: &Value,
+    ws: &Workspace,
+    since: Option<i64>,
+) -> Result<(Vec<u8>, bool), EvalError> {
     let kind = str_of(subject, "kind");
     let reference = str_of(subject, "ref");
     let root = if kind == "git_commit" { ws.root.clone() } else { PathBuf::from(&reference) };
-    let mut args = vec!["diff", "--relative", "--binary", anchor];
+    // Readers read text: a binary file is named as changed, not encoded.
+    let mut args = vec!["diff", "--relative", anchor];
     if kind == "git_commit" {
         args.push(&reference);
     }
     args.extend(["--", "."]);
     let mut out = git_bytes(&root, &args, &[0])?;
-    if kind == "worktree" {
-        for name in git(&root, &["ls-files", "--others", "--exclude-standard", "-z"])?.split('\0') {
-            if !name.is_empty() {
-                out.extend(git_bytes(
-                    &root,
-                    &["diff", "--no-index", "--binary", "/dev/null", name],
-                    &[0, 1],
-                )?);
-            }
-        }
+    // Past the limit nothing more is kept, so nothing more is read.
+    if kind == "worktree" && out.len() <= PATCH_LIMIT {
+        let names = crate::untracked::listed(&root, since)?;
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let room = Some(PATCH_LIMIT - out.len());
+        out.extend(crate::untracked::diffs(&root, &names, &[], None, room)?);
     }
     if out.len() <= PATCH_LIMIT {
         return Ok((out, false));
@@ -463,7 +578,7 @@ fn later_prompts(ws: &Workspace, asks: &[Value]) -> Result<Vec<Vec<sessions::Pro
 /// When the anchor happened, for the prompts to be counted from. Only a Seal
 /// names a moment in the ledger; an Ask's base commit and a hand-given one do
 /// not, so those keep counting from the first open Ask.
-fn anchor_time(ws: &Workspace, anchor: &Value) -> Option<String> {
+pub(crate) fn anchor_time(ws: &Workspace, anchor: &Value) -> Option<String> {
     let seal_id = anchor.get("seal_id")?.as_str()?;
     store::events(ws)
         .ok()?
@@ -488,6 +603,28 @@ pub(crate) fn event(
     });
     schema::validate_event(&ev)?;
     Ok(ev)
+}
+
+/// What opening an Eval is doing, in order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum OpenStep {
+    /// Reading the change, file by file.
+    Changes,
+    /// Cutting it into what each reader reads.
+    Windows,
+    /// Writing the brief and the readers' tasks.
+    Brief,
+}
+
+/// How far opening an Eval is: its step, and while the change is read, how
+/// many of its files are read (`done` of `total`), of which `untracked` are
+/// files Git does not track.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenProgress {
+    pub step: OpenStep,
+    pub done: usize,
+    pub total: usize,
+    pub untracked: usize,
 }
 
 #[derive(Default)]
@@ -517,10 +654,34 @@ pub struct Open<'a> {
     /// layer's name, or `default`. Recorded once, so every task of this Eval,
     /// in any harness, is given the same rules.
     pub deny: Option<(&'a str, Vec<String>)>,
+    /// Told at each step, and while the change's files are read.
+    pub progress: Option<&'a dyn Fn(OpenProgress)>,
+}
+
+/// When the anchor was recorded, in milliseconds since the epoch: a Seal's
+/// time, the time the Ask that took the base commit was compiled, or a given
+/// commit's own time. The work began then.
+pub(crate) fn anchor_since(ws: &Workspace, asks: &[Value], anchor: &Value) -> Option<i64> {
+    let reference = str_of(anchor, "ref");
+    match anchor["kind"].as_str()? {
+        "seal" => crate::sessions::parse_time(&anchor_time(ws, anchor)?),
+        "ask_base" => asks
+            .iter()
+            .find(|a| a.get("base_commit").and_then(Value::as_str) == Some(reference.as_str()))
+            .and_then(|a| crate::sessions::parse_time(&str_of(a, "time"))),
+        _ => commit_time(&ws.root, &reference),
+    }
+}
+
+/// A commit's own time, in milliseconds since the epoch.
+pub(crate) fn commit_time(root: &Path, reference: &str) -> Option<i64> {
+    let out = git(root, &["show", "-s", "--format=%ct", reference, "--"]).ok()?;
+    out.trim().parse::<i64>().ok().map(|s| s * 1000)
 }
 
 /// Write the facts-only brief over every open Ask and append `eval.opened`.
 pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
+    let progress = args.progress.unwrap_or(&|_| {});
     let agents = args.agents.clone().unwrap_or_else(|| json!({}));
     validate_agents(&agents)?;
     // `ask` does not import `evaluate`.
@@ -560,6 +721,7 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
         (Some(k), Some(r)) => (k.to_string(), r.to_string()),
         _ => default_subject(ws)?,
     };
+    progress(OpenProgress { step: OpenStep::Changes, done: 0, total: 0, untracked: 0 });
     let ask_ids: Vec<String> = asks.iter().map(|a| str_of(a, "ask_id")).collect();
     let mut unit_asks: Vec<String> = Vec::new();
     for a in &ask_ids {
@@ -601,6 +763,7 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
         .map_err(|_| {
             ledger("eval.anchor_missing", format!("{anchor_ref} is not a commit in this workspace"))
         })?;
+    let began = anchor_since(ws, &asks, &anchor);
     let eval_id = ids::new_id("evl");
     let later = later_prompts(ws, &asks)?;
     let (before, counts) =
@@ -665,7 +828,7 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
             stale.len()
         ));
     }
-    let (patch_bytes, cut) = patch(&anchor_ref, &subject, ws)?;
+    let (patch_bytes, cut) = patch(&anchor_ref, &subject, ws, began)?;
     if cut {
         limitations.push("the patch is cut at 1 MiB; read the remaining paths with git".into());
     }
@@ -684,12 +847,15 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
         &anchor_ref,
         &kind,
         &reference,
+        began,
         &args.repos,
         &mut limitations,
+        progress,
     ) {
         Ok(v) => v,
         Err(e) => {
             limitations.push(format!("the evidence could not be prepared: {e}"));
+            progress(OpenProgress { step: OpenStep::Brief, done: 0, total: 0, untracked: 0 });
             (Value::Null, json!({}))
         }
     };
@@ -709,6 +875,20 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
             .collect::<Vec<_>>();
         crate::checks::find(prompts.iter().chain(steps.iter()).map(String::as_str))
     };
+    // What the readers count and do not read, by kind and folder, so an
+    // ignore or a mark that hides real work can be seen. An Eval opens
+    // without it.
+    let not_read: Vec<Value> = {
+        let (root, commit) = match kind.as_str() {
+            "git_commit" => (ws.root.clone(), Some(reference.as_str())),
+            _ => (PathBuf::from(&reference), None),
+        };
+        crate::reads::not_read(&root, &anchor_ref, commit, began)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|n| json!({"kind": n.kind, "folder": n.folder, "files": n.files}))
+            .collect()
+    };
     let brief = json!({
         "schema": BRIEF_SCHEMA, "eval_id": eval_id, "time": sessions::now(),
         "checks": checks,
@@ -721,7 +901,7 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
                 .collect::<Vec<_>>(),
             "unrecorded_prompts_after": counts[i],
         })).collect::<Vec<_>>(),
-        "changes": changes(ws, &anchor_ref, &subject)?,
+        "changes": changes(ws, &anchor_ref, &subject, began)?,
         // Other units' open Asks: their work may be in this change, and is
         // not judged here.
         "elsewhere": elsewhere.iter().map(|a| json!({
@@ -750,6 +930,7 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
             "unrecorded_prompts": before + counts.iter().sum::<usize>(),
             "unrecorded_prompts_before": before,
         },
+        "not_read": not_read,
     });
     for (k, v) in evidence_refs.as_object().into_iter().flatten() {
         data[k] = v.clone();
@@ -819,10 +1000,15 @@ pub fn record_fact(
     }
     let (kind, reference) = default_subject(ws)?;
     let sha = subject_digest(ws, &kind, &reference)?;
+    // A dirty tree's subject is the worktree itself: its digest is the content.
+    let content = if kind == "worktree" && reference == ws.root.to_string_lossy() {
+        sha.clone()
+    } else {
+        worktree_content(ws)?
+    };
     let data = json!({
         "command": command, "outcome": outcome,
-        "subject": {"kind": kind, "ref": reference, "sha256": sha,
-                    "content": worktree_content(ws)?},
+        "subject": {"kind": kind, "ref": reference, "sha256": sha, "content": content},
         "host": host, "session_ref": session, "observed_by": by,
     });
     let actor = json!({"kind": "agent", "id": host});
@@ -1354,6 +1540,121 @@ mod tests {
         });
     }
 
+    /// Set a file's modification time.
+    fn touch(path: &Path, time: std::time::SystemTime) {
+        std::fs::File::options().write(true).open(path).unwrap().set_modified(time).unwrap();
+    }
+
+    /// Only the untracked files made or changed since the work began are
+    /// part of its change: one left there before it, ignored or not, is in no
+    /// file of the Eval, and the progress counts only the ones read.
+    #[test]
+    fn an_untracked_file_older_than_the_work_is_not_part_of_its_change() {
+        eval_bench(|ws| {
+            two_asks_and_work(ws);
+            let before = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+            for (name, body) in
+                [("old.txt", &b"left\n"[..]), ("old.png", b"\0png"), ("edited.txt", b"was\n")]
+            {
+                std::fs::write(ws.root.join(name), body).unwrap();
+                touch(&ws.root.join(name), before);
+            }
+            std::fs::write(ws.root.join("edited.txt"), "changed since\n").unwrap();
+            std::fs::write(ws.root.join("new.txt"), "made since\n").unwrap();
+            std::fs::write(ws.root.join(".git/info/exclude"), "ignored.txt\n").unwrap();
+            std::fs::write(ws.root.join("ignored.txt"), "made since, ignored\n").unwrap();
+            let seen = std::cell::RefCell::new(Vec::new());
+            let tell = |p: OpenProgress| seen.borrow_mut().push(p);
+            let out = open_eval(ws, Open { progress: Some(&tell), ..Open::default() }).unwrap();
+            let brief = brief_of(ws, &out);
+            let paths: Vec<String> = paths_of(&brief["changes"]);
+            assert!(paths.contains(&"new.txt".to_string()), "{paths:?}");
+            assert!(paths.contains(&"edited.txt".to_string()), "{paths:?}");
+            let dir = ws.rf_dir().join(format!("evals/{}", str_of(&out, "eval_id")));
+            let mut written = String::new();
+            for f in std::fs::read_dir(&dir).unwrap() {
+                written
+                    .push_str(&String::from_utf8_lossy(&std::fs::read(f.unwrap().path()).unwrap()));
+            }
+            assert!(written.contains("b/new.txt") && written.contains("changed since"));
+            for gone in ["old.txt", "old.png", "ignored.txt"] {
+                assert!(!written.contains(gone), "{gone} is in the Eval");
+            }
+            let read = seen.borrow().iter().rfind(|p| p.step == OpenStep::Changes).copied();
+            assert_eq!(read.unwrap().untracked, 2, "new.txt and edited.txt");
+        });
+    }
+
+    /// Every file is hashed in full once; while its length and time stay the
+    /// same it is not read again, and the digest is the one hashing every
+    /// file gives.
+    #[test]
+    fn an_unchanged_file_is_hashed_once_and_the_digest_stays_the_same() {
+        eval_bench(|ws| {
+            let root = ws.root.to_string_lossy().to_string();
+            let every_file = || {
+                use sha2::{Digest, Sha256};
+                use std::os::unix::fs::PermissionsExt;
+                let listing = git(
+                    &ws.root,
+                    &["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+                )
+                .unwrap();
+                let mut names: Vec<&str> = listing.split('\0').filter(|n| !n.is_empty()).collect();
+                names.sort_unstable();
+                let mut h = Sha256::new();
+                for name in names {
+                    let p = ws.root.join(name);
+                    let mode = p.metadata().unwrap().permissions().mode() & 0o777;
+                    let sha = digest::sha256_file(&p).unwrap();
+                    h.update(format!("{name}\0{mode:o}\0{sha}\n").as_bytes());
+                }
+                format!("{:x}", h.finalize())
+            };
+            let media = ws.root.join("media.bin");
+            let then = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+            std::fs::write(&media, b"first").unwrap();
+            touch(&media, then);
+            let first = subject_digest(ws, "worktree", &root).unwrap();
+            assert_eq!(first, every_file());
+            std::fs::write(&media, b"other").unwrap();
+            touch(&media, then);
+            assert_eq!(subject_digest(ws, "worktree", &root).unwrap(), first, "not read again");
+            touch(&media, then + std::time::Duration::from_secs(1));
+            let changed = subject_digest(ws, "worktree", &root).unwrap();
+            assert_ne!(changed, first);
+            assert_eq!(changed, every_file());
+        });
+    }
+
+    /// Untracked media is named in the patch, never encoded or read whole,
+    /// and once the patch is past its limit no further file is read.
+    #[test]
+    fn untracked_binaries_are_named_and_the_patch_stops_at_its_limit() {
+        eval_bench(|ws| {
+            two_asks_and_work(ws);
+            let mut media = vec![0u8; 3 << 20];
+            media[100] = 0;
+            std::fs::write(ws.root.join("clip.wav"), &media).unwrap();
+            std::fs::write(ws.root.join("notes.txt"), "a\nb\n").unwrap();
+            let text = "x".repeat(1000) + "\n";
+            for i in 0..1200 {
+                std::fs::write(ws.root.join(format!("gen{i:04}.txt")), &text).unwrap();
+            }
+            let subject = json!({"kind": "worktree", "ref": ws.root.to_string_lossy()});
+            let anchor = head(&ws.root);
+            let (bytes, cut) = patch(&anchor, &subject, ws, None).unwrap();
+            let said = String::from_utf8_lossy(&bytes);
+            assert!(said.contains("Binary files /dev/null and b/clip.wav differ"), "named");
+            assert!(!said.contains("GIT binary patch"), "never encoded");
+            assert!(cut, "1.2 MB of text is past the limit");
+            assert!(bytes.len() <= PATCH_LIMIT);
+            let changed = changes(ws, &anchor, &subject, None).unwrap();
+            let wav = array_of(&changed, "files").iter().find(|f| f["path"] == "clip.wav");
+            assert_eq!(wav.unwrap()["added"], 0, "a binary has no lines to count");
+        });
+    }
+
     /// An Eval on one unit of work covers that unit's open Asks, its
     /// follow-ups among them, anchors on that unit's own Seal (here none, so
     /// its root Ask's base), and names every other open Ask as work it does
@@ -1499,7 +1800,7 @@ mod tests {
             assert_eq!(default_subject(&ws).unwrap().0, "git_commit");
             std::fs::write(repo.path().join("test/app.py"), "new\n").unwrap();
             let subject = json!({"kind": "worktree", "ref": ws.root.to_string_lossy()});
-            let changed = changes(&ws, &anchor, &subject).unwrap();
+            let changed = changes(&ws, &anchor, &subject, None).unwrap();
             assert_eq!(paths_of(&changed), ["app.py"]);
             assert_eq!(changed["total_added"], 1);
             assert_eq!(changed["total_removed"], 1);
@@ -1508,7 +1809,8 @@ mod tests {
                 commit(repo.path(), &[("test/app.py", Some("committed change\n"))], "change");
             assert_ne!(subject_digest(&ws, "git_commit", &project).unwrap(), before);
             let committed =
-                changes(&ws, &anchor, &json!({"kind": "git_commit", "ref": project})).unwrap();
+                changes(&ws, &anchor, &json!({"kind": "git_commit", "ref": project}), None)
+                    .unwrap();
             assert_eq!(paths_of(&committed), ["app.py"]);
         });
     }

@@ -69,8 +69,8 @@ fn an_agent_started_through_the_link_prints_into_its_pane() {
     let spec = c.harnesses.find("cat").unwrap().spec();
     c.spawn("cat", &spec, None).expect("asked");
     let answered = until(&mut c, |_, a| !a.is_empty());
-    let Answered { then, answer } = &answered[0];
-    assert_eq!(*then, Then::Started { session: None });
+    let Answered { then, answer, .. } = &answered[0];
+    assert_eq!(*then, Then::Started { harness: "cat".into(), session: None });
     let pane = answer.as_ref().expect("started")["pane"].as_u64().expect("its pane") as u32;
     until(&mut c, |c, _| c.view(pane).is_some());
 
@@ -93,6 +93,8 @@ fn a_read_is_answered_into_the_project_and_a_refusal_is_handed_back() {
     c.read("judges", "evl_1", None, Then::Judges { eval: "evl_1".into() }).expect("asked");
     until(&mut c, |c, _| !c.owes_any(|_| true));
     assert!(c.read.is_empty());
+    // Its reason is kept, to be said where the record would be.
+    assert!(c.refused.contains_key(&Then::Judges { eval: "evl_1".into() }));
     c.act("eval", None, None, None, None, None).expect("asked");
     let answered = until(&mut c, |_, a| !a.is_empty());
     assert_eq!(answered[0].then, Then::Refusal);

@@ -136,6 +136,22 @@ pub(super) fn render_detail(props: &SheetProps, project: &Path, eval_id: &str) -
         top = top.child(span(said).color(palette::DIM));
     }
     body = body.child(top);
+    // Its record still read through the daemon: lines that breathe where its
+    // findings will be, or why it could not be read.
+    if record.is_none()
+        && let Some(c) = client
+    {
+        let then = Then::Judges { eval: eval_id.to_string() };
+        if c.owes(&then) {
+            body = body.child(div().pad(16, 0).child(crate::waiting::loading(&[500, 590, 380])));
+        } else if let Some(why) = c.refused.get(&then) {
+            let again = SheetAct::TryAgain { project: ids().0, then };
+            body = body.child(div().pad(16, 0).child(crate::waiting::failed(
+                crate::waiting::could_not_read(why),
+                Some(again.into()),
+            )));
+        }
+    }
     if let Some(h) = &d.headline {
         let (look, rest) = h.split_once(" · ").map_or((h.as_str(), None), |(a, b)| (a, Some(b)));
         body = body.child(
@@ -182,6 +198,7 @@ pub(super) fn render_detail(props: &SheetProps, project: &Path, eval_id: &str) -
         };
         body = body.child(div().pad(22, 0).child(note(covers, palette::MUTED)));
     }
+    body = body.children(crate::skip_view::not_read(&d.not_read));
     let seal_what = match (d.questions, d.asks.len()) {
         (0, 1) => word("web.eval.seal_what_one").to_string(),
         (0, n) => fill("web.eval.seal_what", &[("n", &n.to_string())]),
@@ -429,7 +446,22 @@ fn detail_pane(it: &Item, reads_open: bool) -> Element {
 }
 
 /// The lines that show an item, the ones a reading quoted brighter.
-fn lines_pane(v: &EvalView, it: &Item, texts: &dyn Fn(&str) -> Option<String>) -> Element {
+/// One change's lines as read through the daemon: its text, still coming,
+/// or why it could not be read.
+enum Lines {
+    Read(String),
+    Coming,
+    Failed(String),
+    Unread,
+}
+
+fn lines_pane(
+    project: &Path,
+    eval: &str,
+    v: &EvalView,
+    it: &Item,
+    texts: &dyn Fn(&str) -> Lines,
+) -> Element {
     let mut pane = div()
         .layer("eval lines")
         .flex_1()
@@ -465,10 +497,19 @@ fn lines_pane(v: &EvalView, it: &Item, texts: &dyn Fn(&str) -> Option<String>) -
             .style("overflow", "hidden")
             .child(div().color(palette::DIM).text(w.map_or(id.clone(), |w| w.path.clone())));
         match texts(id) {
-            None => {
+            Lines::Unread => {
                 code = code.child(div().color(palette::MUTED).text(word("desktop.eval.no_lines")))
             }
-            Some(t) => {
+            Lines::Coming => code = code.child(crate::waiting::loading(&[420, 520, 300])),
+            Lines::Failed(why) => {
+                let then = Then::Window { eval: eval.to_string(), window: id.clone() };
+                let again = SheetAct::TryAgain { project: project.to_path_buf(), then };
+                code = code.child(crate::waiting::failed(
+                    crate::waiting::could_not_read(&why),
+                    Some(again.into()),
+                ))
+            }
+            Lines::Read(t) => {
                 let quotes = w.map_or(&[][..], |w| &w.quotes);
                 for l in eval_view::numbered(&t, quotes) {
                     let n = l.n.map_or_else(String::new, |n| n.to_string());
@@ -501,9 +542,41 @@ fn arc_svg(i: usize, colour: &str) -> String {
     )
 }
 
-/// While it runs (17.6, 6.7): one ring with an arc per reading, the one under
-/// way breathing, and the steps in quiet text.
-fn progress_pane(project: &Path, p: &Progress, judges: &[&PaneView]) -> Element {
+/// The record's steps, as the steps of a wait show: ✓ done and muted, the
+/// one under way with its dot, those to come faint.
+fn lit_steps(steps: &[weft_core::eval_view::Lit]) -> Element {
+    let rows = steps.iter().map(|s| {
+        let (layer, mark, colour) = match s.light {
+            Light::Done => {
+                ("step done", div().font_mono().color(palette::TEAL).text("✓"), palette::MUTED)
+            }
+            Light::Now => ("step now", crate::waiting::dot(), palette::TEXT),
+            Light::Next => {
+                ("step next", div().font_mono().color(palette::DIM).text("○"), palette::DIM)
+            }
+        };
+        div()
+            .layer(layer)
+            .self_stretch()
+            .flex_row()
+            .gap(10)
+            .items_center()
+            .child(div().w(14).shrink_0().flex_row().justify_center().child(mark))
+            .child(div().layer("step said").color(colour).text(s.name.clone()))
+    });
+    div().layer("steps").self_stretch().flex_col().gap(10).children(rows)
+}
+
+/// While it runs: one ring with an arc per reading, the one under way
+/// breathing, and its steps: as the machine says them, with their times
+/// and how many reads are in, else as the record has them.
+fn progress_pane(
+    project: &Path,
+    p: &Progress,
+    judges: &[&PaneView],
+    job: Option<&crate::waiting::Progress>,
+) -> Element {
+    let now = std::time::Instant::now();
     let mut ring =
         div().layer("progress ring").style("position", "relative").w(150).h(150).shrink_0();
     for (i, a) in p.arcs.iter().enumerate() {
@@ -537,26 +610,35 @@ fn progress_pane(project: &Path, p: &Progress, judges: &[&PaneView]) -> Element 
             .child(div().font_size(20).font_weight(600).text(p.label.clone()))
             .child(div().color(palette::DIM).text(p.note.clone())),
     );
-    let mut steps = div().layer("steps").flex_col().gap(10);
-    for s in &p.steps {
-        steps = steps.child(match s.light {
-            Light::Done => div().color(palette::MUTED).text(format!("✓ {}", s.name)),
-            Light::Now => div().layer("step now").color(palette::TEXT).text(s.name.clone()),
-            Light::Next => div().color(palette::DIM).text(s.name.clone()),
-        });
-    }
-    let mut more = div().flex_col().gap(10).style("padding-top", "14px");
+    let steps = match job.filter(|j| !j.job.steps.is_empty()) {
+        Some(j) => crate::waiting::steps(j, now, true).gap(10),
+        None => lit_steps(&p.steps),
+    };
+    let steps =
+        div().flex_1().style("min-width", "0").style("max-width", "520px").flex_col().child(steps);
+    let mut more =
+        div().flex_col().gap(10).style("padding-top", "14px").style("padding-left", "24px");
     for j in judges {
+        // How long the readers have read, once the machine says.
+        let said = match job {
+            Some(p) => format!(
+                "{} · {} · {}",
+                fill("wait.reading", &[("harness", &j.harness)]),
+                crate::waiting::elapsed(p.since, now),
+                word("eval_view.watch")
+            ),
+            None => format!(
+                "{} · {}",
+                fill("eval_view.is_reading", &[("harness", &j.harness)]),
+                word("eval_view.watch")
+            ),
+        };
         more = more.child(
             div()
                 .layer(format!("judge {}", j.id))
                 .on_click(SheetAct::WatchJudge { project: project.to_path_buf(), pane: j.id })
                 .color(palette::DIM)
-                .text(format!(
-                    "{} · {}",
-                    fill("eval_view.is_reading", &[("harness", &j.harness)]),
-                    word("eval_view.watch")
-                )),
+                .text(said),
         );
     }
     for t in &p.tests {
@@ -598,13 +680,24 @@ pub(super) fn render_view(
                 c.work.record.evals.iter().any(|e| e.id == eval_id && e.completed())
             });
             let said = if judged { "desktop.eval.no_record" } else { "desktop.eval.not_judged" };
+            // Still being read: lines that breathe; not read: why, and Try again.
+            let then = Then::EvalView { eval: eval_id.to_string() };
+            let shown = match client {
+                Some(c) if c.owes(&then) => crate::waiting::loading(&[520, 600, 360, 460]),
+                Some(c) if c.refused.contains_key(&then) => {
+                    let why = c.refused.get(&then).cloned().unwrap_or_default();
+                    let again = SheetAct::TryAgain { project: project.to_path_buf(), then };
+                    crate::waiting::failed(crate::waiting::could_not_read(&why), Some(again.into()))
+                }
+                _ => note(word(said), palette::MUTED),
+            };
             div().self_stretch().flex_1().flex_col().style("padding", "20px").gap(12).children([
                 div()
                     .layer("eval crumb")
                     .on_click(SheetAct::EvalBack)
                     .color(palette::BLUE_BORDER)
                     .text(format!("‹ {crumb}")),
-                note(word(said), palette::MUTED),
+                shown,
             ])
         }
         Some(v) => {
@@ -617,22 +710,28 @@ pub(super) fn render_view(
             let right = match (picked, at.get(1).map(String::as_str)) {
                 (Some(it), Some("lines")) => {
                     let texts = |w: &str| {
-                        client
-                            .and_then(|c| {
-                                c.read.get(&Then::Window {
-                                    eval: eval_id.to_string(),
-                                    window: w.to_string(),
-                                })
-                            })
-                            .and_then(|t| t["text"].as_str().map(str::to_string))
+                        let then =
+                            Then::Window { eval: eval_id.to_string(), window: w.to_string() };
+                        let Some(c) = client else { return Lines::Unread };
+                        match c.read.get(&then).and_then(|t| t["text"].as_str()) {
+                            Some(t) => Lines::Read(t.to_string()),
+                            None if c.owes(&then) => Lines::Coming,
+                            None => match c.refused.get(&then) {
+                                Some(why) => Lines::Failed(why.clone()),
+                                None => Lines::Unread,
+                            },
+                        }
                     };
-                    lines_pane(v, it, &texts)
+                    lines_pane(project, eval_id, v, it, &texts)
                 }
                 (Some(it), more) => detail_pane(it, more == Some("reads")),
                 (None, _) => match v.running() {
                     Some(p) => {
                         let judges = client.map(|c| c.judges(eval_id)).unwrap_or_default();
-                        progress_pane(project, p, &judges)
+                        let job = client.and_then(|c| {
+                            c.job(|j| j.kind == "readers" && j.on.eval.as_deref() == Some(eval_id))
+                        });
+                        progress_pane(project, p, &judges, job)
                     }
                     None => div().flex_1(),
                 },

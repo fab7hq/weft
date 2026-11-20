@@ -84,6 +84,7 @@ impl Client {
             lines: None,
             before: before.map(str::to_string),
             after: after.map(str::to_string),
+            q: None,
         });
         answer["conversation"].clone()
     }
@@ -175,6 +176,7 @@ fn a_pane_reads_the_transcript_its_hook_named_and_nothing_else() {
         lines: None,
         before: Some("not a cursor".into()),
         after: None,
+        q: None,
     });
     assert!(forged.is_err(), "a cursor weftd never gave is refused");
 

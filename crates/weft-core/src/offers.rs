@@ -524,6 +524,8 @@ pub struct EvalDetail {
     pub sealed: Option<SealRef>,
     /// `None` when Seal can run on it, else why not: the act stays.
     pub seal: Option<Why>,
+    /// What its readers counted and did not read, by kind and folder.
+    pub not_read: Vec<crate::skip::NotRead>,
 }
 
 pub fn eval_detail(
@@ -583,6 +585,7 @@ pub fn eval_detail(
             .find(|s| s.eval.as_deref() == Some(eval.id.as_str()))
             .map(|s| SealRef { seal: s.id.clone(), n: s.n }),
         seal,
+        not_read: eval.not_read.clone(),
     }
 }
 
@@ -776,7 +779,13 @@ mod tests {
             ),
             seal,
             compiled("ask_h", "health endpoint", 5),
-            ev("eval.opened", "evl_3", 6, json!({"basis": {"asks": ["ask_h"]}})),
+            ev(
+                "eval.opened",
+                "evl_3",
+                6,
+                json!({"basis": {"asks": ["ask_h"]},
+                       "not_read": [{"kind": "generated", "folder": "data/", "files": 3}]}),
+            ),
             ev(
                 "eval.completed",
                 "evl_3",
@@ -983,6 +992,11 @@ mod tests {
             ["health endpoint"]
         );
         assert_eq!(d.sealed, None);
+        assert_eq!(
+            d.not_read,
+            [crate::skip::NotRead { kind: "generated".into(), folder: "data/".into(), files: 3 }],
+            "what its readers counted and did not read, as opened"
+        );
         let two = eval_detail(
             &record.evals[1],
             None,

@@ -61,7 +61,50 @@ pub(super) fn render(props: &SheetProps, project: &Path, seal_id: &str) -> Eleme
             }
             b
         }
-        None => body.child(note(word("desktop.seal.unchecked"), palette::MUTED)),
+        None => {
+            // Checked each time it opens: said while RingFrame checks, and
+            // why when it could not.
+            let then = Then::Seal { seal: seal_id.to_string() };
+            let c = props.client(project);
+            match (c.and_then(|c| c.refused.get(&then)), c.is_some_and(|c| c.owes(&then))) {
+                (_, true) => {
+                    // How many files it has read of how many, as RingFrame says.
+                    let job = c.and_then(|c| {
+                        c.job(|j| j.kind == "seal_check" && j.on.seal.as_deref() == Some(seal_id))
+                    });
+                    let counted = job.and_then(|p| {
+                        let c = crate::waiting::count(p.now_step()?)?;
+                        Some((c, p.job.share))
+                    });
+                    let mut line =
+                        crate::waiting::busy_line(word("wait.checking_receipt"), palette::MUTED)
+                            .layer("receipt checking");
+                    if let Some((c, share)) = counted {
+                        line = line
+                            .child(
+                                div()
+                                    .layer("step count")
+                                    .font_mono()
+                                    .font_size(12)
+                                    .color(palette::MUTED)
+                                    .text(c),
+                            )
+                            .children(share.map(|s| {
+                                crate::waiting::share_bar(Some(s))
+                                    .layer("receipt progress")
+                                    .w(120)
+                                    .style("align-self", "center")
+                            }));
+                    }
+                    body.child(line)
+                }
+                (Some(why), false) => body.child(crate::waiting::failed(
+                    fill("wait.could_not_check_receipt", &[("why", why)]),
+                    Some(SheetAct::TryAgain { project: project.to_path_buf(), then }.into()),
+                )),
+                (None, false) => body.child(note(word("desktop.seal.unchecked"), palette::MUTED)),
+            }
+        }
     };
     if !d.asks.is_empty() {
         body = body

@@ -1,6 +1,7 @@
 //! A slow RingFrame holds up only what waits on it: while the crate's set-up,
-//! preflight, Eval open and Seal check wait on a slow Git, the daemon goes on
-//! answering every other call.
+//! preflight, Eval open, Seal check, Ask draft and Send compile wait on a slow
+//! Git, the daemon goes on answering every other call. What waits is told as
+//! a job once it has run a moment, with its call to the window that asked.
 //!
 //! Its own test binary because it puts a stand-in first on PATH and sets
 //! `HOME`, which are global: one test, one process.
@@ -15,19 +16,35 @@ use std::time::{Duration, Instant};
 use weft::protocol::{self, Call, Event, Line, Lines, PROTOCOL};
 use weft::server;
 
-/// How long the stand-in takes over what it is slow at.
+/// How long the stand-in takes over what it is slow at, unless told otherwise.
 const SLOW: &str = "2";
 
 /// A `git` that takes its time over `rev-parse --show-prefix`, which the
-/// crate's preflight, Eval open and Seal check each ask.
+/// crate's preflight, Eval open and Seal check each ask: as many seconds as
+/// the file `slow` beside it says. While a file `fail` is there, it fails it.
 fn stand_in(dir: &Path) {
+    let d = dir.display();
     let git = format!(
-        "#!/bin/sh\ncase \"$*\" in *--show-prefix*) sleep {SLOW} ;; esac\nexec /usr/bin/git \"$@\"\n"
+        "#!/bin/sh\ncase \"$*\" in *--show-prefix*) [ -e {d}/fail ] && exit 1; sleep $(cat {d}/slow) ;; esac\nexec /usr/bin/git \"$@\"\n"
     );
     use std::os::unix::fs::PermissionsExt;
     let path = dir.join("git");
     std::fs::write(&path, git).expect("stand-in");
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    slow(dir, SLOW);
+}
+
+/// How many seconds the stand-in takes from now on.
+fn slow(dir: &Path, seconds: &str) {
+    std::fs::write(dir.join("slow"), seconds).expect("slow");
+}
+
+/// A job of `kind`, as `progress` says it.
+fn job_of(kind: &'static str) -> impl FnMut(Event) -> Option<weft::protocol::Job> {
+    move |e| match e {
+        Event::Progress { job } if job.kind == kind => Some(job),
+        _ => None,
+    }
 }
 
 struct Client {
@@ -75,6 +92,22 @@ impl Client {
         panic!("no answer to call {id} in {within:?}");
     }
 
+    /// A call's answer, or its refusal's code.
+    fn reply(&mut self, id: u64, within: Duration) -> Result<serde_json::Value, String> {
+        let deadline = Instant::now() + within;
+        while Instant::now() < deadline {
+            self.stream.set_read_timeout(Some(Duration::from_millis(100))).expect("timeout");
+            match self.lines.next() {
+                Ok(Some(Line::Result { id: got, result })) if got == id => return Ok(result),
+                Ok(Some(Line::Error { id: got, code, .. })) if got == id => return Err(code),
+                Ok(Some(Line::Event(e))) => self.seen.push(e),
+                _ => {}
+            }
+        }
+        panic!("no answer to call {id} in {within:?}");
+    }
+
+    #[track_caller]
     fn wait<T>(&mut self, mut pick: impl FnMut(Event) -> Option<T>) -> T {
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
@@ -120,7 +153,7 @@ fn a_slow_ringframe_holds_up_only_what_waits_on_it() {
 
     let socket = protocol::private_socket("weft-slow-rf");
     let agent = support::agent(&support::agents_dir(&socket));
-    let harnesses = support::stub_harness(&socket.with_extension("judges"), "sh");
+    let harnesses = support::stub_harness_proving(&socket.with_extension("judges"), "sh");
     let listening = socket.clone();
     std::thread::spawn(move || {
         let config = listening.with_extension("no-config.toml");
@@ -198,6 +231,121 @@ fn a_slow_ringframe_holds_up_only_what_waits_on_it() {
     let staged = a.answer(check, Duration::from_secs(10));
     assert!(staged["pending"].is_string(), "the Eval staged: {staged}");
 
+    // A second yes to the same work's Eval while the first is still opening
+    // opens nothing more: it is refused, and says why.
+    let eval_act = || Call::Act {
+        act: "check".into(),
+        unit: Some(ask.clone()),
+        pane: None,
+        text: None,
+        eval: None,
+        start: None,
+        draft: None,
+    };
+    let yes = |pending: &serde_json::Value| Call::Resolve {
+        pending: pending.as_str().unwrap().to_string(),
+        yes: true,
+        force: false,
+        to: None,
+        start: None,
+    };
+    //
+    // An open that fails at once is told all the same, failed, to every
+    // window; the one that asked gets its call with it.
+    std::fs::write(bin.join("fail"), "").expect("fail");
+    let failed = a.call(yes(&staged["pending"]));
+    let told = b.wait(|e| job_of("eval_open")(e).filter(|j| j.end.is_some()));
+    assert_eq!(told.on.work.as_deref(), Some(ask.as_str()));
+    assert_eq!((told.call, told.end.map(|e| e.ok)), (None, Some(false)), "a failed open ends");
+    a.seen.clear();
+    assert!(a.reply(failed, Duration::from_secs(30)).is_err(), "the open failed");
+    let own = a.seen.iter().find_map(|e| match e {
+        Event::Progress { job } if job.kind == "eval_open" => Some(job.clone()),
+        _ => None,
+    });
+    assert_eq!(own.and_then(|j| j.call), Some(failed), "the asker's copy carries its call");
+    std::fs::remove_file(bin.join("fail")).expect("fail");
+
+    let staged = a.call(eval_act());
+    let staged = a.answer(staged, Duration::from_secs(10));
+    slow(&bin, "4");
+    let first = a.call(yes(&staged["pending"]));
+    let began = Instant::now();
+    let running = b.wait(job_of("eval_open"));
+    assert!(began.elapsed() >= Duration::from_millis(350), "sent only once it has run a moment");
+    assert_eq!(
+        (running.end.is_none(), running.steps[0].key.as_str()),
+        (true, "step.reading_change")
+    );
+    let again = a.call(eval_act());
+    let again = a.answer(again, Duration::from_secs(10));
+    let second = a.call(yes(&again["pending"]));
+    assert_eq!(a.reply(second, Duration::from_secs(5)), Err("opening".to_string()));
+
+    // A window that opens the project meanwhile finds it opening in its answer.
+    std::thread::sleep(Duration::from_millis(300));
+    slow(&bin, "0");
+    let mut c = Client::connect(&socket);
+    let hello = c.call(Call::Hello { client: "test".into(), protocol: PROTOCOL });
+    c.answer(hello, Duration::from_secs(5));
+    let joined = open(&mut c, &root);
+    let joined = c.answer(joined, Duration::from_secs(10));
+    let jobs = joined["jobs"].as_array().cloned().unwrap_or_default();
+    let opening: Vec<_> =
+        jobs.iter().filter(|j| j["kind"] == "eval_open" && j["end"].is_null()).collect();
+    assert_eq!(opening.len(), 1, "{joined}");
+    assert_eq!(opening[0]["on"]["work"], serde_json::json!(ask));
+    assert!(
+        !jobs.iter().any(|j| j["end"]["ok"] == false),
+        "the open that failed went when its Eval was pressed again: {joined}"
+    );
+
+    assert!(a.reply(first, Duration::from_secs(30)).is_ok(), "the open succeeded");
+    let starting = |j: &weft::protocol::Job| j.steps[3].state == weft::protocol::StepState::Now;
+    let opened = b.wait(|e| job_of("eval_open")(e).filter(starting));
+    assert_eq!(opened.steps[3].key, "step.starting_readers", "RingFrame's part is done");
+    slow(&bin, SLOW);
+
+    // An Ask: Sense and RingFrame draft it off the run loop, and its Send
+    // records it off the run loop too. The window that asked is told the
+    // job with its call; the other, without.
+    let draft = weft_core::ask::Draft {
+        route: Some("human_handoff".into()),
+        task: Some("implement".into()),
+        rules: Some(Vec::new()),
+        ..Default::default()
+    };
+    let asked = a.call(Call::Act {
+        act: "ask".into(),
+        unit: None,
+        pane: Some(0),
+        text: Some("Ship more.".into()),
+        eval: None,
+        start: None,
+        draft: Some(draft),
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    let took = probe(&socket);
+    assert!(took < quick, "a hello waited {took:?} on the Ask's draft");
+    a.seen.clear();
+    let drafted = a.answer(asked, Duration::from_secs(10));
+    assert!(drafted["pending"].is_string(), "the Ask staged: {drafted}");
+    let own = a.seen.iter().find_map(|e| match e {
+        Event::Progress { job } if job.kind == "ask" => Some(job.clone()),
+        _ => None,
+    });
+    let own = own.expect("the draft ran past a moment: its job was told");
+    assert_eq!(own.call, Some(asked));
+    assert_eq!(own.steps[0].key, "step.reading_words");
+    let sent = a.call(yes(&drafted["pending"]));
+    std::thread::sleep(Duration::from_millis(300));
+    let took = probe(&socket);
+    assert!(took < quick, "a hello waited {took:?} on the Send's record");
+    let theirs = b.wait(job_of("send"));
+    assert_eq!(theirs.call, None, "only the asker's copy carries its call");
+    assert_eq!(theirs.steps[0].key, "step.recording_ask");
+    a.answer(sent, Duration::from_secs(10));
+
     // A receipt's check.
     let ws = ringframe::api::workspace(&root).expect("workspace");
     let sealed = ringframe::api::seal_create(
@@ -218,6 +366,7 @@ fn a_slow_ringframe_holds_up_only_what_waits_on_it() {
         lines: None,
         before: None,
         after: None,
+        q: None,
     });
     std::thread::sleep(Duration::from_millis(300));
     let took = probe(&socket);

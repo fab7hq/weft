@@ -62,7 +62,8 @@ Setting up your harness, the loop from Ask to Seal, and Weft on your phone:
 ```sh
 cargo build
 cargo nextest run --workspace
-./bin/reinstall-local   # build, install and restart the daemon, as users get it
+./bin/reinstall-local             # build and use Weft Local, beside the released Weft
+./bin/reinstall-local --release   # use the released Weft again
 ```
 
 Docs and their walkthroughs live in [fab7hq/docs](https://github.com/fab7hq/docs),

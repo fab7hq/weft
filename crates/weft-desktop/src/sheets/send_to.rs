@@ -41,6 +41,11 @@ impl SendTo {
         label.rsplit(" · ").next().unwrap_or_default().to_string()
     }
 
+    /// Where it goes, as its choice reads.
+    pub fn picked_label(&self) -> String {
+        self.label(&self.picked)
+    }
+
     fn label(&self, key: &str) -> String {
         match key.strip_prefix("start:") {
             Some(h) => h.to_string(),

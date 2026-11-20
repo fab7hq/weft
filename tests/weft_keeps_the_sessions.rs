@@ -20,6 +20,9 @@ struct Client {
     next: u64,
     stream: UnixStream,
     lines: Lines<UnixStream>,
+    /// The sessions carried, as the open answer and every `agents` event
+    /// since have told them.
+    rows: Vec<Row>,
 }
 
 impl Client {
@@ -34,10 +37,11 @@ impl Client {
         };
         stream.set_read_timeout(Some(Duration::from_secs(5))).expect("timeout");
         let lines = Lines::new(stream.try_clone().expect("clone"));
-        let mut c = Client { next: 1, stream, lines };
+        let mut c = Client { next: 1, stream, lines, rows: Vec::new() };
         c.call(Call::Hello { client: "test".into(), protocol: PROTOCOL }).expect("hello");
         let path = root.to_string_lossy().into_owned();
-        c.call(Call::Open { path, rows: 24, cols: 80, raw: false }).expect("open");
+        let opened = c.call(Call::Open { path, rows: 24, cols: 80, raw: false }).expect("open");
+        c.rows = serde_json::from_value(opened["agents"]["sessions"].clone()).unwrap();
         c
     }
 
@@ -50,22 +54,27 @@ impl Client {
             match self.lines.next().expect("read").expect("a line") {
                 Line::Result { id: got, result } if got == id => return Ok(result),
                 Line::Error { id: got, code, .. } if got == id => return Err(code),
-                _ => {}
+                other => self.take(&other),
             }
         }
     }
 
-    /// The index, from the next `agents` event that `pick` says yes to.
+    /// What an `agents` event moved, taken.
+    fn take(&mut self, line: &Line) {
+        if let Line::Event(Event::Agents { changed, gone, .. }) = line {
+            weft_core::sessions::apply(&mut self.rows, changed, gone);
+        }
+    }
+
+    /// The sessions, as told, once `pick` says yes to them.
     fn index_until(&mut self, pick: impl Fn(&[Row]) -> bool) -> Vec<Row> {
-        loop {
+        while !pick(&self.rows) {
             match self.lines.next() {
-                Ok(Some(Line::Event(Event::Agents { sessions, .. }))) if pick(&sessions) => {
-                    return sessions;
-                }
-                Ok(Some(_)) => {}
+                Ok(Some(line)) => self.take(&line),
                 other => panic!("the index never said so: {other:?}"),
             }
         }
+        self.rows.clone()
     }
 }
 
@@ -129,7 +138,10 @@ fn a_session_no_ask_titled_is_named_by_its_first_prompt() {
     let mut c = Client::attach(&socket, &root);
     support::signal(&socket, outside(&root, "s_named", "working", None));
     support::signal(&socket, outside(&root, "s_bare", "working", None));
-    let index = c.index_until(|i| row(i, "s_named").is_some() && row(i, "s_bare").is_some());
+    // The first prompt is read off the run loop: the title comes soon after.
+    let index = c.index_until(|i| {
+        row(i, "s_named").is_some_and(|r| r.title.is_some()) && row(i, "s_bare").is_some()
+    });
     assert_eq!(row(&index, "s_named").unwrap().title.as_deref(), Some("fix the login redirect"));
     assert_eq!(row(&index, "s_bare").unwrap().title, None, "nothing typed: its harness alone");
     let _ = c.call(Call::Shutdown);

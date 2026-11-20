@@ -85,6 +85,25 @@ pub fn resolve(stages: Option<&Value>, eval: Option<&str>, fallback: &str) -> St
     Stage { harness, roles, hosts, judges: judges.map_or(JUDGES, |n| n as usize) }
 }
 
+/// Who reads an Eval unless the person picks another, as `resolve` says,
+/// and whether a setting said so (`[eval.debate] harness` or `routing.eval`)
+/// rather than the work, whose latest Ask's harness is `work`.
+pub fn reader(stages: Option<&Value>, eval: Option<&str>, work: &str) -> (String, bool) {
+    let debate = stages.and_then(|e| e.get("debate")).and_then(|r| r.get("harness"));
+    let set = debate.and_then(Value::as_str).is_some() || eval.is_some();
+    (resolve(stages, eval, work).harness, set)
+}
+
+/// The debate on the harness the person picked for this Eval. Another
+/// harness than the project's reads alone: the roles' own models, efforts
+/// and harnesses were set for the project's.
+pub fn picked(stage: Stage, harness: Option<&str>) -> Stage {
+    match harness.filter(|h| !h.is_empty() && *h != stage.harness) {
+        Some(h) => Stage { harness: h.to_string(), roles: Vec::new(), hosts: Vec::new(), ..stage },
+        None => stage,
+    }
+}
+
 /// The roles as `ringframe eval open --agents` takes them, when any is set.
 pub fn agents(stage: &Stage) -> Option<Value> {
     let mut out = Map::new();
@@ -152,5 +171,27 @@ mod tests {
         assert_eq!(d.harnesses(), ["codex", "claude-code"]);
         assert_eq!(agents(&d), Some(json!({"question": {"effort": "high"}})), "no harness in it");
         assert_eq!(resolve(None, None, "codex").harnesses(), ["codex"]);
+    }
+    #[test]
+    fn the_reader_says_whether_a_setting_or_the_work_picked_it() {
+        assert_eq!(reader(None, None, "codex"), ("codex".into(), false));
+        assert_eq!(reader(None, Some("grok"), "codex"), ("grok".into(), true));
+        let stages = json!({"debate": {"harness": "claude-code"}});
+        assert_eq!(reader(Some(&stages), Some("grok"), "codex"), ("claude-code".into(), true));
+        let roles_only = json!({"debate": {"read": {"effort": "high"}}});
+        assert_eq!(reader(Some(&roles_only), None, "codex"), ("codex".into(), false));
+    }
+
+    #[test]
+    fn a_harness_the_person_picked_reads_alone() {
+        let stages = json!({"debate": {"harness": "claude-code",
+            "map": {"model": "haiku"}, "reduce": {"harness": "codex"}}});
+        let stage = resolve(Some(&stages), None, "grok");
+        assert_eq!(picked(stage.clone(), None), stage, "no pick");
+        assert_eq!(picked(stage.clone(), Some("claude-code")), stage, "the same harness");
+        let other = picked(stage.clone(), Some("grok"));
+        assert_eq!(other.harness, "grok");
+        assert!(other.roles.is_empty() && other.hosts.is_empty(), "{other:?}");
+        assert_eq!(other.judges, stage.judges);
     }
 }

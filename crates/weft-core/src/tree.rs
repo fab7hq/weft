@@ -24,8 +24,11 @@ pub struct Facts<'a> {
     pub panes: &'a [PaneInfo],
     /// Each pane's agent state, in the order of `panes`.
     pub agents: &'a [Option<Turn>],
-    /// The project's session index, as weftd built it.
+    /// The project's sessions weftd carries as they are: the running, those
+    /// panes hold, and the newest of today's.
     pub sessions: &'a [crate::sessions::Row],
+    /// How many earlier sessions it lists a page at a time.
+    pub earlier: usize,
     /// The record as units of work, as weftd built it.
     pub work: &'a Units,
     pub readiness: &'a dyn Fn(&str) -> Readiness,
@@ -281,7 +284,6 @@ fn project(f: &Facts, folded: &dyn Fn(Fold) -> bool) -> Project {
         asked: &[],
     };
     let running = |r: &&crate::sessions::Row| r.state == State::Running;
-    let (shown, earlier) = crate::sessions::split(f.sessions);
     let w = f.work;
     let open = w.units.iter().filter(|u| !u.sealed()).count();
     let sealed = w.units.len() - open;
@@ -301,9 +303,9 @@ fn project(f: &Facts, folded: &dyn Fn(Fold) -> bool) -> Project {
         folded: folded(Fold::Project),
         agents: Agents {
             running: f.sessions.iter().filter(running).count(),
-            ended: f.sessions.iter().filter(|s| s.state != State::Running).count(),
-            rows: shown.iter().map(|s| agent(f, s)).collect(),
-            earlier: earlier.len(),
+            ended: f.sessions.iter().filter(|s| s.state != State::Running).count() + f.earlier,
+            rows: f.sessions.iter().map(|s| agent(f, s)).collect(),
+            earlier: f.earlier,
         },
         work: Work {
             units: w
@@ -484,6 +486,7 @@ mod tests {
             completed_at: report.map(|_| done),
             voided: false,
             superseded: false,
+            not_read: Vec::new(),
         }
     }
 
@@ -548,7 +551,8 @@ mod tests {
         ];
         sessions[0].pane = Some(0);
         sessions[1].pane = Some(1);
-        for i in 0..15 {
+        // Three ended today; twelve earlier ones the daemon counts.
+        for i in 0..3 {
             sessions.push(row(&format!("e{i:02}"), "claude", State::Ended, None, 900 - i));
         }
         (units, panes, agents, sessions, work)
@@ -569,6 +573,7 @@ mod tests {
             panes: &w.1,
             agents: &w.2,
             sessions: &w.3,
+            earlier: 12,
             work: &w.4,
             readiness: ready,
             routing: &routing,
@@ -578,8 +583,8 @@ mod tests {
     }
 
     /// The project row counts open units and agents waiting (D12.3); AGENTS
-    /// counts running and ended, shows the running and 3 ended, and counts
-    /// the rest.
+    /// counts running and ended, shows the running and today's, and counts
+    /// the earlier ones.
     #[test]
     fn the_project_and_agents_rows_count_as_t11_1_does() {
         let t = build(&weft(), READY, AS_DRAWN);

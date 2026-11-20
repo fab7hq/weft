@@ -314,18 +314,39 @@ pub fn fetch_sense(
     out: &dyn crate::outside::Outside,
     version: &str,
 ) -> anyhow::Result<SenseCurrent> {
-    fetch_sense_from(weft_dir, out, &sense_url(version), version)
+    fetch_sense_from(weft_dir, out, &sense_url(version), version, &|_| {})
 }
 
-/// Download Sense release `version`, install it and swap it into `slot`.
+/// Where downloading and installing Sense is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SenseStep {
+    /// Bytes of its files downloaded, of how many when the server said.
+    Downloading { done: u64, total: Option<u64> },
+    /// Checking the files and putting them in place.
+    Installing,
+}
+
+/// Download Sense release `version`, install it and swap it into `slot`,
+/// telling `told` the bytes downloaded as they come, then installing.
 pub fn hot_reload_from_hub(
     weft_dir: &Path,
     out: &dyn crate::outside::Outside,
     slot: &std::sync::RwLock<Option<weft_sense::SenseModel>>,
     version: &str,
+    told: &dyn Fn(SenseStep),
+) -> anyhow::Result<SenseCurrent> {
+    hot_reload_from(weft_dir, out, slot, (&sense_url(version), version), told)
+}
+
+fn hot_reload_from(
+    weft_dir: &Path,
+    out: &dyn crate::outside::Outside,
+    slot: &std::sync::RwLock<Option<weft_sense::SenseModel>>,
+    (url, version): (&str, &str),
+    told: &dyn Fn(SenseStep),
 ) -> anyhow::Result<SenseCurrent> {
     let _loading = loading();
-    let current = fetch_sense(weft_dir, out, version)?;
+    let current = fetch_sense_from(weft_dir, out, url, version, told)?;
     let model = weft_sense::SenseModel::load(&current.path)?;
     if let Ok(mut guard) = slot.write() {
         *guard = Some(model);
@@ -333,56 +354,82 @@ pub fn hot_reload_from_hub(
     Ok(current)
 }
 
+/// How long a file at `url` is, as its server says, following redirects.
+fn length_of(out: &dyn crate::outside::Outside, url: &str) -> Option<u64> {
+    let said = out.run("curl", &["-fsSIL", "--max-time", "30", url], None, ANSWERS).ok()?;
+    let said = String::from_utf8_lossy(&said.stdout).to_ascii_lowercase();
+    // A redirect prints its own headers first: the last length is the file's.
+    said.lines().filter_map(|l| l.strip_prefix("content-length:")).next_back()?.trim().parse().ok()
+}
+
+/// How long a server has to say how long a file is.
+const ANSWERS: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Download a bundle from `url` into `<weft_dir>/sense/download`: the manifest
 /// first, refused unless it is release `version`'s, then the files it names,
-/// which [`install_sense_bundle`] checks against it.
+/// which [`install_sense_bundle`] checks against it. The bytes of those files
+/// are told as they arrive, of their sum when every server said its length.
 fn fetch_sense_from(
     weft_dir: &Path,
     out: &dyn crate::outside::Outside,
     url: &str,
     version: &str,
+    told: &dyn Fn(SenseStep),
 ) -> anyhow::Result<SenseCurrent> {
     let dir = weft_dir.join("sense").join("download");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir)?;
     let got = (|| {
-        let get = |name: &str| -> anyhow::Result<()> {
+        let get = |name: &str, before: u64, total: Option<u64>| -> anyhow::Result<u64> {
             let (to, from) = (dir.join(name), format!("{url}/{name}"));
+            let path = to.clone();
             let to = to.to_string_lossy();
-            let ok = out
-                .run(
-                    "curl",
-                    &[
-                        "-fsSL",
-                        "--retry",
-                        "3",
-                        "--retry-all-errors",
-                        "--create-dirs",
-                        "--max-time",
-                        "300",
-                        "-o",
-                        &to,
-                        &from,
-                    ],
-                    None,
-                    crate::outside::SETS_UP_WITHIN,
-                )?
-                .status
-                .success();
-            anyhow::ensure!(ok, "could not download Sense's {name}");
-            Ok(())
+            let args = [
+                "-fsSL",
+                "--retry",
+                "3",
+                "--retry-all-errors",
+                "--create-dirs",
+                "--max-time",
+                "300",
+                "-o",
+                &to,
+                &from,
+            ];
+            // The file grows as curl writes it: its size is what has come.
+            let size = || std::fs::metadata(&path).map_or(0, |m| m.len());
+            let ran = std::thread::scope(|scope| {
+                let run =
+                    scope.spawn(|| out.run("curl", &args, None, crate::outside::SETS_UP_WITHIN));
+                while !run.is_finished() {
+                    told(SenseStep::Downloading { done: before + size(), total });
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+                run.join().unwrap_or_else(|_| Err(std::io::Error::other("curl stopped")))
+            });
+            anyhow::ensure!(ran?.status.success(), "could not download Sense's {name}");
+            let done = before + size();
+            told(SenseStep::Downloading { done, total });
+            Ok(done)
         };
-        get("manifest.json")?;
+        get("manifest.json", 0, None)?;
         let bytes = std::fs::read(dir.join("manifest.json"))?;
         let manifest: serde_json::Value = serde_json::from_slice(&bytes)?;
         anyhow::ensure!(
             manifest["version"] == version,
             "Sense's manifest.json is not release {version}'s"
         );
-        for name in bundle_files(&bytes)? {
-            get(&name)?;
+        let mut names = bundle_files(&bytes)?;
+        names.push(weft_sense::trial::GOLDEN.to_string());
+        let lengths: Option<Vec<u64>> =
+            names.iter().map(|n| length_of(out, &format!("{url}/{n}"))).collect();
+        let total = lengths.map(|l| l.iter().sum());
+        let mut done = 0;
+        told(SenseStep::Downloading { done, total });
+        for name in &names {
+            done = get(name, done, total)?;
         }
-        get(weft_sense::trial::GOLDEN)?;
+        told(SenseStep::Installing);
         install_sense_bundle(weft_dir, &dir).map(|(current, _)| current)
     })();
     let _ = std::fs::remove_dir_all(&dir);
@@ -586,10 +633,28 @@ pub(crate) mod tests {
         let manifest = std::fs::read(hosted.join("manifest.json")).unwrap();
         let out = crate::outside::machine();
 
-        assert!(fetch_sense_from(&weft_dir, &*out, &url, "0.0.8").is_err());
+        assert!(fetch_sense_from(&weft_dir, &*out, &url, "0.0.8", &|_| {}).is_err());
         assert_eq!(sense_version(&weft_dir), None, "another release's manifest installs nothing");
 
-        let current = fetch_sense_from(&weft_dir, &*out, &url, "0.0.7").unwrap();
+        let seen = std::sync::Mutex::new(Vec::new());
+        let told = |s: SenseStep| seen.lock().unwrap().push(s);
+        let current = fetch_sense_from(&weft_dir, &*out, &url, "0.0.7", &told).unwrap();
+        // Its files' bytes, counted as they came, of their sum; then installing.
+        let seen = seen.into_inner().unwrap();
+        let names =
+            bundle_files(&manifest).unwrap().into_iter().chain([weft_sense::trial::GOLDEN.into()]);
+        let sum: u64 = names.map(|n| std::fs::metadata(hosted.join(n)).unwrap().len()).sum();
+        let counts: Vec<(u64, Option<u64>)> = seen
+            .iter()
+            .filter_map(|s| match s {
+                SenseStep::Downloading { done, total: Some(total) } => Some((*done, Some(*total))),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(counts.first(), Some(&(0, Some(sum))), "the sum is known first");
+        assert_eq!(counts.last(), Some(&(sum, Some(sum))));
+        assert!(counts.windows(2).all(|w| w[0].0 <= w[1].0), "{counts:?}");
+        assert_eq!(seen.last(), Some(&SenseStep::Installing));
         assert_eq!(current.version, "0.0.7");
         assert!(!sense_wanted(&weft_dir, Some("0.0.7")));
         for name in bundle_files(&manifest).unwrap() {
@@ -603,7 +668,7 @@ pub(crate) mod tests {
         stage_sense_bundle(&other, "0.0.9");
         std::fs::write(other.join("tokenizer.json"), b"{}").unwrap();
         let url = format!("file://{}", other.display());
-        assert!(fetch_sense_from(&weft_dir, &*out, &url, "0.0.9").is_err());
+        assert!(fetch_sense_from(&weft_dir, &*out, &url, "0.0.9", &|_| {}).is_err());
         assert_eq!(sense_version(&weft_dir).as_deref(), Some("0.0.7"));
     }
 

@@ -67,20 +67,24 @@ pub fn render_header(props: &HeaderProps) -> Element {
         .border_bottom(palette::LINE)
         .child(toggle)
         .child(brand)
-        .child(div().font_weight(600).font_size(15).text(props.machine.clone()))
         .child(div().flex_1().flex_row().items_center());
 
     if let Some(link) = props.link {
+        // Still connecting: it breathes.
         bar = bar.child(
             div()
                 .layer("link tag")
+                .flex_row()
+                .gap(8)
+                .items_center()
                 .pad(4, 10)
                 .bg(palette::SURFACE)
                 .border(palette::LINE)
                 .font_mono()
                 .font_size(11)
                 .color(palette::MUTED)
-                .text(link),
+                .child(crate::waiting::dot())
+                .child(span(link)),
         );
     }
     if props.needs_you > 0 {

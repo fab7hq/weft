@@ -574,6 +574,7 @@ pub fn eval_open(
     agents: Option<&Value>,
     over: Option<&str>,
     statements: Vec<Value>,
+    progress: &dyn Fn(api::OpenProgress),
 ) -> Result<String, Error> {
     let ws = workspace(project)?;
     let overrides = overrides(over)?;
@@ -584,7 +585,7 @@ pub fn eval_open(
         overrides: &overrides,
         statements,
     };
-    match api::eval_open(&ws, open) {
+    match api::eval_open_with(&ws, open, progress) {
         Ok(opened) => Ok(opened.eval_id),
         Err(api::Error::Refused { code, detail }) if code == "eval.already_open" => detail
             .split_whitespace()
@@ -594,6 +595,59 @@ pub fn eval_open(
             .ok_or(Error::Refused { code: REFUSED_BY_A_RULE, message: detail }),
         Err(e) => Err(refused(e)),
     }
+}
+
+/// What the Eval of the work `ask` is in would read now, as its dialog says
+/// it: `{since, when, commits, files, skipped: {generated, vendored, binary,
+/// lock}, folder, folder_files, large}`.
+pub fn eval_preview(project: &Path, ask: &str) -> Result<Value, Error> {
+    let p = api::eval_preview(&workspace(project)?, ask).map_err(refused)?;
+    Ok(serde_json::json!({
+        "since": p.since,
+        "when": p.when,
+        "commits": p.commits,
+        "files": p.files,
+        "skipped": {
+            "generated": p.skipped.generated,
+            "vendored": p.skipped.vendored,
+            "binary": p.skipped.binary,
+            "lock": p.skipped.lock,
+        },
+        "folder": p.folder,
+        "folder_files": p.folder_files,
+        "large": p.large,
+    }))
+}
+
+/// What RingFrame's read check finds that git could be told to skip: the
+/// project's findings, and, with `ask`, the findings in the range of that
+/// Ask's work. Nothing is written; nothing found outside Git.
+pub fn read_check(
+    project: &Path,
+    ask: Option<&str>,
+) -> (Vec<weft_core::skip::Finding>, Vec<weft_core::skip::Finding>) {
+    let Ok(ws) = workspace(project) else { return Default::default() };
+    let (mut of_project, mut of_work) = (Vec::new(), Vec::new());
+    for f in api::read_check(&ws, ask) {
+        let finding = weft_core::skip::Finding {
+            kind: f.kind.to_string(),
+            path: f.path,
+            files: f.files,
+            bytes: f.bytes,
+            commits: f.commits,
+            kinds_of_files: f.kinds_of_files,
+            fix: f.fix.map(|x| weft_core::skip::Fix { file: x.file, line: x.line }),
+            added: false,
+        };
+        if f.scope == "work" { of_work.push(finding) } else { of_project.push(finding) }
+    }
+    (of_project, of_work)
+}
+
+/// Write a finding's line into its file at the project's root, once.
+pub fn add_skip_line(project: &Path, fix: &weft_core::skip::Fix) -> Result<(), Error> {
+    let fix = api::Fix { file: fix.file.clone(), line: fix.line.clone() };
+    api::apply_fix(&workspace(project)?, &fix).map_err(refused)
 }
 
 /// The questions an Eval left for the person, in order, each with where it
@@ -655,24 +709,28 @@ pub fn ask_for_host(project: &Path, ask_id: &str, host: &str) -> Result<Value, E
 pub fn seal(
     project: &Path,
     disposition: &str,
-    eval_id: Option<&str>,
-    reason: Option<&str>,
-    answers: Option<&[weft_core::ask::SealAnswer]>,
+    (eval_id, reason, answers): (Option<&str>, Option<&str>, Option<&[weft_core::ask::SealAnswer]>),
+    progress: &dyn Fn(api::SealProgress),
 ) -> Result<Value, Error> {
     let answers = answers.map(|a| serde_json::json!({ "answers": a }));
     let req = api::SealCreate { disposition, eval_id, reason, note: None, answers };
-    let sealed = api::seal_create(&workspace(project)?, req).map_err(|e| match e {
-        api::Error::SealRefused(codes) => {
-            Error::Refused { code: REFUSED_BY_A_RULE, message: codes.join(", ") }
-        }
-        other => refused(other),
-    })?;
+    let sealed =
+        api::seal_create_with(&workspace(project)?, req, progress).map_err(|e| match e {
+            api::Error::SealRefused(codes) => {
+                Error::Refused { code: REFUSED_BY_A_RULE, message: codes.join(", ") }
+            }
+            other => refused(other),
+        })?;
     Ok(sealed.receipt)
 }
 
 /// Everything RingFrame says about a receipt when it re-verifies it.
-pub fn seal_checked(project: &Path, seal_id: &str) -> Result<Value, Error> {
-    Ok(api::seal_check(&workspace(project)?, seal_id).map_err(refused)?.report)
+pub fn seal_checked(
+    project: &Path,
+    seal_id: &str,
+    progress: &dyn Fn(api::SealProgress),
+) -> Result<Value, Error> {
+    Ok(api::seal_check_with(&workspace(project)?, seal_id, progress).map_err(refused)?.report)
 }
 
 #[cfg(test)]
@@ -1364,12 +1422,13 @@ pub(crate) mod tests {
             session: None,
         };
         compile(&repo, &draft, None).unwrap();
-        let wrong = seal(&repo, "rejected", None, Some("finish_later"), None);
+        let wrong = seal(&repo, "rejected", (None, Some("finish_later"), None), &|_| {});
         assert!(
             matches!(&wrong, Err(Error::Refused { message, .. }) if message.contains("finish_later")),
             "{wrong:?}"
         );
-        let receipt = seal(&repo, "rejected", None, Some("not_what_i_asked"), None).unwrap();
+        let receipt =
+            seal(&repo, "rejected", (None, Some("not_what_i_asked"), None), &|_| {}).unwrap();
         assert_eq!(
             (&receipt["disposition"], &receipt["reason"]),
             (&Value::from("rejected"), &Value::from("not_what_i_asked"))
@@ -1416,7 +1475,7 @@ pub(crate) mod tests {
         };
         git(&["add", "src"]);
         git(&["commit", "-q", "-m", "work"]);
-        let eval_id = eval_open(&repo, &ask, None, None, Vec::new()).unwrap();
+        let eval_id = eval_open(&repo, &ask, None, None, Vec::new(), &|_| {}).unwrap();
         let ws = workspace(&repo).unwrap();
         let mut kinds = std::collections::BTreeSet::new();
         for _ in 0..20 {
@@ -1438,7 +1497,8 @@ pub(crate) mod tests {
                         ms: Some(3000),
                     };
                     let receipt =
-                        seal(&repo, "accepted", Some(&eval_id), None, Some(&[said])).unwrap();
+                        seal(&repo, "accepted", (Some(&eval_id), None, Some(&[said])), &|_| {})
+                            .unwrap();
                     let d = &receipt["decisions"][0];
                     assert_eq!(
                         (&d["answer"], &d["words"]),
@@ -1566,8 +1626,8 @@ pub(crate) mod tests {
         let refused = |r: Result<_, Error>| matches!(r, Err(Error::Refused { code: 2, .. }));
         assert!(refused(ask_copy(&dir, "ask_none").map(|_| ())));
         assert!(refused(ask_for_host(&dir, "ask_none", "codex").map(|_| ())));
-        assert!(refused(eval_open(&dir, "ask_none", None, None, Vec::new()).map(|_| ())));
-        let checked = seal_checked(&dir, "sel_none").unwrap();
+        assert!(refused(eval_open(&dir, "ask_none", None, None, Vec::new(), &|_| {}).map(|_| ())));
+        let checked = seal_checked(&dir, "sel_none", &|_| {}).unwrap();
         assert_eq!(checked["codes"], serde_json::json!(["seal.receipt_missing"]));
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -19,7 +19,7 @@ const ALLOWED: &[(&str, &[&str], &str)] = &[
     ),
     (
         "weft-proto",
-        &["serde_json", "weft-core"],
+        &["serde", "serde_json", "weft-core"],
         "the wire carries the rules' types and nothing else",
     ),
     (

@@ -25,9 +25,15 @@ impl Sealed {
 
 impl Session {
     /// An offer on sealed work, named by any of its Asks.
-    pub(super) fn offer(&mut self, at: usize, unit: Option<&str>, commit: Option<&str>) -> Answer {
+    pub(super) fn offer(
+        &mut self,
+        asked: (u64, u64),
+        at: usize,
+        unit: Option<&str>,
+        commit: Option<&str>,
+    ) -> Answer {
         match self.sealed(at, unit, "rejected") {
-            Ok(sealed) => self.undo(at, &sealed, commit),
+            Ok(sealed) => self.undo(asked, at, &sealed, commit),
             Err(no) => no,
         }
     }
@@ -35,7 +41,13 @@ impl Session {
     /// Undo, as its dialog in the client picked: the work's agent puts the
     /// code back as it was at `commit`, one of `commits`, by default where
     /// the work started. Typed at once: the dialog was the confirmation.
-    fn undo(&mut self, at: usize, sealed: &Sealed, commit: Option<&str>) -> Answer {
+    fn undo(
+        &mut self,
+        asked: (u64, u64),
+        at: usize,
+        sealed: &Sealed,
+        commit: Option<&str>,
+    ) -> Answer {
         let commits = match self.commits_of(at, sealed) {
             Ok(commits) => commits,
             Err(no) => return no,
@@ -55,6 +67,18 @@ impl Session {
             Err(no) => return no,
         };
         let request = weft_core::after_seal::undo_request(&sealed.root().title, &picked.id);
+        let agent = self.projects[at].slot(pane).map(|s| s.map.harness.clone()).unwrap_or_default();
+        let on = weft_proto::JobOn {
+            work: Some(sealed.unit.root.clone()),
+            pane: Some(pane),
+            harness: Some(agent.clone()),
+            ..Default::default()
+        };
+        let steps = vec![
+            jobs::step("step.waiting_ready", &[("agent", &agent)], None),
+            jobs::step("step.typing_request", &[], None),
+        ];
+        let job = self.jobs.begin("undo", on, Some(at), Some(asked), steps);
         let typing = Waiting {
             id: String::new(),
             pane,
@@ -68,6 +92,8 @@ impl Session {
             stop: None,
             go: None,
             hidden: true,
+            job: Some(job),
+            reads: None,
         };
         self.type_it(at, typing, false);
         Answer::nothing()

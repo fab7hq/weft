@@ -22,6 +22,8 @@ pub struct View {
     pub address: Option<String>,
     /// The tunnel is up.
     pub up: bool,
+    /// Weft's own answer came back through its address.
+    pub answers: bool,
     /// The devices allowed here.
     pub devices: Vec<Value>,
     /// A device asking to be allowed: `{device, name, login}`.
@@ -80,6 +82,9 @@ impl View {
             v["login"] = json!(self.login);
             v["address"] = json!(self.address);
             v["tunnel"] = json!(if self.up { "up" } else { "starting" });
+            if self.up && self.answers {
+                v["answers"] = json!(true);
+            }
             if let Some(note) = &self.note {
                 v["note"] = json!(note);
             }

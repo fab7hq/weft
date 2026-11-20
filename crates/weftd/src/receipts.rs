@@ -90,8 +90,9 @@ pub fn record(base: &Path, root: &Path, sent: &Sent, now: i64) -> std::io::Resul
 }
 
 /// Remove every session file whose last line is older than [`KEEP_MILLIS`],
-/// and a folder left empty with it.
-pub fn prune(base: &Path, now: i64) {
+/// and a folder left empty with it. Answers the files removed.
+pub fn prune(base: &Path, now: i64) -> Vec<PathBuf> {
+    let mut removed = Vec::new();
     let dirs = |p: &Path| -> Vec<PathBuf> {
         std::fs::read_dir(p).into_iter().flatten().flatten().map(|e| e.path()).collect()
     };
@@ -103,14 +104,17 @@ pub fn prune(base: &Path, now: i64) {
                     text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).next_back();
                 let at = last.and_then(|l| weft_core::turns::millis(l["time"].as_str()?));
                 // A file with no time read yet may be one being written now.
-                if at.is_some_and(|at| now - at > KEEP_MILLIS) {
-                    let _ = std::fs::remove_file(&file);
+                if at.is_some_and(|at| now - at > KEEP_MILLIS)
+                    && std::fs::remove_file(&file).is_ok()
+                {
+                    removed.push(file);
                 }
             }
             let _ = std::fs::remove_dir(&harness);
         }
         let _ = std::fs::remove_dir(&project);
     }
+    removed
 }
 
 #[cfg(test)]
@@ -269,7 +273,8 @@ mod tests {
         let (old, new) = (Path::new("/work/old"), Path::new("/work/new"));
         record(base, old, &sent("ended", None), 0).unwrap();
         record(base, new, &sent("working", None), KEEP_MILLIS).unwrap();
-        prune(base, KEEP_MILLIS + 1);
+        let removed = prune(base, KEEP_MILLIS + 1);
+        assert_eq!(removed, [project_dir(base, old).join("claude-code/s1.jsonl")]);
         assert!(!project_dir(base, old).exists(), "file and folders gone");
         assert_eq!(lines(base, new).len(), 1, "within ninety days, kept");
     }

@@ -155,7 +155,20 @@ fn an_ask_shows_its_exact_prompt_and_send_types_only_that() {
     c.call(Call::Hello { client: "test".into(), protocol: PROTOCOL });
     let path = root.to_string_lossy().into_owned();
     let open = c.call(Call::Open { rows: 24, cols: 80, path, raw: true });
-    let _ = c.wait(open, |e| matches!(e, Event::Agents { .. }).then_some(()));
+    // Opened: its answer holds the agents as they are.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(Instant::now() < deadline, "the open was never answered");
+        c.stream.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+        match c.lines.next() {
+            Ok(Some(Line::Result { id, result })) if id == open => {
+                assert!(result["agents"]["sessions"].is_array(), "{result}");
+                break;
+            }
+            Ok(Some(Line::Error { id, message, .. })) if id == open => panic!("{message}"),
+            _ => {}
+        }
+    }
     let start = c.call(Call::StartAgent { harness: "claude-code".into(), spec, session: None });
     let pane = c.wait(start, |e| match e {
         Event::Added { pane, .. } => Some(pane),

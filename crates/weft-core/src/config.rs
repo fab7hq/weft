@@ -18,6 +18,8 @@ pub const STARTING: &str = r#"# Weft: where each RingFrame act goes, how an Eval
 # overrides. Weft's Settings change it at once; an edit by hand applies when a
 # project opens.
 
+# name = "Studio"              # what Weft and your devices call this machine:
+#                              # its system's own name unless set
 # notify = false               # no notification when an agent needs you
 # turbo = true                 # agents run with every permission granted and no
 #                              # question asked: each harness's `turbo` flag, from
@@ -33,6 +35,10 @@ pub const STARTING: &str = r#"# Weft: where each RingFrame act goes, how an Eval
 
 # [service]                    # Weft's own service on this machine: Start at login
 # start_at_login = true        # start Weft when you log in, and again if it stops
+
+# [sessions]                   # this machine's
+# keep_days = 7                # an ended session quiet this many days is archived,
+#                              # unless its work is not sealed; 0 keeps them all
 
 [routing]                      # every project; each act optional
 # ask  = "<harness>"          # a harness, as its harness file is named
@@ -99,11 +105,18 @@ pub struct Config {
     pub leftover: Vec<String>,
     /// `notify = false`: no terminal notification when an agent needs you.
     quiet: bool,
+    /// `name = "…"`: what Weft and the person's devices call this machine.
+    name: Option<String>,
     remote: Remote,
     /// `[service] start_at_login`: Weft starts when the person logs in. Off
     /// unless turned on; Remote never turns it on.
     start_at_login: bool,
+    /// `[sessions] keep_days`, when set.
+    keep_days: Option<u64>,
 }
+
+/// How many days an ended session is kept listed when nothing says.
+pub const KEEP_DAYS: u64 = 7;
 
 /// Parse the file. Nothing readable is nothing set, which is how Weft behaves
 /// without one.
@@ -141,6 +154,12 @@ impl Config {
     /// Whether Weft's own service starts it at login.
     pub fn start_at_login(&self) -> bool {
         self.start_at_login
+    }
+
+    /// How many days an ended, quiet session stays listed before it is
+    /// archived; 0 keeps every one.
+    pub fn keep_days(&self) -> u64 {
+        self.keep_days.unwrap_or(KEEP_DAYS)
     }
 }
 
@@ -308,6 +327,12 @@ impl Config {
         !self.quiet
     }
 
+    /// What the person named this machine in Settings, when they did: else
+    /// it goes by its system's own name.
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
     /// Whether agents Weft starts run in turbo mode: the machine's `turbo`
     /// line, for every project, else off.
     /// What this project records of each Seal in its Git: nothing unless
@@ -364,6 +389,9 @@ impl Config {
                     }
                 }
                 ("notify", Value::Bool(on)) if at.is_empty() => self.quiet = !on,
+                ("name", Value::String(n)) if at.is_empty() => {
+                    self.name = Some(n.trim().to_string()).filter(|n| !n.is_empty())
+                }
                 // Every project's only (weft-after-desktop ADR-0003 D4): a
                 // project's own line is reported and not read.
                 ("turbo", Value::Bool(on)) if at.is_empty() => out.turbo = Some(*on),
@@ -379,6 +407,14 @@ impl Config {
                             ("program", Value::String(p)) => {
                                 self.remote.program = Some(p.clone()).filter(|p| !p.is_empty())
                             }
+                            _ => self.ignored.push(format!("{here}.{k}")),
+                        }
+                    }
+                }
+                ("sessions", Value::Object(t)) if at.is_empty() => {
+                    for (k, v) in t {
+                        match (k.as_str(), v.as_u64()) {
+                            ("keep_days", Some(days)) => self.keep_days = Some(days),
                             _ => self.ignored.push(format!("{here}.{k}")),
                         }
                     }
@@ -764,6 +800,35 @@ mod tests {
 
     /// Prompt suggestions are gone: a `suggest` line an earlier Weft wrote
     /// is reported and not read.
+    #[test]
+    fn ended_sessions_are_kept_seven_days_unless_the_machine_says() {
+        assert_eq!(read_(STARTING).keep_days(), KEEP_DAYS);
+        assert_eq!(read_("[sessions]\nkeep_days = 30\n").keep_days(), 30);
+        assert_eq!(read_("[sessions]\nkeep_days = 0\n").keep_days(), 0, "0 keeps them all");
+        for bad in ["-1", "1.5", "\"7\""] {
+            let c = read_(&format!("[sessions]\nkeep_days = {bad}\n"));
+            assert_eq!(
+                (c.keep_days(), c.ignored.as_slice()),
+                (7, &["sessions.keep_days".into()][..])
+            );
+        }
+        let c = read_(&format!("[projects.\"{HERE}\".sessions]\nkeep_days = 1\n"));
+        assert_eq!(c.keep_days(), 7, "a project's own line is not read");
+        assert_eq!(c.ignored, [format!("projects.\"{HERE}\".sessions")]);
+    }
+
+    #[test]
+    fn the_machine_s_name_is_the_machine_s_only_and_unset_until_named() {
+        assert_eq!(read_(STARTING).name(), None, "the system's own name until set");
+        assert_eq!(read_("name = \"Studio\"\n").name(), Some("Studio"));
+        assert_eq!(read_("name = \"  \"\n").name(), None, "an empty name is none");
+        let c = read_("name = 7\n");
+        assert_eq!((c.name(), c.ignored.as_slice()), (None, &["name".to_string()][..]));
+        let c = read_(&format!("[projects.\"{HERE}\"]\nname = \"Mine\"\n"));
+        assert_eq!(c.name(), None, "a project's own line is not read");
+        assert_eq!(c.ignored, [format!("projects.\"{HERE}\".name")]);
+    }
+
     #[test]
     fn a_suggest_line_is_reported_and_not_read() {
         assert!(!STARTING.contains("suggest"));

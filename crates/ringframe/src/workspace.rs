@@ -483,12 +483,43 @@ fn newest_tag() -> Result<String, WorkspaceError> {
     })
 }
 
+/// What installing the latest configuration is doing, in order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SyncStep {
+    /// Asking which release is the newest.
+    Finding,
+    /// Downloading its archive.
+    Downloading,
+    /// Unpacking, checking and putting it in place.
+    Installing,
+}
+
+/// Where a release comes from: its newest tag, and the archive of a tag.
+struct Releases<'a> {
+    newest: &'a dyn Fn() -> Result<String, WorkspaceError>,
+    archive: &'a dyn Fn(&str) -> Result<Vec<u8>, WorkspaceError>,
+}
+
+/// The repository's own releases, on the network.
+fn github_releases<T>(then: impl FnOnce(&Releases<'_>) -> T) -> T {
+    let archive = |tag: &str| {
+        fetch(&format!("https://codeload.github.com/{BUNDLE_REPO}/tar.gz/refs/tags/{tag}"), "120")
+    };
+    then(&Releases { newest: &newest_tag, archive: &archive })
+}
+
 /// Extract `products/<product>/config` into `dest`. Returns the tag and the
 /// bundle manifest text.
-fn download(dest: &Path) -> Result<(String, Option<String>), WorkspaceError> {
-    let tag = newest_tag()?;
-    let raw =
-        fetch(&format!("https://codeload.github.com/{BUNDLE_REPO}/tar.gz/refs/tags/{tag}"), "120")?;
+fn download(
+    dest: &Path,
+    from: &Releases<'_>,
+    progress: &dyn Fn(SyncStep),
+) -> Result<(String, Option<String>), WorkspaceError> {
+    progress(SyncStep::Finding);
+    let tag = (from.newest)()?;
+    progress(SyncStep::Downloading);
+    let raw = (from.archive)(&tag)?;
+    progress(SyncStep::Installing);
     let work = dest.with_file_name(format!(
         ".extract-{}-{}",
         std::process::id(),
@@ -565,6 +596,23 @@ fn freshness(revision: &str, latest: &str, manifest: &[u8]) -> Value {
 
 /// Replace the synced config layer.
 pub fn install_config(source: Option<&Path>) -> Result<Value, WorkspaceError> {
+    install_config_with(source, &|_| {})
+}
+
+/// As `install_config`, telling `progress` each step as it starts: a
+/// configuration from a folder is only installed.
+pub fn install_config_with(
+    source: Option<&Path>,
+    progress: &dyn Fn(SyncStep),
+) -> Result<Value, WorkspaceError> {
+    github_releases(|from| install_from(source, from, progress))
+}
+
+fn install_from(
+    source: Option<&Path>,
+    from: &Releases<'_>,
+    progress: &dyn Fn(SyncStep),
+) -> Result<Value, WorkspaceError> {
     use crate::config;
 
     let home_dir = config::home();
@@ -575,6 +623,7 @@ pub fn install_config(source: Option<&Path>) -> Result<Value, WorkspaceError> {
     let outcome = (|| {
         let (revision, bundle) = match source {
             Some(src) => {
+                progress(SyncStep::Installing);
                 let src = canonical_path(src).map_err(io("config.source"))?;
                 if !src.join("harnesses").is_dir() {
                     return Err(WorkspaceError::new(
@@ -585,7 +634,7 @@ pub fn install_config(source: Option<&Path>) -> Result<Value, WorkspaceError> {
                 copy_tree(&src, &staged).map_err(io("config.source"))?;
                 ("local".to_string(), bundle_manifest(&src)?)
             }
-            None => download(&staged)?,
+            None => download(&staged, from, progress)?,
         };
         validate(&staged, bundle.as_deref())?;
         std::fs::write(staged.join(".revision"), format!("{revision}\n"))
@@ -654,6 +703,48 @@ mod discover_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Syncing tells finding the release, downloading it and installing it,
+    /// in that order; a failed download installs nothing.
+    #[test]
+    fn syncing_tells_each_step_in_order() {
+        crate::testing::with_config_home(|home| {
+            // A release archive as GitHub serves one: a top folder holding the product.
+            let tree = home.join("release");
+            let config = tree.join("fab7-v9/products").join(BUNDLE_PRODUCT).join("config");
+            copy_tree(&crate::testing::fixture_config(), &config).unwrap();
+            let archive = home.join("release.tar.gz");
+            let packed = Command::new("tar")
+                .arg("-czf")
+                .arg(&archive)
+                .arg("-C")
+                .arg(&tree)
+                .arg("fab7-v9")
+                .status()
+                .unwrap();
+            assert!(packed.success());
+            let bytes = std::fs::read(&archive).unwrap();
+            let newest = || Ok("ringframe-v9.0.0".to_string());
+            let archive = |tag: &str| {
+                assert_eq!(tag, "ringframe-v9.0.0");
+                Ok(bytes.clone())
+            };
+            let seen = std::cell::RefCell::new(Vec::new());
+            let releases = Releases { newest: &newest, archive: &archive };
+            let out = install_from(None, &releases, &|s| seen.borrow_mut().push(s)).unwrap();
+            assert_eq!(out["revision"], "ringframe-v9.0.0");
+            assert_eq!(
+                seen.into_inner(),
+                [SyncStep::Finding, SyncStep::Downloading, SyncStep::Installing]
+            );
+
+            let gone = |_: &str| Err(WorkspaceError::new("config.fetch", "offline"));
+            let seen = std::cell::RefCell::new(Vec::new());
+            let releases = Releases { newest: &newest, archive: &gone };
+            assert!(install_from(None, &releases, &|s| seen.borrow_mut().push(s)).is_err());
+            assert_eq!(seen.into_inner(), [SyncStep::Finding, SyncStep::Downloading]);
+        });
+    }
 
     #[test]
     fn a_path_outside_the_opened_directory_is_refused() {

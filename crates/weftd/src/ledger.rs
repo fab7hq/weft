@@ -16,6 +16,7 @@ pub struct Ledger {
     consumed: usize,
     head: Option<[u8; 32]>,
     events: Vec<Value>,
+    moves: u64,
 }
 
 impl Ledger {
@@ -25,7 +26,14 @@ impl Ledger {
             consumed: 0,
             head: None,
             events: Vec::new(),
+            moves: 0,
         }
+    }
+
+    /// How many times it has moved since it was first read: what was built
+    /// from it is built again only when this changed.
+    pub fn moves(&self) -> u64 {
+        self.moves
     }
 
     pub fn units(&self) -> Vec<Unit> {
@@ -54,6 +62,7 @@ impl Ledger {
         if size < self.consumed || (self.head.is_some() && self.head != head) {
             self.consumed = 0;
             self.events.clear();
+            self.moves += 1;
         }
         self.head = head;
         let (mut new, used) = parse_prefix(&bytes[self.consumed..]);
@@ -62,6 +71,7 @@ impl Ledger {
         }
         self.consumed += used;
         self.events.append(&mut new);
+        self.moves += 1;
         true
     }
 }

@@ -34,6 +34,8 @@ pub struct Built {
     /// What it types stays out of the dialog, whose sentence says what
     /// happens.
     pub hidden: bool,
+    /// An Eval dialog's reads, said again when a line is written.
+    pub reads: Option<Box<crate::reads::EvalReads>>,
 }
 
 /// An Eval of a unit of work, for judges in a harness once the person says
@@ -58,6 +60,7 @@ pub fn eval(debate: Debate, title: &str, asks: usize, judges: &str) -> Built {
         stop: None,
         go: Some(weft_proto::Go { word: "act.eval".into(), warn: false }),
         hidden: false,
+        reads: None,
     }
 }
 
@@ -73,6 +76,7 @@ pub fn stop(eval_id: &str, title: &str) -> Built {
         stop: Some(eval_id.to_string()),
         go: Some(weft_proto::Go { word: "dialog.stop_eval.go".into(), warn: true }),
         hidden: false,
+        reads: None,
     }
 }
 
@@ -101,6 +105,7 @@ pub fn send(root: &Path, unit: &Unit, into: &str) -> Result<Built, String> {
         stop: None,
         go: None,
         hidden: false,
+        reads: None,
     })
 }
 
@@ -128,6 +133,7 @@ pub fn ask(
         stop: None,
         go: None,
         hidden: false,
+        reads: None,
     })
 }
 

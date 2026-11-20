@@ -157,6 +157,9 @@ pub fn allowed(call: &Call) -> bool {
         Call::Resolve { .. } => true,
         // A project reopened after an unclean end, dismissed.
         Call::Dismiss => true,
+        // Which files an Eval should skip, checked again; and a line the
+        // daemon's own check proposed, written: never one a device made up.
+        Call::SkipCheck | Call::SkipAdd { .. } => true,
         // The reads a device's Details and Eval view are gathered from.
         Call::Read { what, .. } => {
             matches!(
@@ -169,6 +172,7 @@ pub fn allowed(call: &Call) -> bool {
                     | "eval"
                     | "window"
                     | "conversation"
+                    | "sessions"
                     | "rules"
                     | "preview"
                     | "profile"
@@ -222,6 +226,7 @@ mod tests {
                 lines: None,
                 before: None,
                 after: None,
+                q: None,
             },
             Call::Open { path: "/p".into(), rows: 24, cols: 80, raw: true },
             Call::Remote { act: serde_json::json!({"act": "on"}) },
@@ -297,6 +302,7 @@ mod tests {
                 lines: None,
                 before: None,
                 after: None,
+                q: None,
             },
             Call::Read {
                 what: "commits".into(),
@@ -305,6 +311,7 @@ mod tests {
                 lines: None,
                 before: None,
                 after: None,
+                q: None,
             },
             Call::Read {
                 what: "questions".into(),
@@ -313,6 +320,7 @@ mod tests {
                 lines: None,
                 before: None,
                 after: None,
+                q: None,
             },
             Call::Resolve {
                 pending: "pnd_1".into(),
@@ -343,6 +351,7 @@ mod tests {
                 lines: Some(2000),
                 before: None,
                 after: None,
+                q: None,
             },
             Call::Read {
                 what: "eval".into(),
@@ -351,6 +360,7 @@ mod tests {
                 lines: None,
                 before: None,
                 after: None,
+                q: None,
             },
             Call::Read {
                 what: "wording".into(),
@@ -359,6 +369,7 @@ mod tests {
                 lines: None,
                 before: None,
                 after: None,
+                q: None,
             },
             Call::Read {
                 what: "window".into(),
@@ -367,6 +378,7 @@ mod tests {
                 lines: None,
                 before: None,
                 after: None,
+                q: None,
             },
         ];
         for call in may {

@@ -91,7 +91,13 @@ pub enum TreeAct {
         session: String,
         pane: Option<u32>,
     },
+    /// A project's earlier sessions opened or closed.
     OpenEarlier(PathBuf),
+    /// A page more of a project's earlier sessions, or of what the search
+    /// found among them.
+    MoreEarlier(PathBuf),
+    /// The read of a project's earlier sessions that failed, sent again.
+    EarlierAgain(PathBuf),
     /// A unit of work, by its root Ask: its Details open.
     SelectWork {
         project: PathBuf,
@@ -180,6 +186,10 @@ pub enum BarAct {
         pending: String,
         to: String,
     },
+    /// The Eval dialog's Read by list opened or closed.
+    ToggleReadBy,
+    /// The harness that reads the Eval, picked in its dialog.
+    ReadBy(String),
 }
 
 /// The sheets that take the workspace's place, and the docked Ask.
@@ -230,8 +240,9 @@ pub enum SheetAct {
     HowHard(String),
     /// A harness's details shown in Settings › Harnesses, by its name.
     ShowHarness(String),
-    /// Settings › RingFrame shows every rule, not the first few.
-    AllRules,
+    /// Settings › RingFrame shows every rule of this practice's catalog,
+    /// not the first few.
+    AllRules(String),
     /// SEND TO opened or closed.
     ToggleSendTo,
     /// Where the open Ask goes: an agent's session, or a new agent's key.
@@ -325,6 +336,20 @@ pub enum SheetAct {
         name: String,
     },
     RemoveDevice(String),
+    /// Look again at which files an Eval of the project should skip.
+    SkipCheck(PathBuf),
+    /// Write the line a finding proposed into its file: from the project's
+    /// settings or from the Eval dialog.
+    SkipAdd {
+        project: PathBuf,
+        file: String,
+        line: String,
+    },
+    /// A read that failed, sent again.
+    TryAgain {
+        project: PathBuf,
+        then: crate::daemon::Then,
+    },
 }
 
 /// The panes, their tabs and the message field.

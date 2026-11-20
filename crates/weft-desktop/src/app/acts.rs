@@ -8,9 +8,9 @@ use weft_core::state::{PaneViewMode, SavedPaneTab};
 use weft_core::tree;
 use weft_core::words;
 
-use super::{ActiveSheet, BottomBarState, SealQuestions, WeftDesktopApp};
+use super::{ActiveSheet, BottomBarState, EvalPick, SealQuestions, WeftDesktopApp};
 use crate::action::{Action, Answer, BarAct, Focus, PaneAct, SheetAct, TreeAct, WindowAct};
-use crate::daemon::Then;
+use crate::daemon::{Doing, Then, Working};
 use crate::panes_view::{join_all_panes, move_tab_to_next_pane, split_pane_down, split_pane_right};
 use crate::sheets::send_to::{pane_in, pane_key};
 use crate::text_field::{Shape, TextField};
@@ -20,6 +20,10 @@ impl WeftDesktopApp {
     /// Do what a click or a key asked.
     pub fn dispatch(&mut self, action: impl Into<Action>) {
         let action = action.into();
+        // What failed is said until the person acts where it is said.
+        if self.bar_is_free() {
+            self.failed = None;
+        }
         // Why the last act did not run goes with the next one.
         if matches!(self.bottom_bar, BottomBarState::WhyNot { .. }) {
             self.bottom_bar = BottomBarState::None;
@@ -73,8 +77,8 @@ impl WeftDesktopApp {
                 self.menu_open = false;
                 self.active_sheet =
                     Some(ActiveSheet::Settings { tab: crate::action::SettingsTab::General });
-                self.clients.iter_mut().for_each(|c| c.refused.clear());
-                self.all_rules = false;
+                self.clients.iter_mut().for_each(|c| c.refused.retain(|t, _| !t.is_settings()));
+                self.all_rules.clear();
                 self.preview_shown = false;
             }
             WindowAct::ToggleStartAtLogin => {
@@ -157,7 +161,7 @@ impl WeftDesktopApp {
                 self.project_menu = None;
                 self.choice = None;
                 self.active_sheet = Some(ActiveSheet::ProjectSettings { project: p });
-                self.clients.iter_mut().for_each(|c| c.refused.clear());
+                self.clients.iter_mut().for_each(|c| c.refused.retain(|t, _| !t.is_settings()));
                 self.want_rules();
             }
             TreeAct::TogglePlus(p) => {
@@ -180,10 +184,27 @@ impl WeftDesktopApp {
                 self.focus_or_open_agent_session(&project, &session, pane);
             }
             TreeAct::OpenEarlier(p) => {
-                if !self.unfolded_earlier.remove(&p) {
+                if self.unfolded_earlier.remove(&p) {
+                    // Opened again, it lists one page.
+                    if let Some(c) = self.client_mut(&p) {
+                        c.earlier_rows.fold();
+                    }
+                } else {
                     self.unfolded_earlier.insert(p.clone());
                 }
                 self.selection = Some(TreeSelection::EarlierSessions { project: p });
+            }
+            TreeAct::MoreEarlier(p) => {
+                let found = !self.search.text().trim().is_empty();
+                if let Some(c) = self.client_mut(&p) {
+                    c.more_earlier(found);
+                }
+            }
+            TreeAct::EarlierAgain(p) => {
+                let found = !self.search.text().trim().is_empty();
+                if let Some(c) = self.client_mut(&p) {
+                    c.earlier_again(found);
+                }
             }
             TreeAct::SelectWork { project, unit } => {
                 let evals = self
@@ -313,10 +334,54 @@ impl WeftDesktopApp {
             return self.why_not(why.say());
         }
         self.act_warning = why.map(|w| w.warning());
-        if let Some(c) = self.client_mut(&project) {
-            let pane = c.panes.iter().find(|p| p.running).map(|p| p.id);
-            if let Err(e) = c.act("eval", Some(&unit), pane, None, None, None) {
-                self.why_not(e.to_string());
+        let Some(c) = self.client_mut(&project) else { return };
+        let pane = c.panes.iter().find(|p| p.running).map(|p| p.id);
+        match c.eval(&unit, pane, None) {
+            Err(e) => self.why_not(e.to_string()),
+            Ok(_) => {
+                self.eval_pick = Some(EvalPick {
+                    project,
+                    unit,
+                    picked: None,
+                    was: None,
+                    open: false,
+                    pending: None,
+                    replacing: None,
+                    dropped: false,
+                })
+            }
+        }
+    }
+
+    /// Another harness picked to read the Eval: its dialog is staged again
+    /// for it, and the one shown goes once the new one is there. Nothing
+    /// runs until Eval. A pick still being staged takes no other.
+    fn read_by(&mut self, harness: String) {
+        let Some(pick) = self.eval_pick.as_mut() else { return };
+        pick.open = false;
+        let pick = pick.clone();
+        let shown = pick
+            .picked
+            .clone()
+            .or_else(|| self.eval_reader(&pick.project, &pick.unit).map(|(h, _)| h));
+        if pick.pending.is_none() || shown.as_deref() == Some(harness.as_str()) {
+            return;
+        }
+        let Some(c) = self.client_mut(&pick.project) else { return };
+        let pane = c.panes.iter().find(|p| p.running).map(|p| p.id);
+        let warning = weft_core::tree::Why::not_ready(c.readiness_of(&harness), &harness)
+            .map(|w| w.warning());
+        match c.eval(&pick.unit, pane, Some(&harness)) {
+            Err(e) => self.why_not(e.to_string()),
+            Ok(_) => {
+                self.act_warning = warning;
+                self.eval_pick = Some(EvalPick {
+                    was: pick.picked.clone(),
+                    picked: Some(harness),
+                    replacing: pick.pending.clone(),
+                    pending: None,
+                    ..pick
+                });
             }
         }
     }
@@ -425,7 +490,16 @@ impl WeftDesktopApp {
                 _ => self.why_not_for(Act::Ask),
             },
             BarAct::Eval => match self.selection.clone() {
-                Some(TreeSelection::Work { project, unit }) => self.eval_work(project, unit),
+                Some(TreeSelection::Work { project, unit }) => {
+                    // Eval pressed again: an open that failed is said no more.
+                    if let Some(c) = self.client_mut(&project) {
+                        let root = c.work.of_ask(&unit).map_or(unit.clone(), |w| w.root.clone());
+                        c.forget_failed(|j| {
+                            j.kind == "eval_open" && j.on.work.as_deref() == Some(root.as_str())
+                        });
+                    }
+                    self.eval_work(project, unit)
+                }
                 _ => self.why_not_for(Act::Eval),
             },
             BarAct::Seal => match self.selection.clone() {
@@ -493,10 +567,14 @@ impl WeftDesktopApp {
             BarAct::Undo => {
                 if let BottomBarState::Undo { project, unit, commits, picked, .. } =
                     std::mem::replace(&mut self.bottom_bar, BottomBarState::None)
-                    && let Some(c) = self.client_mut(&project)
                 {
-                    let id = commits[picked].id.clone();
-                    let _ = c.act("undo", Some(&unit), None, Some(&id), None, None);
+                    let working = self.working_on(&project, Doing::Undoing, &unit);
+                    if let Some(c) = self.client_mut(&project) {
+                        let id = commits[picked].id.clone();
+                        if let Ok(call) = c.act("undo", Some(&unit), None, Some(&id), None, None) {
+                            c.owed_for(call, Then::Working(working));
+                        }
+                    }
                 }
             }
             BarAct::TurnOnGitNote => {
@@ -507,12 +585,37 @@ impl WeftDesktopApp {
             }
             BarAct::Resolve { project, pending, answer } => {
                 self.act_warning = None;
+                // The Eval's dialog says yes for the work picked, read by whom.
+                let eval_work = self
+                    .eval_pick
+                    .as_ref()
+                    .filter(|p| p.project == project && p.pending.as_ref() == Some(&pending))
+                    .map(|p| {
+                        let picked = p.picked.clone();
+                        let reader = picked
+                            .or_else(|| self.eval_reader(&p.project, &p.unit).map(|(h, _)| h));
+                        (p.unit.clone(), reader)
+                    });
+                // The Eval's dialog answered: its pick goes with it, and a
+                // dialog still being staged for a new pick goes when it comes.
+                if let Some(p) = self.eval_pick.as_mut().filter(|p| p.project == project) {
+                    if p.replacing.as_ref() == Some(&pending) {
+                        (p.replacing, p.dropped) = (None, true);
+                    } else if p.pending.as_ref() == Some(&pending) {
+                        self.eval_pick = None;
+                    }
+                }
                 let (yes, force) = (answer != Answer::No, answer == Answer::Anyway);
                 // Where the person sent it, when not where it was staged.
                 let staged = self
                     .client(&project)
                     .and_then(|c| c.waiting.iter().find(|s| s.id == pending))
                     .cloned();
+                // A yes waits on the machine, and says what for until it is done.
+                let working = staged
+                    .as_ref()
+                    .filter(|_| yes)
+                    .map(|s| self.resolving(&project, s, eval_work.as_ref()));
                 let picked = self.staged_to.remove(&pending);
                 let (to, start) = match (picked.as_deref(), staged) {
                     (Some(key), Some(staged)) => match key.strip_prefix("start:") {
@@ -522,9 +625,13 @@ impl WeftDesktopApp {
                     _ => (None, None),
                 };
                 self.send_to_open = false;
-                let resolved = self
-                    .client_mut(&project)
-                    .map(|c| c.resolve(&pending, yes, force, to, start.as_deref()));
+                let resolved = self.client_mut(&project).map(|c| {
+                    let call = c.resolve(&pending, yes, force, to, start.as_deref());
+                    if let (Ok(id), Some(w)) = (&call, working) {
+                        c.owed_for(*id, Then::Working(w));
+                    }
+                    call
+                });
                 if let Some(Err(e)) = resolved {
                     self.why_not(e.to_string());
                 }
@@ -559,7 +666,7 @@ impl WeftDesktopApp {
                 let answers = match &self.bottom_bar {
                     BottomBarState::SealDisposition { questions, .. } => match questions {
                         SealQuestions::Reading => return,
-                        SealQuestions::Unasked => None,
+                        SealQuestions::Unasked | SealQuestions::Unread(_) => None,
                         SealQuestions::Asking(a) => match a.answering.answers() {
                             Some(answers) => Some(answers),
                             None => return,
@@ -568,8 +675,20 @@ impl WeftDesktopApp {
                     _ => None,
                 };
                 self.act_warning = None;
-                if let Some(c) = self.client_mut(&project) {
-                    let _ = c.seal(&eval, &disposition, reason.as_deref(), answers);
+                let root = self
+                    .client(&project)
+                    .and_then(|c| c.work.of_eval(&eval))
+                    .map(|u| u.root.clone());
+                let about =
+                    root.as_deref().map(|r| self.work_title(&project, r)).unwrap_or_default();
+                let decision = weft_core::tree::decision(&disposition);
+                let about =
+                    if about.is_empty() { decision } else { format!("{about} · {decision}") };
+                let working = Working { doing: Doing::Sealing, about, work: root };
+                if let Some(c) = self.client_mut(&project)
+                    && let Ok(id) = c.seal(&eval, &disposition, reason.as_deref(), answers)
+                {
+                    c.owed_for(id, Then::Working(working));
                 }
                 self.bottom_bar = BottomBarState::None;
                 self.active_sheet = None;
@@ -592,6 +711,12 @@ impl WeftDesktopApp {
                 self.bottom_bar = BottomBarState::None;
                 self.close_project(&p);
             }
+            BarAct::ToggleReadBy => {
+                if let Some(pick) = self.eval_pick.as_mut() {
+                    pick.open = !pick.open;
+                }
+            }
+            BarAct::ReadBy(harness) => self.read_by(harness),
             BarAct::SendTo { pending, to } => {
                 self.staged_to.insert(pending, to);
                 self.send_to_open = false;
@@ -732,7 +857,9 @@ impl WeftDesktopApp {
                 }
                 self.want_rules();
             }
-            SheetAct::AllRules => self.all_rules = true,
+            SheetAct::AllRules(catalog) => {
+                self.all_rules.insert(catalog);
+            }
             SheetAct::ShowHarness(name) => {
                 self.harness_shown = name;
                 self.choice = None;
@@ -771,6 +898,16 @@ impl WeftDesktopApp {
                     // A rule's tasks and concerns are lists, typed with commas.
                     let listed =
                         matches!(key.last().map(String::as_str), Some("applies_to" | "concerns"));
+                    // A number of days is a number, or nothing: the default.
+                    if key == ["sessions", "keep_days"] {
+                        if let Ok(days) = text.parse::<u64>() {
+                            self.set_setting(None, &key, Some(serde_json::json!(days)));
+                        } else if text.is_empty() {
+                            self.set_setting(None, &key, None);
+                        }
+                        self.focus = Focus::Terminal;
+                        return;
+                    }
                     let value = (!text.is_empty()).then(|| {
                         if listed {
                             serde_json::json!(
@@ -859,9 +996,16 @@ impl WeftDesktopApp {
             }
             SheetAct::GitNote { project, on: false } => self.git_note(&project, None),
             SheetAct::Proceed { project, unit } => {
+                let working = Working {
+                    doing: Doing::Preparing,
+                    about: self.work_title(&project, &unit),
+                    work: None,
+                };
                 if let Some(c) = self.client_mut(&project) {
                     let pane = c.panes.iter().find(|p| p.running).map(|p| p.id);
-                    let _ = c.act("proceed", Some(&unit), pane, None, None, None);
+                    if let Ok(id) = c.act("proceed", Some(&unit), pane, None, None, None) {
+                        c.owed_for(id, Then::Working(working));
+                    }
                 }
                 self.active_sheet = None;
             }
@@ -919,10 +1063,18 @@ impl WeftDesktopApp {
                 self.bring_to_front(project, pane);
             }
             SheetAct::StopEval { project, eval } => {
-                if let Some(c) = self.client_mut(&project)
-                    && let Err(e) = c.act("stop", None, None, None, Some(&eval), None)
-                {
-                    self.why_not(e.to_string());
+                let about = self
+                    .client(&project)
+                    .and_then(|c| c.work.of_eval(&eval))
+                    .map(|u| u.root.clone())
+                    .map(|root| self.work_title(&project, &root))
+                    .unwrap_or_default();
+                let working = Working { doing: Doing::Preparing, about, work: None };
+                if let Some(c) = self.client_mut(&project) {
+                    match c.act("stop", None, None, None, Some(&eval), None) {
+                        Ok(id) => c.owed_for(id, Then::Working(working)),
+                        Err(e) => self.why_not(e.to_string()),
+                    }
                 }
             }
             SheetAct::Resume { project, harness, session } => {
@@ -930,11 +1082,38 @@ impl WeftDesktopApp {
                     self.active_sheet = None;
                 }
             }
-            SheetAct::SetupAll => self.setup_everywhere("all", ""),
-            SheetAct::SetupRun(target) => self.setup_everywhere("run", &target),
+            SheetAct::SetupAll => {
+                // One update at a time: the others rest until it ends.
+                if self.updating().is_none() {
+                    self.forget_machine_failed(|j| j.kind != "remote");
+                    self.setup_everywhere("all", "");
+                }
+            }
+            SheetAct::SetupRun(target) => {
+                if self.updating().is_none() {
+                    self.forget_machine_failed(|j| {
+                        j.kind != "remote" && j.on.harness.as_deref() == Some(target.as_str())
+                    });
+                    self.setup_everywhere("run", &target);
+                }
+            }
+            SheetAct::TryAgain { project, then } => self.try_again(&project, then),
+            SheetAct::SkipCheck(project) => {
+                if let Some(c) = self.client_mut(&project) {
+                    let _ = c.skip_check();
+                }
+            }
+            SheetAct::SkipAdd { project, file, line } => {
+                if let Some(c) = self.client_mut(&project) {
+                    let _ = c.skip_add(&file, &line);
+                }
+            }
             // The window asks the system for the program, then calls `locate`.
             SheetAct::Locate(_) => {}
-            SheetAct::RemoteOn => self.remote_act(serde_json::json!({"act": "on"})),
+            SheetAct::RemoteOn => {
+                self.forget_machine_failed(|j| j.kind == "remote");
+                self.remote_act(serde_json::json!({"act": "on"}))
+            }
             SheetAct::RemoteOff => {
                 self.remote_act(serde_json::json!({"act": "off"}));
                 self.bottom_bar = BottomBarState::None;
@@ -947,6 +1126,7 @@ impl WeftDesktopApp {
                     .and_then(|v| v["chosen"].as_str().or(v["tunnels"][0]["id"].as_str()))
                     .map(str::to_string);
                 if let Some(tunnel) = self.remote_pick.take().or(shown) {
+                    self.forget_machine_failed(|j| j.kind == "remote");
                     self.remote_act(serde_json::json!({"act": "choose", "tunnel": tunnel}));
                 }
             }
@@ -967,6 +1147,84 @@ impl WeftDesktopApp {
                 self.remote_act(serde_json::json!({"act": "remove", "device": device}));
                 self.bottom_bar = BottomBarState::None;
             }
+        }
+    }
+
+    /// What a yes on `unit`'s work waits for, said with its title.
+    fn working_on(&self, project: &Path, doing: Doing, unit: &str) -> Working {
+        let root = self.client(project).and_then(|c| c.work.of_ask(unit)).map(|u| u.root.clone());
+        Working { doing, about: self.work_title(project, unit), work: root }
+    }
+
+    /// What a dialog's yes waits for: an Eval opening, an Eval stopping, or
+    /// a send, with what it is about.
+    fn resolving(
+        &self,
+        project: &Path,
+        staged: &crate::daemon::Staged,
+        eval_work: Option<&(String, Option<String>)>,
+    ) -> Working {
+        // A dialog that types nothing names its work on its first line.
+        let named = staged
+            .why
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .filter(|l| !l.ends_with(['.', '?', '!', ':']))
+            .map(str::to_string);
+        match staged.go.as_ref().map(|g| g.word.as_str()) {
+            Some("act.eval") => match eval_work {
+                Some((unit, reader)) => {
+                    let mut w = self.working_on(project, Doing::Opening, unit);
+                    w.about = self.opening_about(project, unit, reader.as_deref());
+                    w
+                }
+                None => {
+                    Working { doing: Doing::Opening, about: named.unwrap_or_default(), work: None }
+                }
+            },
+            Some("dialog.stop_eval.go") => {
+                Working { doing: Doing::Stopping, about: named.unwrap_or_default(), work: None }
+            }
+            _ => {
+                let about =
+                    self.send_to_view(project, Some(&self.staged_send_to(staged))).picked_label();
+                Working { doing: Doing::Sending, about, work: None }
+            }
+        }
+    }
+
+    /// A read that failed, sent again.
+    fn try_again(&mut self, project: &Path, then: Then) {
+        let (what, unit) = match &then {
+            Then::Conversation { pane } => return self.read_conversation(project, *pane),
+            Then::Older { pane } => return self.read_older(project, *pane),
+            Then::Questions { eval } => {
+                if let BottomBarState::SealDisposition { eval: e, questions, .. } =
+                    &mut self.bottom_bar
+                    && e == eval
+                {
+                    *questions = SealQuestions::Reading;
+                }
+                ("questions", eval.clone())
+            }
+            Then::Seal { seal } => ("seal", seal.clone()),
+            Then::Source { unit } => ("source", unit.clone()),
+            Then::Wording { unit } => ("wording", unit.clone()),
+            Then::Judges { eval } => ("judges", eval.clone()),
+            Then::EvalView { eval } => ("eval", eval.clone()),
+            Then::Window { eval, window } => ("window", format!("{eval}/{window}")),
+            // What Settings asks is asked again as it is shown.
+            Then::Rules { .. } | Then::Preview { .. } | Then::Profile { .. } => {
+                for c in &mut self.clients {
+                    c.refused.remove(&then);
+                }
+                return self.want_rules();
+            }
+            _ => return,
+        };
+        if let Some(c) = self.client_mut(project) {
+            let _ = c.read(what, &unit, None, then);
         }
     }
 
@@ -1105,10 +1363,19 @@ impl WeftDesktopApp {
         let start = send_to.and_then(|k| k.strip_prefix("start:")).map(str::to_string);
         let pane = send_to.and_then(pane_in);
         let chosen = self.ask_sheet.as_ref().map(|s| self.ask_choices.draft(s));
+        // Where it goes, as SEND TO says it.
+        let about = send_to
+            .map(|k| self.send_to_view(project, Some(k)))
+            .map(|v| v.picked_label())
+            .unwrap_or_default();
+        let working = Working { doing: Doing::Asking, about, work: None };
         let Some(client) = self.client_mut(project) else { return false };
         let act = if follow_up_unit.is_some() { "follow_up" } else { "ask" };
         match client.ask(act, follow_up_unit, (pane, start.as_deref()), draft, chosen) {
-            Ok(_) => true,
+            Ok(id) => {
+                client.owed_for(id, Then::Working(working));
+                true
+            }
             Err(e) => {
                 self.why_not(e.to_string());
                 false
@@ -1154,7 +1421,7 @@ impl WeftDesktopApp {
     ) -> bool {
         let Some(client) = self.client(project) else { return false };
         if let Some(sid) = session
-            && let Some(row) = client.sessions.iter().find(|r| r.id == sid)
+            && let Some(row) = client.session(sid)
         {
             if row.state == weft_core::sessions::State::Running
                 && let Some(pane) = row.pane
@@ -1205,9 +1472,7 @@ impl WeftDesktopApp {
             let _ = self.save_state();
             return;
         }
-        let Some(row) =
-            self.client(project).and_then(|c| c.sessions.iter().find(|r| r.id == session))
-        else {
+        let Some(row) = self.client(project).and_then(|c| c.session(session)) else {
             return;
         };
         match (row.state, row.pane) {

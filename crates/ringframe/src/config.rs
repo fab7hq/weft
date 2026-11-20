@@ -403,7 +403,7 @@ mod tests {
                     ),
                     (
                         "config/deltas/practices/software-development.toml",
-                        "909c7b5c1339d376bd82f980cbe2f253b1eb96dbf58c80b3ee78f1c85c6edaa2",
+                        "de6ad1ec4c637e4dea58e55ae218438fc8cd7886ba229e6de7c1a5f8890a9878",
                     ),
                     (
                         "config/harnesses/antigravity.toml",

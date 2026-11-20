@@ -31,11 +31,24 @@ pub(super) fn render(props: &SheetProps, project: &Path) -> Element {
     let mut rows: Vec<Element> = shown_here.iter().map(|e| row(props, project, e)).collect();
     rows.extend(ringframe_rows(props, project));
     let mut body = sheet_body();
-    if rows.is_empty() {
+    // RingFrame's rows still read: they breathe, or say why they could not be.
+    let client = props.client(project);
+    let rules = [true, false].map(|mine| crate::daemon::Then::Rules { project: mine });
+    let mut loading = false;
+    if let Some(c) = client.filter(|c| rules.iter().any(|t| !c.read.contains_key(t))) {
+        if rules.iter().any(|t| c.owes(t)) {
+            loading = true;
+            body = body.child(crate::waiting::loading(&[460, 540, 380]));
+        } else if let Some((t, why)) = rules.iter().find_map(|t| Some((t, c.refused.get(t)?))) {
+            body = body.child(super::ringframe::unanswered(Some(why), t.clone()));
+        }
+    }
+    // Still read, it may yet differ: it says nothing differs only once it knows.
+    if !rows.is_empty() {
+        body = body.child(row_list(rows));
+    } else if !loading {
         body =
             body.child(note(fill("desktop.project.none", &[("project", &name)]), palette::MUTED));
-    } else {
-        body = body.child(row_list(rows));
     }
     body = body.child(
         div()
@@ -67,6 +80,7 @@ pub(super) fn render(props: &SheetProps, project: &Path) -> Element {
         }
         body = body.child(list);
     }
+    body = body.child(crate::skip_view::settings(project, client));
     // A Seal's Git note: this project's only, off unless turned on (17.19).
     let on = now(props, Some(project), &["export", "git_note"]) == Value::Bool(true);
     let act = SheetAct::GitNote { project: project.to_path_buf(), on: !on };

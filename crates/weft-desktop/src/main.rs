@@ -26,7 +26,9 @@ fn main() {
     // This version stays while it runs, whatever version the daemon moves to.
     let _held = weft_desktop::version::hold_own();
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
-    let mut app = WeftDesktopApp::new(home, machine_name());
+    // The daemon names the machine once it answers.
+    let this_machine = weft_core::words::word("desktop.this_machine");
+    let mut app = WeftDesktopApp::new(home, this_machine);
     if let Some(dir) = project {
         app.open_project_path(dir);
     }
@@ -35,21 +37,4 @@ fn main() {
         eprintln!("weft-desktop: {err}");
         std::process::exit(1);
     }
-}
-
-/// This machine's name, as the system calls it, without its domain; when
-/// the system gives none, a plain word for it.
-fn machine_name() -> String {
-    unsafe extern "C" {
-        fn gethostname(name: *mut std::ffi::c_char, len: usize) -> std::ffi::c_int;
-    }
-    let mut buf = [0u8; 256];
-    // SAFETY: `buf` is writable for its whole length, which is passed.
-    let ok = unsafe { gethostname(buf.as_mut_ptr().cast(), buf.len()) } == 0;
-    let name = ok
-        .then(|| std::ffi::CStr::from_bytes_until_nul(&buf).ok())
-        .flatten()
-        .map(|c| c.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    weft_desktop::app::machine_name_of(&name)
 }

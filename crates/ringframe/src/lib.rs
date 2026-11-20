@@ -19,12 +19,15 @@ pub mod ids;
 pub mod observe;
 pub mod output;
 pub mod profiles;
+pub mod read_check;
+pub mod reads;
 pub mod rules;
 pub mod schema;
 pub mod seal;
 pub mod sessions;
 pub mod store;
 pub mod tasks;
+mod untracked;
 pub mod workspace;
 
 #[cfg(test)]

@@ -124,13 +124,36 @@ pub(super) fn render(props: &SheetProps, project: &Path, unit_id: &str) -> Eleme
             .text(format!("{harness} · {sid} ›")),
         None => div().font_size(14).color(palette::MUTED).text(word("desktop.work.no_session")),
     });
-    if let Some(text) = source {
-        body = body.child(dim(word("web.detail.as_typed"))).child(boxed(text, 14, palette::TEXT));
+    // Each read: what it holds, lines that breathe while it comes, or why
+    // it could not be read.
+    let pending = |then: Then| -> Option<Element> {
+        if c.owes(&then) {
+            return Some(crate::waiting::loading(&[480, 560, 320]));
+        }
+        let why = c.refused.get(&then)?;
+        let again = SheetAct::TryAgain { project: project.to_path_buf(), then: then.clone() };
+        Some(crate::waiting::failed(crate::waiting::could_not_read(why), Some(again.into())))
+    };
+    let source_then = Then::Source { unit: unit_id.to_string() };
+    match source {
+        Some(text) => {
+            body =
+                body.child(dim(word("web.detail.as_typed"))).child(boxed(text, 14, palette::TEXT))
+        }
+        None => {
+            if let Some(el) = pending(source_then) {
+                body = body.child(dim(word("web.detail.as_typed"))).child(el);
+            }
+        }
     }
-    if let Some(text) = prompt {
-        body = body
-            .child(dim(&fill("desktop.work.composed", &[("harness", &unit.harness)])))
-            .child(boxed(text, 13, palette::MUTED));
+    let composed = fill("desktop.work.composed", &[("harness", &unit.harness)]);
+    match prompt {
+        Some(text) => body = body.child(dim(&composed)).child(boxed(text, 13, palette::MUTED)),
+        None => {
+            if let Some(el) = pending(Then::Wording { unit: unit_id.to_string() }) {
+                body = body.child(dim(&composed)).child(el);
+            }
+        }
     }
 
     let mut left = Vec::new();

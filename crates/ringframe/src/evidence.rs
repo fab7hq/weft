@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use crate::evaluate::{EvalError, git, git_bytes, ledger, str_of};
+use crate::evaluate::{EvalError, OpenProgress, OpenStep, git, git_bytes, ledger, str_of};
 use crate::workspace::Workspace;
 use crate::{digest, store};
 
@@ -30,7 +30,7 @@ const ANCHOR_MIN_CHARS: usize = 4;
 /// A key is rare when it is in at most this share of the windows judges read.
 const RARE_SHARE: f64 = 0.02;
 
-const LOCK_FILES: [&str; 11] = [
+pub(crate) const LOCK_FILES: [&str; 11] = [
     "Cargo.lock",
     "package-lock.json",
     "npm-shrinkwrap.json",
@@ -647,6 +647,9 @@ pub struct Repo {
     pub anchor_from: &'static str,
     pub subject_kind: String,
     pub subject_ref: String,
+    /// When the work began here, in milliseconds since the epoch: untracked
+    /// files older than that are not part of the change. None reads them all.
+    pub since: Option<i64>,
 }
 
 /// `to` relative to `from`, both absolute: `../fab7`.
@@ -745,7 +748,10 @@ pub fn other_repos(
     let own = git_root(&ws.root);
     let base = ws.root.canonicalize().unwrap_or_else(|_| ws.root.clone());
     let mut found: BTreeMap<PathBuf, Repo> = BTreeMap::new();
-    for b in asks.iter().flat_map(|a| a["baselines"].as_array().into_iter().flatten()) {
+    for (a, b) in asks
+        .iter()
+        .flat_map(|a| a["baselines"].as_array().into_iter().flatten().map(move |b| (a, b)))
+    {
         let root = PathBuf::from(str_of(b, "root"));
         if str_of(b, "repo") == "." || Some(&root) == own.as_ref() || found.contains_key(&root) {
             continue;
@@ -765,6 +771,7 @@ pub fn other_repos(
                 anchor_from: "ask",
                 subject_kind: String::new(),
                 subject_ref: String::new(),
+                since: crate::sessions::parse_time(&str_of(a, "time")),
             },
         );
     }
@@ -792,11 +799,16 @@ pub fn other_repos(
                 (git(&root, &args)?.trim().to_string(), "first_ask")
             }
         };
+        let since = match from {
+            "first_ask" => first_ask_time.and_then(crate::sessions::parse_time),
+            _ => crate::evaluate::commit_time(&root, &anchor),
+        };
         found.insert(
             root.clone(),
             Repo {
                 name: relative(&base, &root),
                 root,
+                since,
                 anchor,
                 anchor_from: from,
                 subject_kind: String::new(),
@@ -967,7 +979,7 @@ pub(crate) fn is_definition(text: &str, path: &str) -> bool {
 
 /// The change in one repository, with one line of context: `git diff` from
 /// its anchor to its commit, or to what is on disk plus untracked files.
-fn repo_patch(r: &Repo, relative_to_workspace: bool) -> Result<String, EvalError> {
+fn repo_patch(r: &Repo, relative_to_workspace: bool) -> Result<(String, usize), EvalError> {
     repo_patch_with(r, relative_to_workspace, "-U1")
 }
 
@@ -975,14 +987,17 @@ fn repo_patch(r: &Repo, relative_to_workspace: bool) -> Result<String, EvalError
 const DRIVERS: [&str; 2] =
     ["diff.ringframe-top.xfuncname=^\\b$", "diff.ringframe-toml.xfuncname=^\\[[^]]+\\]"];
 
+/// The change, and how many of its files Git does not track.
 fn repo_patch_with(
     r: &Repo,
     relative_to_workspace: bool,
     context: &str,
-) -> Result<String, EvalError> {
+) -> Result<(String, usize), EvalError> {
     let attrs = format!("core.attributesFile={}", function_names_file().display());
-    let mut args = vec!["-c", attrs.as_str(), "-c", DRIVERS[0], "-c", DRIVERS[1]];
-    args.extend(["diff", context, "--no-color", "--no-ext-diff", "--binary"]);
+    let config = ["-c", attrs.as_str(), "-c", DRIVERS[0], "-c", DRIVERS[1]];
+    let mut args = config.to_vec();
+    // Readers read text: a binary file is named as changed, not encoded.
+    args.extend(["diff", context, "--no-color", "--no-ext-diff"]);
     if relative_to_workspace {
         args.push("--relative");
     }
@@ -993,32 +1008,14 @@ fn repo_patch_with(
     args.extend(["--", "."]);
     let root = r.root_for_diff(relative_to_workspace);
     let mut out = git_bytes(&root, &args, &[0])?;
+    let mut untracked = 0;
     if r.subject_kind == "worktree" {
-        for name in git(&root, &["ls-files", "--others", "--exclude-standard", "-z"])?.split('\0') {
-            if !name.is_empty() {
-                out.extend(git_bytes(
-                    &root,
-                    &[
-                        "-c",
-                        &attrs,
-                        "-c",
-                        DRIVERS[0],
-                        "-c",
-                        DRIVERS[1],
-                        "diff",
-                        context,
-                        "--no-color",
-                        "--binary",
-                        "--no-index",
-                        "/dev/null",
-                        name,
-                    ],
-                    &[0, 1],
-                )?);
-            }
-        }
+        let names = crate::untracked::listed(&root, r.since)?;
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        untracked = names.len();
+        out.extend(crate::untracked::diffs(&root, &names, &config, Some(context), None)?);
     }
-    Ok(String::from_utf8_lossy(&out).to_string())
+    Ok((String::from_utf8_lossy(&out).to_string(), untracked))
 }
 
 impl Repo {
@@ -1056,18 +1053,31 @@ pub struct Evidence {
     pub repos: Vec<Repo>,
     pub integrity: Vec<Value>,
     pub moves: usize,
+    /// How many of the change's files Git does not track.
+    pub untracked: usize,
     /// The parsed patch, which the change DAG is built from.
     pub(crate) files: Vec<FileDiff>,
 }
 
 /// Read every repository's change and cut it into classified windows.
 pub fn gather(repos: &[Repo], workspace_repo: usize) -> Result<Evidence, EvalError> {
+    gather_with(repos, workspace_repo, &|_| {})
+}
+
+/// As `gather`, telling `progress` how far it is.
+pub fn gather_with(
+    repos: &[Repo],
+    workspace_repo: usize,
+    progress: &dyn Fn(OpenProgress),
+) -> Result<Evidence, EvalError> {
     let mut files = Vec::new();
     let mut raw_paths: Vec<(usize, Vec<String>)> = Vec::new();
+    let mut untracked = 0;
     for (i, r) in repos.iter().enumerate() {
-        let patch = repo_patch(r, i == workspace_repo)?;
+        let (patch, not_tracked) = repo_patch(r, i == workspace_repo)?;
+        untracked += not_tracked;
         let mut parsed = parse(&patch, &r.name);
-        let zero = parse(&repo_patch_with(r, i == workspace_repo, "-U0")?, &r.name);
+        let zero = parse(&repo_patch_with(r, i == workspace_repo, "-U0")?.0, &r.name);
         name_items(&mut parsed, &zero);
         let strip = |p: &str| -> String {
             if r.name == "." { p.to_string() } else { p[r.name.len() + 1..].to_string() }
@@ -1075,23 +1085,61 @@ pub fn gather(repos: &[Repo], workspace_repo: usize) -> Result<Evidence, EvalErr
         raw_paths.push((i, parsed.iter().map(|f| strip(&f.path)).collect()));
         files.extend(parsed);
     }
-    for f in &mut files {
-        let Some(r) = repos.iter().position(|r| r.name == f.repo) else { continue };
-        let repo = &repos[r];
-        let rel = if repo.name == "." {
-            f.path.clone()
-        } else {
-            f.path[repo.name.len() + 1..].to_string()
-        };
+    let total = files.len();
+    let at = |step: OpenStep, done: usize| OpenProgress { step, done, total, untracked };
+    progress(at(OpenStep::Changes, 0));
+    let mut done = 0;
+    let mut told = std::time::Instant::now();
+    for (r, repo) in repos.iter().enumerate() {
+        let ours: Vec<usize> = (0..files.len())
+            .filter(|&i| repos.iter().position(|x| x.name == files[i].repo) == Some(r))
+            .collect();
         let dir = repo.root_for_diff(r == workspace_repo);
-        let at = |rev: &str| git(&dir, &["show", &format!("{rev}:./{rel}")]).ok();
-        let new = if repo.subject_kind == "git_commit" {
-            at(&repo.subject_ref)
-        } else {
-            std::fs::read_to_string(dir.join(&rel)).ok()
+        let rel_of = |f: &FileDiff| -> String {
+            if repo.name == "." {
+                f.path.clone()
+            } else {
+                f.path[repo.name.len() + 1..].to_string()
+            }
         };
-        f.test_from = (test_start(at(&repo.anchor).as_deref()), test_start(new.as_deref()));
+        // Where a test module starts matters only for a file with hunks on
+        // both sides. An added or deleted file's whole text is in its hunks,
+        // where the marker line itself opens the test region; a binary file
+        // has no lines. So only a changed text file is read, at the anchor
+        // and at the subject, and Git is asked once for all of them.
+        let read: Vec<usize> = ours
+            .iter()
+            .copied()
+            .filter(|&i| {
+                let f = &files[i];
+                !f.binary && !f.hunks.is_empty() && !matches!(f.status, "added" | "deleted")
+            })
+            .collect();
+        let mut wanted: Vec<String> =
+            read.iter().map(|&i| format!("{}:./{}", repo.anchor, rel_of(&files[i]))).collect();
+        if repo.subject_kind == "git_commit" {
+            wanted.extend(
+                read.iter().map(|&i| format!("{}:./{}", repo.subject_ref, rel_of(&files[i]))),
+            );
+        }
+        let texts = blobs(&dir, &wanted);
+        for (k, &i) in read.iter().enumerate() {
+            let new = if repo.subject_kind == "git_commit" {
+                texts[read.len() + k].clone()
+            } else {
+                std::fs::read_to_string(dir.join(rel_of(&files[i]))).ok()
+            };
+            files[i].test_from = (test_start(texts[k].as_deref()), test_start(new.as_deref()));
+        }
+        for _ in &ours {
+            done += 1;
+            if told.elapsed() >= std::time::Duration::from_millis(100) || done == total {
+                progress(at(OpenStep::Changes, done));
+                told = std::time::Instant::now();
+            }
+        }
     }
+    progress(at(OpenStep::Windows, done));
     let moves = detect_moves(&mut files);
     let mut generated: BTreeSet<String> = BTreeSet::new();
     for (i, paths) in &raw_paths {
@@ -1111,7 +1159,38 @@ pub fn gather(repos: &[Repo], workspace_repo: usize) -> Result<Evidence, EvalErr
         }
     }
     let integrity = integrity(&windows);
-    Ok(Evidence { windows, repos: repos.to_vec(), integrity, moves: moves.len(), files })
+    Ok(Evidence { windows, repos: repos.to_vec(), integrity, moves: moves.len(), untracked, files })
+}
+
+/// Each `<rev>:<path>`'s text, read by one `git cat-file --batch`. A path
+/// missing at its revision is None, as is every one when git cannot run.
+fn blobs(dir: &Path, wanted: &[String]) -> Vec<Option<String>> {
+    let mut texts = vec![None; wanted.len()];
+    // One name per line: a path with a newline in it is not asked.
+    let asked: Vec<usize> = (0..wanted.len()).filter(|&i| !wanted[i].contains('\n')).collect();
+    if asked.is_empty() {
+        return texts;
+    }
+    let input: Vec<u8> = asked.iter().flat_map(|&i| wanted[i].bytes().chain([b'\n'])).collect();
+    let Some(out) = crate::evaluate::git_input(dir, &["cat-file", "--batch"], &input) else {
+        return texts;
+    };
+    let mut at = 0;
+    for i in asked {
+        let Some(end) = out[at..].iter().position(|&b| b == b'\n').map(|n| at + n) else { break };
+        let header = String::from_utf8_lossy(&out[at..end]).to_string();
+        at = end + 1;
+        // `<id> <type> <size>`, then the content; else `<name> missing`.
+        let parts: Vec<&str> = header.split(' ').collect();
+        let size = (parts.len() == 3).then(|| parts[2].parse::<usize>().ok()).flatten();
+        let Some(size) = size else { continue };
+        let Some(body) = out.get(at..at + size) else { break };
+        if parts[1] == "blob" {
+            texts[i] = Some(String::from_utf8_lossy(body).to_string());
+        }
+        at += size + 1;
+    }
+    texts
 }
 
 /// Prepare what the judges read and publish it beside the brief:
@@ -1127,8 +1206,10 @@ pub fn prepare(
     anchor: &str,
     kind: &str,
     reference: &str,
+    since: Option<i64>,
     named: &[String],
     limitations: &mut Vec<String>,
+    progress: &dyn Fn(OpenProgress),
 ) -> Result<(Value, Value), EvalError> {
     let mut repos = vec![Repo {
         name: ".".into(),
@@ -1137,6 +1218,7 @@ pub fn prepare(
         anchor_from: "workspace",
         subject_kind: kind.into(),
         subject_ref: reference.into(),
+        since,
     }];
     let first_time = asks.first().map(|a| str_of(a, "time"));
     let own_dirty = asks.first().is_some_and(|a| {
@@ -1152,7 +1234,13 @@ pub fn prepare(
         );
     }
     repos.extend(other_repos(ws, asks, named, first_time.as_deref(), limitations)?);
-    let ev = gather(&repos, 0)?;
+    let ev = gather_with(&repos, 0, progress)?;
+    progress(OpenProgress {
+        step: OpenStep::Brief,
+        done: ev.files.len(),
+        total: ev.files.len(),
+        untracked: ev.untracked,
+    });
     // The plans and documents an Ask names are read from its prompt, the
     // rules left out; its requirements, from what the person asked.
     let read = |pick: fn(Asked) -> String| -> Vec<(String, String)> {
@@ -1609,6 +1697,42 @@ mod tests {
         let mut ws: Vec<Window> = file_windows(&files[0], &moves);
         classify(&mut ws[0], false, false, false);
         assert_eq!(ws[0].class, "code", "no test module: not test code");
+    }
+
+    /// A changed file is read at both ends for where its test module starts,
+    /// from the commit or from disk; a file the change adds is not read.
+    #[test]
+    fn a_changed_file_is_read_at_both_ends_for_its_test_module() {
+        let repo = crate::testing::repo();
+        let root = repo.path();
+        let body = |v: u32| {
+            format!(
+                "fn a() {{}}\n\n#[cfg(test)]\nmod tests {{\n    fn t() {{\n        let x = 1;\n        \
+                 let y = {v};\n        assert_eq!(x, 1);\n    }}\n}}\n"
+            )
+        };
+        let base = crate::testing::commit(root, &[("src/lib.rs", Some(&body(1)))], "base");
+        let work = crate::testing::commit(
+            root,
+            &[("src/lib.rs", Some(&body(2))), ("src/new.rs", Some("fn n() {}\n"))],
+            "work",
+        );
+        let here = root.to_string_lossy().to_string();
+        for (kind, reference) in [("git_commit", work.as_str()), ("worktree", here.as_str())] {
+            let r = Repo {
+                name: ".".into(),
+                root: root.to_path_buf(),
+                anchor: base.clone(),
+                anchor_from: "workspace",
+                subject_kind: kind.into(),
+                subject_ref: reference.into(),
+                since: None,
+            };
+            let ev = gather(&[r], 0).unwrap();
+            let of = |p: &str| ev.files.iter().find(|f| f.path == p).unwrap().test_from;
+            assert_eq!(of("src/lib.rs"), (Some(3), Some(3)), "{kind}");
+            assert_eq!(of("src/new.rs"), (None, None), "{kind}");
+        }
     }
 
     #[test]

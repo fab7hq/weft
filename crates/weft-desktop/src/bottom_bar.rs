@@ -23,6 +23,26 @@ pub struct BottomBarProps<'a> {
     pub staged_to: Option<&'a crate::sheets::send_to::SendTo>,
     /// What Weft reads of the setup of the harness the dialog's act goes to.
     pub warning: Option<&'a str>,
+    /// The Eval dialog's Read by, when the dialog in front is an Eval's.
+    pub read_by: Option<&'a ReadBy>,
+    /// What a yes waits on the machine for, while it does.
+    pub working: Option<&'a crate::waiting::Working>,
+    /// What the machine would not do, until the person acts.
+    pub failed: Option<&'a str>,
+}
+
+/// Who reads an Eval, picked in its dialog from every harness set up in the
+/// project, by name and title; and why the one it started on, while it is
+/// the one picked.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReadBy {
+    pub harnesses: Vec<(String, String)>,
+    pub picked: String,
+    /// The word saying why the one it started on.
+    pub note: Option<&'static str>,
+    pub open: bool,
+    /// The dialog is being made again for the harness picked.
+    pub staging: bool,
 }
 
 /// The bar: what waits on the person, or the tree's acts.
@@ -34,7 +54,7 @@ pub fn render_bottom_bar(props: &BottomBarProps) -> Element {
     if let Some((client, staged)) =
         props.clients.iter().find_map(|c| c.waiting.last().map(|s| (c, s)))
     {
-        return render_staged_bar(client, staged, props.staged_to, props.warning);
+        return render_staged_bar(client, staged, props.staged_to, props.warning, props.read_by);
     }
     match props.state {
         BottomBarState::QuitConfirm => render_quit_bar(),
@@ -52,7 +72,7 @@ pub fn render_bottom_bar(props: &BottomBarProps) -> Element {
                 // Until its questions are read, the Seal waits: nothing to seal yet.
                 SealQuestions::Reading => asking_bar("Seal disposition bar", palette::BLUE_BORDER)
                     .child(title(word("dialog.seal.title")))
-                    .child(note(word("seal.q.reading"), palette::MUTED))
+                    .child(crate::waiting::busy_line(word("seal.q.reading"), palette::MUTED))
                     .child(bar_acts(vec![button(
                         "btn Cancel",
                         word("act.cancel"),
@@ -65,13 +85,44 @@ pub fn render_bottom_bar(props: &BottomBarProps) -> Element {
                 SealQuestions::Unasked => {
                     render_seal_disposition_bar(client, project, eval, picked, props.warning)
                 }
+                // Not read: it goes as with none, and says why, with Try again.
+                SealQuestions::Unread(why) => {
+                    let again = crate::action::SheetAct::TryAgain {
+                        project: project.clone(),
+                        then: crate::daemon::Then::Questions { eval: eval.clone() },
+                    };
+                    let mut bar =
+                        render_seal_disposition_bar(client, project, eval, picked, props.warning);
+                    let failed = crate::waiting::failed(
+                        crate::waiting::could_not_read(why),
+                        Some(again.into()),
+                    );
+                    bar.children.insert(1, failed);
+                    bar
+                }
             }
         }
         BottomBarState::GitNoteConfirm { project } => render_git_note_bar(project),
         BottomBarState::Undo { commits, picked, .. } => render_undo_bar(commits, *picked),
+        // A yes still waiting on the machine keeps the bar as its working
+        // bar until the answer comes; what failed is said beneath it.
+        BottomBarState::None | BottomBarState::WhyNot { .. } if props.working.is_some() => {
+            let w = props.working.expect("working");
+            let bar = crate::waiting::working_bar(w, std::time::Instant::now());
+            let said = match props.state {
+                BottomBarState::WhyNot { sentence } => Some(sentence.as_str()),
+                _ => props.failed,
+            };
+            bar.children(said.map(|f| failed_sentence(f).self_stretch()))
+        }
         BottomBarState::WhyNot { sentence } => render_tree_bar(props, Some(sentence.as_str())),
-        BottomBarState::None => render_tree_bar(props, None),
+        BottomBarState::None => render_tree_bar(props, props.failed),
     }
+}
+
+/// What the machine would not do, in amber where it was asked.
+fn failed_sentence(said: &str) -> Element {
+    div().layer("failed sentence").font_size(13).color(palette::AMBER).text(said.to_string())
 }
 
 fn title(text: impl Into<String>) -> Element {
@@ -89,6 +140,7 @@ fn render_staged_bar(
     staged: &Staged,
     send_to: Option<&crate::sheets::send_to::SendTo>,
     warning: Option<&str>,
+    read_by: Option<&ReadBy>,
 ) -> Element {
     let pane = client.view(staged.pane);
     let resolve = |answer| BarAct::Resolve {
@@ -101,7 +153,7 @@ fn render_staged_bar(
 
     // It keeps SEND TO: where it was staged, another agent, or a new one. A
     // dialog that types nothing names no agent.
-    let choice = send_to.filter(|_| !staged.payload.is_empty()).map(|v| {
+    let choice = send_to.filter(|_| !staged.typed().is_empty()).map(|v| {
         let pick = |to: String| BarAct::SendTo { pending: staged.id.clone(), to }.into();
         div()
             .flex_row()
@@ -122,7 +174,7 @@ fn render_staged_bar(
     let not_ready = client.last_refusal.clone().or_else(|| {
         turns::may_type(pane.and_then(|p| p.turn))
             .err()
-            .filter(|_| !staged.payload.is_empty())
+            .filter(|_| !staged.typed().is_empty())
             .map(|why| fill("not_typed.why", &[("why", why)]))
     });
     if let Some(reason) = not_ready {
@@ -144,7 +196,7 @@ fn render_staged_bar(
     }
     // Its title, why, and the exact bytes Send types, when it types any, the
     // route's command marked.
-    let typed = String::from_utf8_lossy(&staged.payload).into_owned();
+    let typed = String::from_utf8_lossy(staged.typed()).into_owned();
     let command = typed.split_once(' ').map(|(c, _)| c).filter(|c| c.starts_with(['/', '$']));
     let into = (!typed.is_empty()).then(|| {
         let name = client.root.file_name().map(|n| n.to_string_lossy().into_owned());
@@ -204,6 +256,13 @@ fn render_staged_bar(
         None => staged.why.lines().map(str::to_string).collect(),
     };
     let work = work.map(|w| div().font_size(13).color(palette::MUTED).text(w.to_string()));
+    // An Eval's dialog says what it will read; a large change, why in amber,
+    // and its yes reads "Eval anyway".
+    let data = staged.data();
+    let reads = data.as_ref().map(|d| &d["reads"]);
+    let large = reads.is_some_and(|r| r["large"] == true);
+    let anyway = weft_proto::Go { word: "reads.anyway".into(), warn: false };
+    let go = if large { Some(&anyway) } else { staged.go.as_ref() };
     asking_bar("Cancel / Send bar", accent)
         .child(
             div()
@@ -215,6 +274,10 @@ fn render_staged_bar(
                 .children(into)
                 .children(work),
         )
+        .children(read_by.filter(|_| typed.is_empty()).map(render_read_by))
+        .children(reads.map(|r| render_reads(r, client.zone)))
+        .children(reads.filter(|_| large).map(|r| render_large(r, client.zone)))
+        .children(reads.and_then(|r| crate::skip_view::dialog(client, r)))
         .children(said.into_iter().map(|l| note(l, palette::MUTED)))
         .children(payload)
         .children(choice)
@@ -227,8 +290,214 @@ fn render_staged_bar(
                 .children(warning.map(warned))
                 .child(div().flex_1())
                 .child(cancel)
-                .child(yes_button(staged.go.as_ref(), resolve(Answer::Yes))),
+                .child(yes_button(go, resolve(Answer::Yes))),
         )
+}
+
+/// The Eval dialog's Read by: closed, the harness picked and ▾, then why it
+/// is the one it started on; open, every harness, the picked one ✓. Picking
+/// stages the dialog again; only Eval runs it.
+fn render_read_by(r: &ReadBy) -> Element {
+    let one_line = |e: Element| {
+        e.style("min-width", "0px")
+            .style("white-space", "nowrap")
+            .style("overflow", "hidden")
+            .style("text-overflow", "ellipsis")
+    };
+    let title = |name: &str| {
+        r.harnesses.iter().find(|(n, _)| n == name).map_or(name, |(_, t)| t.as_str()).to_string()
+    };
+    let control = if r.open {
+        let mut list = div()
+            .layer("read by list")
+            .w(220)
+            .flex_col()
+            .pad(4, 0)
+            .style("max-height", "240px")
+            .style("overflow-y", "auto")
+            .shows(r.harnesses.iter().position(|(n, _)| *n == r.picked).unwrap_or_default())
+            .bg(palette::SURFACE)
+            .border(palette::BLUE_BORDER)
+            .panel_corners()
+            .font_size(14);
+        for (name, t) in &r.harnesses {
+            let mut row = div()
+                .layer(format!("read by {name}"))
+                .on_click(BarAct::ReadBy(name.clone()))
+                .flex_row()
+                .gap(8)
+                .pad(0, 12)
+                .h(34)
+                .items_center()
+                .shrink_0()
+                .child(one_line(div().flex_1().text(t.clone())));
+            if *name == r.picked {
+                row = row.bg(palette::SELECTED_BG).color(palette::BLUE_BORDER).child(span("✓"));
+            }
+            list = list.child(row);
+        }
+        list
+    } else {
+        div()
+            .layer("read by choice")
+            .on_click(BarAct::ToggleReadBy)
+            .flex_row()
+            .gap(8)
+            .pad(5, 10)
+            .items_center()
+            .bg(palette::SURFACE)
+            .border(palette::LINE)
+            .font_weight(600)
+            .font_size(13)
+            .style("max-width", "240px")
+            .child(one_line(span(title(&r.picked))))
+            .child(span("▾").font_size(10).color(palette::MUTED))
+    };
+    div()
+        .layer("read by")
+        .self_stretch()
+        .flex_row()
+        .gap(14)
+        .items_start()
+        .child(
+            div()
+                .shrink_0()
+                .pad(6, 0)
+                .font_size(13)
+                .color(palette::MUTED)
+                .text(word("dialog.eval.read_by")),
+        )
+        .child(control)
+        // Its dialog made again for the pick: it breathes until it comes.
+        .children(r.staging.then(|| div().pad(9, 0).child(crate::waiting::dot())))
+        .children(r.note.map(|n| {
+            one_line(div().flex_1().pad(7, 0).font_size(12).color(palette::DIM).text(word(n)))
+        }))
+}
+
+/// When an Eval's reading starts, as the person reads it: "today 09:12",
+/// "yesterday 18:40", or the day, "Nov 8".
+fn reads_when(at: &str, zone: i64) -> String {
+    let Some(at_ms) = millis_of(at) else { return at.to_string() };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64);
+    let said = weft_core::sessions::day_time(at_ms, now, zone);
+    match weft_core::sessions::Group::of(at_ms, now, zone) {
+        weft_core::sessions::Group::Today | weft_core::sessions::Group::Yesterday => {
+            let mut c = said.chars();
+            c.next().map_or_else(String::new, |f| f.to_lowercase().chain(c).collect())
+        }
+        _ => said.rsplit_once(' ').map_or(said.clone(), |(day, _)| day.to_string()),
+    }
+}
+
+/// Milliseconds since the epoch from an RFC 3339 time, in UTC or with an
+/// offset.
+fn millis_of(at: &str) -> Option<i64> {
+    if let Some(ms) = weft_core::turns::millis(at) {
+        return Some(ms);
+    }
+    let (base, offset) = at.split_at(at.len().checked_sub(6)?);
+    let sign = match offset.as_bytes().first()? {
+        b'+' => 1,
+        b'-' => -1,
+        _ => return None,
+    };
+    let h: i64 = offset.get(1..3)?.parse().ok()?;
+    let m: i64 = offset.get(4..6)?.parse().ok()?;
+    Some(weft_core::turns::millis(&format!("{base}Z"))? - sign * (h * 60 + m) * 60_000)
+}
+
+fn n_of(v: &serde_json::Value) -> u64 {
+    v.as_u64().unwrap_or(0)
+}
+
+/// The Eval dialog's Reads: its commits and files, since when, and what
+/// is counted but not read.
+fn render_reads(r: &serde_json::Value, zone: i64) -> Element {
+    let n = |v: u64| weft_core::words::count(v as usize);
+    let commits = match n_of(&r["commits"]) {
+        1 => word("reads.one_commit").to_string(),
+        c => fill("reads.commits", &[("n", &n(c))]),
+    };
+    let files = match n_of(&r["files"]) {
+        1 => word("reads.one_file").to_string(),
+        f => fill("reads.files", &[("n", &n(f))]),
+    };
+    // A line written since the dialog was made: the count it had, struck.
+    let counts = format!("{commits} · ");
+    let counts = match r["files_before"].as_u64().filter(|b| *b != n_of(&r["files"])) {
+        Some(before) => {
+            let before = n(before);
+            let struck = counts.len()..counts.len() + before.len();
+            let run = Run { strike: true, color: Some(palette::DIM), ..Run::default() };
+            rich(format!("{counts}{before} {files}"), vec![(struck, run)])
+        }
+        None => div().text(format!("{counts}{files}")),
+    };
+    let since = if r["since"] == "seal" { "reads.since_seal" } else { "reads.since_ask" };
+    let when = reads_when(r["when"].as_str().unwrap_or_default(), zone);
+    let kinds: Vec<(u64, &str)> = ["generated", "vendored", "binary", "lock"]
+        .iter()
+        .map(|k| (n_of(&r["skipped"][*k]), *k))
+        .filter(|(c, _)| *c > 0)
+        .collect();
+    let skipped = (!kinds.is_empty()).then(|| {
+        let total: u64 = kinds.iter().map(|(c, _)| c).sum();
+        let listed: Vec<String> =
+            kinds.iter().map(|(c, k)| fill(&format!("reads.{k}"), &[("n", &n(*c))])).collect();
+        let said = fill("reads.skipped", &[("n", &n(total)), ("kinds", &listed.join(", "))]);
+        div().layer("reads skipped").font_size(12).color(palette::DIM).text(format!("· {said}"))
+    });
+    div()
+        .layer("reads")
+        .self_stretch()
+        .flex_row()
+        .gap(10)
+        .items_center()
+        .font_size(13)
+        .child(div().w(64).shrink_0().color(palette::MUTED).text(word("reads.label")))
+        .child(counts.layer("reads counts").font_mono())
+        .child(
+            div().layer("reads since").color(palette::MUTED).text(fill(since, &[("when", &when)])),
+        )
+        .children(skipped)
+}
+
+/// A large change, said in amber before its yes: where most of it is, and
+/// how to make the next one smaller.
+fn render_large(r: &serde_json::Value, zone: i64) -> Element {
+    let when = reads_when(r["when"].as_str().unwrap_or_default(), zone);
+    let folder = r["folder"].as_str().unwrap_or_default();
+    let n = weft_core::words::count(n_of(&r["folder_files"]) as usize);
+    div()
+        .layer("reads large")
+        .self_stretch()
+        .flex_col()
+        .gap(4)
+        .pad(10, 12)
+        .bg(palette::AMBER_BG)
+        .border(palette::AMBER_BORDER)
+        .style("border-radius", "4px")
+        .font_size(13)
+        .child(div().font_weight(600).color(palette::AMBER).text(word("reads.large_title")))
+        .children((!folder.is_empty()).then(|| {
+            let said = fill("reads.large_where", &[("when", &when), ("folder", folder), ("n", &n)]);
+            mono_in(said, folder)
+        }))
+        .child(mono_in(word("reads.large_fix").to_string(), ".gitattributes"))
+}
+
+/// A sentence in muted words with `path` in it set in mono, as a path is.
+fn mono_in(said: String, path: &str) -> Element {
+    let runs = match said.find(path) {
+        Some(at) if !path.is_empty() => {
+            vec![(at..at + path.len(), Run { mono: true, ..Default::default() })]
+        }
+        _ => Vec::new(),
+    };
+    rich(said, runs).color(palette::MUTED)
 }
 
 /// A dialog's yes: Send, or the button it names, amber when it stops
@@ -611,8 +880,16 @@ fn render_tree_bar(props: &BottomBarProps, why_not: Option<&str>) -> Element {
         .child(btn("btn Eval", word("act.eval"), BarAct::Eval, Act::Eval))
         .child(btn("btn Seal", word("act.seal"), BarAct::Seal, Act::Seal));
     if let Some(sentence) = why_not {
+        let layer =
+            if props.failed == Some(sentence) { "failed sentence" } else { "why not sentence" };
         row = row.child(
-            div().layer("why not sentence").font_size(13).color(palette::AMBER).text(sentence),
+            div()
+                .layer(layer)
+                .flex_1()
+                .style("min-width", "0px")
+                .font_size(13)
+                .color(palette::AMBER)
+                .text(sentence),
         );
     }
     row = row.child(div().flex_1());

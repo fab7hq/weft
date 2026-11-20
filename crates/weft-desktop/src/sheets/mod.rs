@@ -46,6 +46,8 @@ pub struct SheetProps<'a> {
     pub ask_sheet_for: Option<&'a str>,
     /// Why RingFrame would not read the open Ask's sheet.
     pub ask_refused: Option<&'a str>,
+    /// What the open Ask's sheet offers is still being read.
+    pub ask_reading: bool,
     /// What Weft reads of the setup of the harness SEND TO picks.
     pub ask_warning: Option<&'a str>,
     /// The tunnel picked in Remote, not yet used.
@@ -63,17 +65,35 @@ pub struct SheetProps<'a> {
     pub preview: &'a str,
     /// The harness Settings › Harnesses shows.
     pub harness: &'a str,
-    /// Settings › RingFrame shows every rule, not the first few.
-    pub all_rules: bool,
+    /// The practices whose every rule Settings › RingFrame shows, not the
+    /// first few, by catalog.
+    pub all_rules: &'a std::collections::HashSet<String>,
     /// The preview's text shown, not only what it keeps.
     pub preview_shown: bool,
     /// Workflow's "Each judge" is open.
     pub judges_shown: bool,
+    /// What Weft and the person's devices call this machine.
+    pub machine: &'a str,
+    /// What Updates is running, by its row, and since when.
+    pub updating: Option<(String, std::time::Instant)>,
+    /// Since when each harness's setup step has been running.
+    pub running_since: &'a std::collections::HashMap<String, std::time::Instant>,
+    /// An act for `weft remote` is asked and its view has not moved yet.
+    pub remote_asked: bool,
+    /// The machine's jobs, running or failed: Updates' and Remote's.
+    pub machine_jobs: Vec<&'a crate::waiting::Progress>,
 }
 
 impl SheetProps<'_> {
     fn client(&self, root: &Path) -> Option<&ProjectClient> {
         self.clients.iter().find(|c| c.root == root)
+    }
+
+    /// The machine's job of `kind` on `harness`, running or failed.
+    fn machine_job(&self, kind: &str, harness: Option<&str>) -> Option<&crate::waiting::Progress> {
+        self.machine_jobs.iter().copied().find(|p| {
+            p.job.kind == kind && (harness.is_none() || p.job.on.harness.as_deref() == harness)
+        })
     }
 
     fn listed(&self, root: &Path) -> Option<&Listed> {

@@ -45,8 +45,9 @@ pub trait Outside: Send + Sync {
     /// What RingFrame says of its latest configuration release, or why it
     /// could not tell; `fresh` asks again rather than reading a kept answer.
     fn release(&self, fresh: bool) -> Result<serde_json::Value, String>;
-    /// Install RingFrame's latest configuration, or say why it was not.
-    fn sync(&self) -> Result<(), String>;
+    /// Install RingFrame's latest configuration, or say why it was not,
+    /// telling `told` each step as it starts.
+    fn sync(&self, told: &dyn Fn(ringframe::api::SyncStep)) -> Result<(), String>;
     /// The latest Weft release, by version, or nothing when it cannot be
     /// reached; kept like `release`.
     fn weft_release(&self, fresh: bool) -> Option<String>;
@@ -161,8 +162,8 @@ impl Outside for Machine {
         crate::onboarding::check(fresh)
     }
 
-    fn sync(&self) -> Result<(), String> {
-        ringframe::api::config_sync().map(|_| ()).map_err(|e| e.to_string())
+    fn sync(&self, told: &dyn Fn(ringframe::api::SyncStep)) -> Result<(), String> {
+        ringframe::api::config_sync_with(told).map(|_| ()).map_err(|e| e.to_string())
     }
 
     fn weft_release(&self, fresh: bool) -> Option<String> {
@@ -359,7 +360,14 @@ impl Outside for Fixed {
         self.release.clone()
     }
 
-    fn sync(&self) -> Result<(), String> {
+    fn sync(&self, told: &dyn Fn(ringframe::api::SyncStep)) -> Result<(), String> {
+        use ringframe::api::SyncStep;
+        // This world's release is found at once; its download is what fails.
+        told(SyncStep::Finding);
+        told(SyncStep::Downloading);
+        if self.sync.is_ok() {
+            told(SyncStep::Installing);
+        }
         self.sync.clone()
     }
 

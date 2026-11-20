@@ -7,6 +7,16 @@ mod acts;
 mod seal_tests;
 #[cfg(test)]
 pub(crate) mod tests;
+// Named `tests.rs`, as every test file is, so it is read as tests.
+#[cfg(test)]
+#[path = "progress/tests.rs"]
+mod progress_tests;
+#[cfg(test)]
+#[path = "skip/tests.rs"]
+mod skip_tests;
+#[cfg(test)]
+#[path = "waiting/tests.rs"]
+mod waiting_tests;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -23,7 +33,7 @@ use weft_core::words;
 
 use crate::action::Focus;
 use crate::bottom_bar::{BottomBarProps, render_bottom_bar};
-use crate::daemon::{Answered, PaneView, ProjectClient, Then};
+use crate::daemon::{Answered, Doing, PaneView, ProjectClient, Then};
 use crate::gpui::{Element, div, palette};
 use crate::header::{HeaderProps, render_header};
 use crate::panes_view::{DropTarget, PanesProps, drag_tab, render_panes_workspace};
@@ -66,15 +76,6 @@ pub fn save_state_to_home(home: &Path, state: &WeftState) -> Result<()> {
     Ok(())
 }
 
-/// A host name as the window shows it: up to its first dot; "this machine"
-/// when there is none.
-pub fn machine_name_of(host: &str) -> String {
-    match host.split('.').next().map(str::trim).filter(|n| !n.is_empty()) {
-        Some(name) => name.to_string(),
-        None => words::word("desktop.this_machine").to_string(),
-    }
-}
-
 /// Something to tell the person through the system, while Weft is not where
 /// they look: `tag` names the agent it is about.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +86,9 @@ pub struct Notice {
 
 /// How long a why-not is said before it goes by itself.
 const WHY_NOT_FOR: std::time::Duration = std::time::Duration::from_secs(6);
+
+/// The jobs of the machine, not of a project: Updates' and Remote's.
+const MACHINE_JOBS: [&str; 2] = ["update", "remote"];
 /// How often a shown conversation reads what its file added.
 pub(crate) const FOLLOW_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 /// How long the Ask's words rest before they are read: Sense waits for the
@@ -140,6 +144,29 @@ pub enum ActiveSheet {
     Remote,
 }
 
+/// Who reads an Eval, picked in its dialog. Picking another stages the
+/// dialog again for it; nothing runs until the person presses Eval.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EvalPick {
+    pub project: PathBuf,
+    /// The work, by any of its Asks.
+    pub unit: String,
+    /// The harness picked; none, the one the Eval starts on.
+    pub picked: Option<String>,
+    /// What was picked for the dialog shown, should the daemon refuse a new pick.
+    pub was: Option<String>,
+    /// The Read by list is open.
+    pub open: bool,
+    /// The dialog shown for this pick, once the daemon has staged it.
+    pub pending: Option<String>,
+    /// The dialog a new pick replaces, until the new one is staged: then it
+    /// is answered no, so the person is never left without one.
+    pub replacing: Option<String>,
+    /// The person answered the dialog a new pick replaces before the new
+    /// one came: the new one is answered no as it comes.
+    pub dropped: bool,
+}
+
 /// What the bar along the window's foot asks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BottomBarState {
@@ -188,6 +215,9 @@ pub enum SealQuestions {
     Reading,
     /// None to answer: the decision, the reason, then Seal.
     Unasked,
+    /// They could not be read, and why: the Seal goes as with none, and
+    /// they can be read again.
+    Unread(String),
     /// One at a time, each answered before the next, then the review.
     Asking(Box<SealAsking>),
 }
@@ -203,6 +233,7 @@ pub struct SealAsking {
 /// Top-level Weft Desktop GPUI application.
 pub struct WeftDesktopApp {
     pub home: PathBuf,
+    /// What the machine is called until the daemon says.
     pub machine: String,
     pub state: WeftState,
     pub clients: Vec<ProjectClient>,
@@ -226,8 +257,9 @@ pub struct WeftDesktopApp {
     pub(crate) judges_shown: bool,
     /// The harness Settings › Harnesses shows (empty: the first).
     pub(crate) harness_shown: String,
-    /// Settings › RingFrame shows every rule, not the first few.
-    pub(crate) all_rules: bool,
+    /// The practices whose every rule Settings › RingFrame shows, not the
+    /// first few, by catalog.
+    pub(crate) all_rules: HashSet<String>,
     pub plus_popover_project: Option<PathBuf>,
     pub menu_open: bool,
     pub layout_menu_pane: Option<usize>,
@@ -287,6 +319,8 @@ pub struct WeftDesktopApp {
     /// Where each staged send goes, when the person picked other than where
     /// it was staged.
     staged_to: HashMap<String, String>,
+    /// Who reads the Eval whose dialog is open, as picked there.
+    pub(crate) eval_pick: Option<EvalPick>,
     /// Updates opened by itself once: it does not again.
     updates_offered: bool,
     /// The device last answered: the bar does not ask again while
@@ -301,6 +335,20 @@ pub struct WeftDesktopApp {
     pub(crate) own_link: Option<ProjectClient>,
     /// The link was made once: a daemon that went is not started again.
     own_link_made: bool,
+    /// What the machine would not do, said where it was asked until the
+    /// person acts again.
+    pub failed: Option<String>,
+    /// When the window was last drawn again for the time something has
+    /// been working.
+    ticked_at: Option<std::time::Instant>,
+    /// Since when each harness's setup step has been running.
+    pub(crate) running_since: HashMap<String, std::time::Instant>,
+    /// An act for `weft remote` asked, and how many times it had said where
+    /// it is then: until it says again, the sheet says it is asked.
+    pub(crate) remote_asked: Option<u64>,
+    /// An Eval this window said yes to, by its project and work: its view
+    /// opens by itself once its readers start.
+    eval_view_wanted: Option<(PathBuf, String)>,
 }
 
 impl WeftDesktopApp {
@@ -325,7 +373,7 @@ impl WeftDesktopApp {
             preview_shown: false,
             judges_shown: false,
             harness_shown: String::new(),
-            all_rules: false,
+            all_rules: HashSet::new(),
             plus_popover_project: None,
             menu_open: false,
             layout_menu_pane: None,
@@ -356,12 +404,18 @@ impl WeftDesktopApp {
             updates_offered: false,
             send_to_open: false,
             staged_to: HashMap::new(),
+            eval_pick: None,
             before_allow: None,
             allow_answered: None,
             notices: Vec::new(),
             not_opened: HashMap::new(),
             own_link: None,
             own_link_made: false,
+            failed: None,
+            ticked_at: None,
+            running_since: HashMap::new(),
+            remote_asked: None,
+            eval_view_wanted: None,
         };
         for p in app.state.open_projects.clone() {
             app.add_project(&p);
@@ -395,6 +449,16 @@ impl WeftDesktopApp {
             title: words::word("desktop.notice.ended").to_string(),
         });
         self.quit_requested = true;
+    }
+
+    /// What Weft and the person's devices call this machine, as the daemon
+    /// last said: the name set in Settings, else the system's own.
+    pub fn machine_name(&self) -> String {
+        let said =
+            self.clients.iter().find_map(|c| c.config.as_ref()?["effective"]["name"].as_str());
+        let hello =
+            || self.clients.iter().chain(&self.own_link).find_map(|c| c.machine_name.as_deref());
+        said.or_else(hello).unwrap_or(&self.machine).to_string()
     }
 
     /// The machine's turbo, as the daemon last said.
@@ -433,8 +497,12 @@ impl WeftDesktopApp {
             Some(root) => ("project", self.clients.iter_mut().find(|c| c.root == root)),
             None => ("machine", self.clients.iter_mut().find(|c| c.is_connected())),
         };
-        if let Some(c) = client {
-            let _ = c.set_config(scope, &key, value);
+        if let Some(c) = client
+            && let Ok(id) = c.set_config(scope, &key, value)
+        {
+            let saving =
+                crate::daemon::Working { doing: Doing::Saving, about: String::new(), work: None };
+            c.owed_for(id, Then::Working(saving));
         }
     }
 
@@ -548,6 +616,14 @@ impl WeftDesktopApp {
                     .find(|e| e["id"] == id)
                     .map_or(serde_json::Value::Null, |e| e[field].clone())
             }
+            // The name starts as what the machine is called now.
+            ["name"] if project.is_none() => serde_json::json!(self.machine_name()),
+            // The days as they apply now, set or not.
+            ["sessions", "keep_days"] => self
+                .clients
+                .iter()
+                .find_map(|c| c.config.as_ref()?["effective"]["keep_days"].as_u64())
+                .map_or(serde_json::Value::Null, |d| serde_json::json!(d.to_string())),
             _ => self.setting_now(project, key),
         };
         match v {
@@ -765,22 +841,48 @@ impl WeftDesktopApp {
         }
     }
 
-    /// Take what every project's daemon link brought since; whether anything changed.
-    pub fn pump(&mut self) -> bool {
+    /// Take what every project's daemon link brought since; what the window
+    /// redraws for it: all of it, or only the terminals that had output.
+    pub fn pump(&mut self) -> crate::daemon::Redraw {
         self.want_ask_sheet_at(std::time::Instant::now());
+        // The search reaches every earlier session through the daemon.
+        let q = self.search.text().to_string();
+        for c in &mut self.clients {
+            c.search_earlier(&q);
+        }
         let (mut changed, mut moved) = (false, false);
         if let Some(m) = &mut self.own_link {
             changed |= m.pump().changed;
         }
         let mut answers = Vec::new();
+        let mut terminals = Vec::new();
         for c in &mut self.clients {
             let p = c.pump();
             changed |= p.changed;
             moved |= p.moved;
+            terminals.extend(p.output.into_iter().map(|pane| (c.root.clone(), pane)));
             answers.extend(p.answered.into_iter().map(|a| (c.root.clone(), a)));
         }
         for (root, a) in answers {
             self.take_answer(&root, a);
+        }
+        // A message's refusal, with no dialog to say it, is said in the bar.
+        let refused: Vec<String> =
+            self.clients.iter_mut().filter_map(|c| c.typing_refused.take()).collect();
+        for why in refused {
+            self.fail(why);
+            changed = true;
+        }
+        // A job of a work that failed, which no wait here shows: said there too.
+        let failed: Vec<String> = self
+            .clients
+            .iter_mut()
+            .chain(self.own_link.iter_mut())
+            .flat_map(|c| std::mem::take(&mut c.jobs_failed))
+            .collect();
+        for why in failed {
+            self.fail(why);
+            changed = true;
         }
         // An agent's turn or record moved: what it said may have too, and
         // an Eval still being judged.
@@ -790,14 +892,260 @@ impl WeftDesktopApp {
             self.refresh_eval_view();
         }
         if changed {
+            self.drop_answered_eval_pick();
             self.want_rules();
             self.offer_allow();
             self.offer_updates();
             self.drop_gone_tabs();
+            self.note_running();
+            self.open_wanted_eval_view();
+            let remotes: u64 = self.clients.iter().map(|c| c.remotes).sum();
+            if self.remote_asked.is_some_and(|was| was != remotes) {
+                self.remote_asked = None;
+            }
         }
         let now = std::time::Instant::now();
         self.follow_conversations(now);
-        self.expire_why_not(now) || changed
+        let ticked = self.tick(now);
+        crate::daemon::Redraw { window: self.expire_why_not(now) || changed || ticked, terminals }
+    }
+
+    /// While something works, the window is drawn again each second, so
+    /// the time it shows moves. Whether it is due now.
+    fn tick(&mut self, now: std::time::Instant) -> bool {
+        let working = self.working().is_some()
+            || self.updating().is_some()
+            || self.clients.iter().chain(&self.own_link).any(ProjectClient::jobs_run)
+            || !self.running_since.is_empty()
+            || self.remote_asked.is_some();
+        if !working {
+            self.ticked_at = None;
+            return false;
+        }
+        if self.ticked_at.is_some_and(|at| now - at < std::time::Duration::from_secs(1)) {
+            return false;
+        }
+        self.ticked_at = Some(now);
+        true
+    }
+
+    /// What the machine would not do, said in the bar until the person acts.
+    pub(crate) fn fail(&mut self, sentence: impl Into<String>) {
+        self.failed = Some(sentence.into());
+        if matches!(self.bottom_bar, BottomBarState::WhyNot { .. }) {
+            self.bottom_bar = BottomBarState::None;
+        }
+    }
+
+    /// Whether the bar shows the tree's acts, and so what failed: no dialog
+    /// is in front.
+    pub(crate) fn bar_is_free(&self) -> bool {
+        matches!(self.bottom_bar, BottomBarState::None | BottomBarState::WhyNot { .. })
+            && self.clients.iter().all(|c| c.waiting.is_empty())
+    }
+
+    /// What Updates is doing while the daemon still owes its answer, and
+    /// since when: the row it runs on (RingFrame, Sense, a harness whose
+    /// program is checked), or `all`. Update all runs RingFrame, then Sense,
+    /// then the harnesses: the first of them still behind is the one running.
+    pub(crate) fn updating(&self) -> Option<(String, std::time::Instant)> {
+        // The machine says which update runs, wherever it was asked.
+        let job = self.machine_job(|j| j.kind == "update");
+        if let Some((p, target)) = job.and_then(|p| Some((p, p.job.on.harness.clone()?))) {
+            return Some((target, p.since));
+        }
+        let (act, target, since) =
+            self.clients.iter().chain(&self.own_link).flat_map(|c| c.owed()).find_map(
+                |(then, since)| match then {
+                    Then::Setup { act, target } if act != "look" => {
+                        Some((act.clone(), target.clone(), since))
+                    }
+                    _ => None,
+                },
+            )?;
+        if act != "all" {
+            return Some((target, since));
+        }
+        let v = self.setup_view();
+        let first = match v {
+            Some(v) if v.configuration_behind => "ringframe",
+            Some(v) if v.sense_behind => "sense",
+            _ => "all",
+        };
+        Some((first.to_string(), since))
+    }
+
+    /// A job of the machine's that runs, as any link was told it.
+    pub(crate) fn machine_job(
+        &self,
+        pick: impl Fn(&weft_proto::Job) -> bool,
+    ) -> Option<&crate::waiting::Progress> {
+        self.clients.iter().chain(&self.own_link).find_map(|c| c.job(&pick))
+    }
+
+    /// The machine's jobs, running or failed, each once: Updates' and
+    /// Remote's.
+    pub(crate) fn machine_jobs(&self) -> Vec<&crate::waiting::Progress> {
+        let mut seen = HashSet::new();
+        self.clients
+            .iter()
+            .chain(&self.own_link)
+            .flat_map(|c| &c.jobs)
+            .filter(|p| MACHINE_JOBS.contains(&p.job.kind.as_str()))
+            .filter(|p| seen.insert(p.job.id.clone()))
+            .collect()
+    }
+
+    /// The person acted again on what failed of the machine's: its failure goes.
+    pub(crate) fn forget_machine_failed(&mut self, pick: impl Fn(&weft_proto::Job) -> bool) {
+        for c in self.clients.iter_mut().chain(self.own_link.iter_mut()) {
+            c.forget_failed(&pick);
+        }
+    }
+
+    /// Since when each harness's step has been running, as the daemon says.
+    fn note_running(&mut self) {
+        let running: Vec<String> = self
+            .setup_view()
+            .map(|v| {
+                v.rows
+                    .iter()
+                    .filter(|r| matches!(r.state, weft_core::onboarding::State::Running(_)))
+                    .map(|r| r.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let now = std::time::Instant::now();
+        self.running_since.retain(|name, _| running.contains(name));
+        for name in running {
+            self.running_since.entry(name).or_insert(now);
+        }
+    }
+
+    /// The Eval this window said yes to opens by itself once its readers
+    /// start, unless the person has gone to something else.
+    fn open_wanted_eval_view(&mut self) {
+        let Some((project, root)) = self.eval_view_wanted.clone() else { return };
+        let free = match &self.active_sheet {
+            None => true,
+            Some(ActiveSheet::Unit { project: p, unit }) => *p == project && *unit == root,
+            _ => false,
+        };
+        if !free {
+            self.eval_view_wanted = None;
+            return;
+        }
+        let running = self.client(&project).and_then(|c| {
+            let eval = c.work.of_ask(&root)?.evals.last()?.clone();
+            let opened = c.work.record.evals.iter().find(|e| e.id == eval)?;
+            (!opened.completed()).then_some(eval)
+        });
+        if let Some(eval) = running {
+            self.eval_view_wanted = None;
+            if let Some(c) = self.client_mut(&project) {
+                let _ = c.read("eval", &eval, None, Then::EvalView { eval: eval.clone() });
+            }
+            self.active_sheet = Some(ActiveSheet::EvalView { project, eval, at: Vec::new() });
+        }
+    }
+
+    /// The work `unit` names in `root`, as its row says it while its Eval
+    /// opens: its title, its Asks and who reads it.
+    pub(crate) fn opening_about(&self, root: &Path, unit: &str, harness: Option<&str>) -> String {
+        let Some(c) = self.client(root) else { return String::new() };
+        let Some(w) = c.work.of_ask(unit) else { return String::new() };
+        let title = c.units.iter().find(|u| u.ask_id == w.root).map(|u| u.title.clone());
+        let asks = match w.asks.len() {
+            1 => words::word("unit.one_ask").to_string(),
+            n => words::fill("unit.asks", &[("n", &n.to_string())]),
+        };
+        let harness = harness
+            .map(str::to_string)
+            .or_else(|| self.eval_reader(root, &w.root).map(|(h, _)| h))
+            .unwrap_or_default();
+        words::fill(
+            "wait.opening_eval_about",
+            &[("title", &title.unwrap_or_default()), ("asks", &asks), ("harness", &harness)],
+        )
+    }
+
+    /// A work's title, by any of its Asks.
+    pub(crate) fn work_title(&self, root: &Path, unit: &str) -> String {
+        self.client(root)
+            .and_then(|c| {
+                let w = c.work.of_ask(unit)?;
+                c.units.iter().find(|u| u.ask_id == w.root).map(|u| u.title.clone())
+            })
+            .unwrap_or_default()
+    }
+
+    /// What the bar says while the machine works on a yes: the newest of
+    /// what is still to come, an Eval opening anywhere among them.
+    pub fn working(&self) -> Option<crate::waiting::Working> {
+        use crate::waiting::Working;
+        let mut all = Vec::new();
+        for c in &self.clients {
+            let mut shown = HashSet::new();
+            for (id, then, since) in c.owed_calls() {
+                let (said, about, opening) = match then {
+                    Then::Working(w) => {
+                        (w.doing.said().to_string(), w.about.clone(), w.doing == Doing::Opening)
+                    }
+                    Then::Started { harness, session: None } => (
+                        words::fill("wait.starting", &[("harness", harness)]),
+                        String::new(),
+                        false,
+                    ),
+                    Then::Started { harness, session: Some(_) } => {
+                        (words::word("wait.resuming").to_string(), harness.clone(), false)
+                    }
+                    Then::Eval => {
+                        let about = self
+                            .eval_pick
+                            .as_ref()
+                            .filter(|p| p.project == c.root)
+                            .map(|p| self.work_title(&c.root, &p.unit))
+                            .unwrap_or_default();
+                        (words::word("wait.preparing").to_string(), about, false)
+                    }
+                    Then::Remedy { unit } | Then::Commits { unit } => (
+                        words::word("wait.preparing").to_string(),
+                        self.work_title(&c.root, unit),
+                        false,
+                    ),
+                    _ => continue,
+                };
+                // Its job: the one its call began, else the one on its work.
+                let progress = c
+                    .job_of_call(id)
+                    .or_else(|| {
+                        let Then::Working(w) = then else { return None };
+                        let (kind, root) = (w.doing.job()?, w.work.as_deref()?);
+                        c.job(|j| j.kind == kind && j.on.work.as_deref() == Some(root))
+                    })
+                    .cloned();
+                if let Some(p) = &progress {
+                    shown.insert(p.job.id.clone());
+                }
+                all.push(Working { said, about, since, opening, progress });
+            }
+            // An Eval opened from another window or device shows here too.
+            let elsewhere = c
+                .jobs
+                .iter()
+                .filter(|p| p.running() && p.job.kind == "eval_open" && !shown.contains(&p.job.id));
+            for p in elsewhere {
+                let Some(root) = p.job.on.work.as_deref() else { continue };
+                all.push(Working {
+                    said: Doing::Opening.said().to_string(),
+                    about: self.opening_about(&c.root, root, p.job.on.harness.as_deref()),
+                    since: p.since,
+                    opening: true,
+                    progress: Some(p.clone()),
+                });
+            }
+        }
+        all.into_iter().max_by_key(|w| w.since)
     }
 
     /// Once a second, read what each shown conversation's file added, one
@@ -870,6 +1218,24 @@ impl WeftDesktopApp {
             clients.iter().any(|c| !c.opened || c.waiting.iter().any(|w| &w.id == id))
         };
         self.staged_to.retain(|id, _| staged(id));
+    }
+
+    /// The Eval's dialog answered anywhere: its pick goes with it. Answered
+    /// while a new pick is staged, the new dialog goes too as it comes.
+    fn drop_answered_eval_pick(&mut self) {
+        let Some(p) = &self.eval_pick else { return };
+        let waiting = |id: &String| {
+            self.client(&p.project).is_some_and(|c| c.waiting.iter().any(|w| &w.id == id))
+        };
+        match (&p.pending, &p.replacing) {
+            (Some(id), _) if !waiting(id) => self.eval_pick = None,
+            (None, Some(id)) if !waiting(id) => {
+                if let Some(p) = self.eval_pick.as_mut() {
+                    (p.replacing, p.dropped) = (None, true);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Nothing is set up and something could be: Updates opens by itself,
@@ -962,6 +1328,78 @@ impl WeftDesktopApp {
         }
     }
 
+    /// Who reads the work's Eval unless the person picks another, and
+    /// whether a setting said so rather than the work's latest agent.
+    pub(crate) fn eval_reader(&self, project: &Path, unit: &str) -> Option<(String, bool)> {
+        let c = self.client(project)?;
+        let w = c.work.of_ask(unit)?;
+        let latest = w.route.as_deref().unwrap_or(&w.root);
+        let ask = |id: &str| c.units.iter().find(|u| u.ask_id == id);
+        let harness = ask(latest).or_else(|| ask(&w.root))?.harness.clone();
+        let (stages, eval) = (c.routing.eval_stages.as_ref(), c.routing.get("eval"));
+        Some(weft_core::eval_stages::reader(stages, eval, &harness))
+    }
+
+    /// The daemon staged the Eval's dialog for the pick, or would not. The
+    /// dialog it replaces goes once the new one is there; refused, the one
+    /// shown stays with its pick, and says why.
+    fn eval_staged(&mut self, root: &Path, answer: std::result::Result<serde_json::Value, String>) {
+        let Some(pick) = self.eval_pick.as_mut().filter(|p| p.project == root) else { return };
+        match answer {
+            Ok(v) => {
+                let Some(id) = v["pending"].as_str().map(str::to_string) else { return };
+                let mut no = pick.replacing.take();
+                if pick.dropped {
+                    no = Some(id);
+                    self.eval_pick = None;
+                } else {
+                    pick.pending = Some(id);
+                }
+                if let (Some(old), Some(c)) = (no, self.client_mut(root)) {
+                    let _ = c.resolve(&old, false, false, None, None);
+                }
+            }
+            Err(why) if pick.replacing.is_some() => {
+                pick.pending = pick.replacing.take();
+                pick.picked = pick.was.take();
+                self.act_warning = Some(why);
+            }
+            Err(why) => {
+                self.eval_pick = None;
+                self.fail(why);
+            }
+        }
+    }
+
+    /// The Eval dialog's Read by, when the dialog in front is the one picked
+    /// for: every harness set up in the project, the one picked, and why
+    /// the one it started on.
+    pub(crate) fn read_by_view(&self) -> Option<crate::bottom_bar::ReadBy> {
+        let pick = self.eval_pick.as_ref()?;
+        let c = self.clients.iter().find(|c| !c.waiting.is_empty())?;
+        let shown = &c.waiting.last()?.id;
+        let ours = [&pick.pending, &pick.replacing].into_iter().flatten().any(|id| id == shown);
+        if c.root != pick.project || !ours {
+            return None;
+        }
+        let (default, set) = self.eval_reader(&pick.project, &pick.unit)?;
+        let picked = pick.picked.clone().unwrap_or_else(|| default.clone());
+        let mut harnesses: Vec<(String, String)> =
+            c.harnesses.0.iter().map(|h| (h.name.clone(), h.title.clone())).collect();
+        if !harnesses.iter().any(|(n, _)| *n == picked) {
+            harnesses.insert(0, (picked.clone(), picked.clone()));
+        }
+        let why = if set { "dialog.eval.from_settings" } else { "dialog.eval.from_work" };
+        let note = (picked == default).then_some(why);
+        Some(crate::bottom_bar::ReadBy {
+            harnesses,
+            picked,
+            note,
+            open: pick.open,
+            staging: pick.replacing.is_some(),
+        })
+    }
+
     /// Where a staged send goes: what the person picked, else where it was
     /// staged.
     pub fn staged_send_to(&self, staged: &crate::daemon::Staged) -> String {
@@ -1016,13 +1454,17 @@ impl WeftDesktopApp {
     /// An act for `weft remote`, through the daemon: one machine, one daemon,
     /// so through one project's link.
     pub fn remote_act(&mut self, act: serde_json::Value) {
-        if let Some(c) = self.clients.iter_mut().find(|c| c.is_connected()) {
-            let _ = c.remote_act(act);
+        let was = self.clients.iter().map(|c| c.remotes).sum();
+        if let Some(c) = self.clients.iter_mut().find(|c| c.is_connected())
+            && c.remote_act(act).is_ok()
+        {
+            self.remote_asked = Some(was);
         }
     }
 
     /// What an answer was for, done now it has come.
     fn take_answer(&mut self, root: &Path, a: Answered) {
+        let refused_by_ringframe = a.code == "refused";
         match (a.then, a.answer) {
             (Then::Started { .. }, Ok(v)) => {
                 if let Some(pane) = v["pane"].as_u64() {
@@ -1050,8 +1492,11 @@ impl WeftDesktopApp {
                 if picked < commits.len() {
                     let project = root.to_path_buf();
                     self.bottom_bar = BottomBarState::Undo { project, unit, commits, picked };
+                } else {
+                    self.fail(words::word("wait.no_start"));
                 }
             }
+            (Then::Remedy { .. } | Then::Commits { .. }, Err(why)) => self.fail(why),
             // The Seal asks what its Eval left, one at a time; with none, or
             // none that could be read, it goes as it always has.
             (Then::Questions { eval }, answer) => {
@@ -1061,10 +1506,13 @@ impl WeftDesktopApp {
                     && *e == eval
                     && *questions == SealQuestions::Reading
                 {
-                    let asked: Vec<weft_core::seal_questions::Question> = answer
-                        .ok()
-                        .and_then(|v| serde_json::from_value(v["questions"].clone()).ok())
-                        .unwrap_or_default();
+                    let asked: Vec<weft_core::seal_questions::Question> = match answer {
+                        Ok(v) => serde_json::from_value(v["questions"].clone()).unwrap_or_default(),
+                        Err(why) => {
+                            *questions = SealQuestions::Unread(why);
+                            return;
+                        }
+                    };
                     *questions = if asked.is_empty() {
                         SealQuestions::Unasked
                     } else {
@@ -1082,17 +1530,26 @@ impl WeftDesktopApp {
             (Then::Older { pane }, Ok(v)) => {
                 self.take_conversation(root, pane, true, &v["conversation"]);
             }
-            // A refusal of an act, said where the person looks, unless the
-            // bar is asking something of its own. A read refused shows
-            // nothing: the sheet says what it lacks.
-            (Then::Started { .. } | Then::Refusal, Err(why))
-                if matches!(
-                    self.bottom_bar,
-                    BottomBarState::None | BottomBarState::WhyNot { .. }
-                ) =>
-            {
-                self.bottom_bar = BottomBarState::WhyNot { sentence: why }
+            (Then::Eval, answer) => self.eval_staged(root, answer),
+            // The Eval this window said yes to is open: its view opens by
+            // itself once its readers start.
+            (Then::Working(w), Ok(_)) if w.doing == Doing::Opening => {
+                if let Some(work) = w.work {
+                    self.eval_view_wanted = Some((root.to_path_buf(), work));
+                    self.open_wanted_eval_view();
+                }
             }
+            // RingFrame's own refusal says it could not open the Eval; the
+            // daemon's (already opening, no such harness) says itself.
+            (Then::Working(w), Err(why)) => match w.doing {
+                Doing::Opening if refused_by_ringframe => {
+                    self.fail(words::fill("wait.could_not_open_eval", &[("why", &why)]))
+                }
+                _ => self.fail(why),
+            },
+            // A refusal of an act, said in the bar until the person acts. A
+            // read refused is said where it would be shown.
+            (Then::Started { .. } | Then::Refusal | Then::Setup { .. }, Err(why)) => self.fail(why),
             _ => {}
         }
     }
@@ -1324,6 +1781,7 @@ impl WeftDesktopApp {
                 panes: &pane_infos,
                 agents: &pane_turns,
                 sessions: &client.sessions,
+                earlier: client.earlier,
                 work: &client.work,
                 readiness: &ready_fn,
                 routing: &client.routing,
@@ -1460,8 +1918,9 @@ impl WeftDesktopApp {
         let needs_you = projects.iter().map(|p| p.project.needs).sum();
         let updates_available = self.updates_available_count();
 
+        let machine = self.machine_name();
         let header = render_header(&HeaderProps {
-            machine: self.machine.clone(),
+            machine: machine.clone(),
             sidebar_open: self.state.settings.sidebar_open,
             needs_you,
             link: self.clients.iter().find(|c| !c.is_connected()).map(|c| {
@@ -1548,6 +2007,12 @@ impl WeftDesktopApp {
         };
         let preview = self.preview_unit();
         let harness = self.harness_shown();
+        let ask_reading = match &self.active_sheet {
+            Some(ActiveSheet::Ask { project, .. }) => self
+                .client(project)
+                .is_some_and(|c| c.owes_any(|t| matches!(t, Then::AskSheet { .. }))),
+            _ => false,
+        };
         let sheet = self.active_sheet.as_ref().map(|sheet| {
             render_sheet(&SheetProps {
                 sheet,
@@ -1561,6 +2026,7 @@ impl WeftDesktopApp {
                 ask_choices: &self.ask_choices,
                 ask_sheet_for: self.ask_sheet_for.as_deref(),
                 ask_refused: self.ask_refused.as_deref(),
+                ask_reading,
                 ask_warning: ask_warning.as_deref(),
                 remote_pick: self.remote_pick.as_deref(),
                 send_to: ask_send_to.as_ref(),
@@ -1570,9 +2036,14 @@ impl WeftDesktopApp {
                 setting_text: self.setting_field.text(),
                 preview: &preview,
                 harness: &harness,
-                all_rules: self.all_rules,
+                all_rules: &self.all_rules,
                 preview_shown: self.preview_shown,
                 judges_shown: self.judges_shown,
+                machine: &machine,
+                updating: self.updating(),
+                running_since: &self.running_since,
+                remote_asked: self.remote_asked.is_some(),
+                machine_jobs: self.machine_jobs(),
             })
         });
         // Ask docks under the panes it is about; every other sheet takes the
@@ -1608,6 +2079,8 @@ impl WeftDesktopApp {
             }));
         }
 
+        let read_by = self.read_by_view();
+        let working = self.working();
         // A staged send's SEND TO: where it goes now.
         let staged_to = self.clients.iter().find_map(|c| {
             let staged = c.waiting.last()?;
@@ -1628,12 +2101,15 @@ impl WeftDesktopApp {
             .child(body)
             .child(render_bottom_bar(&BottomBarProps {
                 staged_to: staged_to.as_ref(),
-                machine: &self.machine,
+                machine: &machine,
                 state: &self.bottom_bar,
                 clients: &self.clients,
                 selection: self.selection.as_ref(),
                 suggested: self.suggested_act(),
                 warning: self.act_warning.as_deref(),
+                read_by: read_by.as_ref(),
+                working: working.as_ref(),
+                failed: self.failed.as_deref(),
             }))
     }
 }

@@ -73,17 +73,49 @@ impl Machine {
     }
 }
 
-/// What this machine is called, for the person's list of machines.
-pub fn host_name() -> String {
-    let said = std::process::Command::new("hostname").arg("-s").output().ok();
-    said.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| "this machine".to_string())
+/// What this machine is called on the person's list of machines: the name
+/// set in Settings (`config.toml` in `weft`), else the system's own as the
+/// daemon said it, cut to what the account service keeps.
+pub fn machine_name(weft: &Path, system: Option<&str>) -> String {
+    let text = std::fs::read_to_string(weft.join("config.toml")).unwrap_or_default();
+    let config = weft_core::config::read(&text, &Default::default());
+    let system = system.unwrap_or(weft_core::words::word("desktop.this_machine"));
+    kept(&weft_core::machine::effective(config.name(), system))
+}
+
+/// The most of a name the account service keeps: 64 UTF-16 units, as it
+/// counts them.
+fn kept(name: &str) -> String {
+    let mut units = 0;
+    name.chars()
+        .take_while(|c| {
+            units += c.len_utf16();
+            units <= 64
+        })
+        .collect::<String>()
+        .trim_end()
+        .to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_machine_joins_by_its_name_in_settings_else_the_system_s() {
+        let dir = std::env::temp_dir().join(format!("weft-remote-name-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let system = Some("Ada’s MacBook Pro");
+        assert_eq!(machine_name(&dir, system), "Ada’s MacBook Pro", "no config.toml");
+        assert_eq!(machine_name(&dir, None), weft_core::words::word("desktop.this_machine"));
+        std::fs::write(dir.join("config.toml"), "name = \"Studio\"\n").unwrap();
+        assert_eq!(machine_name(&dir, system), "Studio");
+        std::fs::write(dir.join("config.toml"), format!("name = \"{}\"\n", "é".repeat(80)))
+            .unwrap();
+        assert_eq!(machine_name(&dir, system), "é".repeat(64), "what the service keeps");
+        assert_eq!(kept(&"😀".repeat(40)), "😀".repeat(32), "two units each");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn the_machine_is_kept_readable_by_its_owner_only() {

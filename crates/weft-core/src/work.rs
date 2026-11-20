@@ -29,6 +29,10 @@ pub struct Eval {
     /// Left open, and a later Eval over the same Asks superseded it.
     #[serde(default)]
     pub superseded: bool,
+    /// What its readers counted and did not read, by kind and folder, as
+    /// its `eval.opened` recorded it.
+    #[serde(default)]
+    pub not_read: Vec<crate::skip::NotRead>,
 }
 
 impl Eval {
@@ -98,6 +102,10 @@ pub fn record(events: &[Value]) -> Record {
                 completed_at: None,
                 voided: false,
                 superseded: false,
+                not_read: data
+                    .get("not_read")
+                    .and_then(|n| serde_json::from_value(n.clone()).ok())
+                    .unwrap_or_default(),
                 id,
             }),
             "eval.completed" => {
@@ -113,6 +121,7 @@ pub fn record(events: &[Value]) -> Record {
                         completed_at: None,
                         voided: false,
                         superseded: false,
+                        not_read: Vec::new(),
                     });
                 }
                 let Some(v) = out.evals.iter_mut().find(|v| v.id == id) else { continue };

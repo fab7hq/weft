@@ -272,19 +272,23 @@ pub fn run(
     out: &dyn Outside,
     h: &Harness,
     latest: Option<&str>,
-    show: impl FnMut(State),
+    show: impl FnMut(State, (usize, usize)),
 ) -> Option<State> {
     let (state, have) = crate::readiness::look(out, h);
     proceed(out, steps(h, state, have.as_deref(), latest), show)
 }
 
-/// Run these steps in order, showing each as it starts, and stop at the first
-/// that fails; that one comes back.
-pub fn proceed(out: &dyn Outside, steps: Vec<Step>, mut show: impl FnMut(State)) -> Option<State> {
+/// Run these steps in order, showing each as it starts with which it is (from
+/// one) of how many, and stop at the first that fails; that one comes back.
+pub fn proceed(
+    out: &dyn Outside,
+    steps: Vec<Step>,
+    mut show: impl FnMut(State, (usize, usize)),
+) -> Option<State> {
     let mut steps = steps;
     crate::sync::proceed(out, &mut steps, |steps| {
-        if let Some(s) = steps.iter().find(|s| s.mark == Mark::Running) {
-            show(State::Running(s.line()));
+        if let Some(i) = steps.iter().position(|s| s.mark == Mark::Running) {
+            show(State::Running(steps[i].line()), (i + 1, steps.len()));
         }
     });
     steps
@@ -429,8 +433,8 @@ mod tests {
         let (v, _) = look(&Machine, &harnesses, &Err("offline".into()), &WeftCheck::default());
         assert_eq!(v.rows[0].state, State::NotSetUp);
         let mut seen = Vec::new();
-        assert_eq!(run(&Machine, &h, None, |s| seen.push(s)), None, "no step failed");
-        assert_eq!(seen, [State::Running(format!("{} install", h.program))]);
+        assert_eq!(run(&Machine, &h, None, |s, of| seen.push((s, of))), None, "no step failed");
+        assert_eq!(seen, [(State::Running(format!("{} install", h.program)), (1, 1))]);
         let (v, states) = look(&Machine, &harnesses, &Err("offline".into()), &WeftCheck::default());
         assert_eq!(v.rows[0].state, State::Ready { version: None });
         assert_eq!(states, [("stub".to_string(), weft_core::readiness::Readiness::Ready)]);

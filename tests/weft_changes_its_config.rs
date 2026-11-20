@@ -286,6 +286,7 @@ fn the_ringframe_tab_reads_rules_and_a_preview_through_the_daemon() {
             lines: None,
             before: None,
             after: None,
+            q: None,
         })
     };
     let rules = read(&mut one, "rules", "machine").unwrap();

@@ -1,7 +1,8 @@
 //! Bounded, prunable observed prompts under `.fab7/rf/sessions/<host>/<session>/`.
 
+use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value, json};
@@ -203,26 +204,67 @@ pub fn read_prompts(ws: &Workspace) -> Vec<Prompt> {
     out
 }
 
-/// Each session's first prompt that says something, by session id, titled as
-/// an Ask is: its first line, cut to 72 characters, without a leading command
-/// such as `/goal`. A prompt that is only a command, or kept without its text,
-/// names nothing.
-/// Each file is read only up to that prompt.
-pub fn first_prompts(ws: &Workspace) -> std::collections::BTreeMap<String, String> {
-    use std::io::BufRead;
-    let mut out = std::collections::BTreeMap::new();
-    for (host, session, path) in prompt_files(ws) {
-        let Ok(file) = std::fs::File::open(&path) else { continue };
-        let first = std::io::BufReader::new(file)
-            .lines()
-            .map_while(Result::ok)
-            .filter_map(|l| prompt_of(&host, &session, &l)?.text)
-            .find_map(|t| words_of(&t));
-        if let Some(words) = first {
-            out.insert(session, crate::ask::requested_title(words.as_bytes()));
+/// Each session's first prompt that says something, titled as an Ask is: its
+/// first line, cut to 72 characters, without a leading command such as
+/// `/goal`. A prompt that is only a command, or kept without its text, names
+/// nothing.
+///
+/// Kept for the sessions asked about: each one's file is read once, up to that
+/// prompt, and again only when its time or size changed.
+#[derive(Debug, Default)]
+pub struct FirstPrompts {
+    read: HashMap<(String, String), (SystemTime, u64, Option<String>)>,
+}
+
+impl FirstPrompts {
+    /// The first prompts of these sessions, each named by its host and id,
+    /// by session id. Only their own files are looked at; a session no
+    /// longer asked about is forgotten.
+    pub fn of(
+        &mut self,
+        ws: &Workspace,
+        sessions: &[(String, String)],
+    ) -> BTreeMap<String, String> {
+        let base = ws.rf_dir().join("sessions");
+        let mut kept = HashMap::with_capacity(sessions.len());
+        let mut out = BTreeMap::new();
+        for (host, session) in sessions {
+            if !segment(host) || !segment(session) {
+                continue;
+            }
+            let path = base.join(host).join(session).join("prompts.jsonl");
+            let Ok(meta) = std::fs::metadata(&path) else { continue };
+            let stamp = (meta.modified().unwrap_or(UNIX_EPOCH), meta.len());
+            let key = (host.clone(), session.clone());
+            let title = match self.read.remove(&key) {
+                Some((at, len, title)) if (at, len) == stamp => title,
+                _ => first_prompt(host, session, &path),
+            };
+            if let Some(title) = &title {
+                out.insert(session.clone(), title.clone());
+            }
+            kept.insert(key, (stamp.0, stamp.1, title));
         }
+        self.read = kept;
+        out
     }
-    out
+}
+
+/// A name that is one folder of the path: never `..`, never a separator.
+fn segment(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', '\0'])
+}
+
+/// One `prompts.jsonl`'s first prompt with words, read only up to it.
+fn first_prompt(host: &str, session: &str, path: &Path) -> Option<String> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(path).ok()?;
+    let words = std::io::BufReader::new(file)
+        .lines()
+        .map_while(Result::ok)
+        .filter_map(|l| prompt_of(host, session, &l)?.text)
+        .find_map(|t| words_of(&t))?;
+    Some(crate::ask::requested_title(words.as_bytes()))
 }
 
 /// A prompt's words: without a leading `/command`; none when nothing is left.
@@ -315,12 +357,46 @@ mod tests {
             let old =
                 json!({"session_id": "s3", "sha256": "ab", "bytes": 2, "observed_by": "weft"});
             log(&ws, "agy", "s3", "prompts.jsonl", &old).unwrap();
-            let firsts = first_prompts(&ws);
+            let listed = [("claude-code", "s1"), ("codex", "s2"), ("agy", "s3"), ("grok", "s4")]
+                .map(|(h, s)| (h.to_string(), s.to_string()));
+            let firsts = FirstPrompts::default().of(&ws, &listed);
             assert_eq!(firsts["s1"], "fix the login redirect", "a command alone is skipped");
             assert_eq!(firsts["s2"], "why does CI fail on main", "its command dropped");
             assert!(!firsts.contains_key("s3"), "a prompt kept without its text names nothing");
             assert_eq!(firsts["s4"].chars().count(), 72, "cut as an Ask's title is");
             assert!(firsts["s4"].ends_with('…'));
+        });
+    }
+
+    #[test]
+    fn a_first_prompt_is_read_once_and_again_only_when_its_file_changes() {
+        crate::testing::with_config_home(|_| {
+            let repo = repo();
+            let ws = ws_for(repo.path());
+            capture(&ws, "claude-code", "fix the login redirect", "s1", None).unwrap();
+            capture(&ws, "codex", "not asked about", "s2", None).unwrap();
+            let path = ws.rf_dir().join("sessions/claude-code/s1/prompts.jsonl");
+            let listed = vec![("claude-code".to_string(), "s1".to_string())];
+            let mut firsts = FirstPrompts::default();
+            let read = firsts.of(&ws, &listed);
+            assert_eq!(read.len(), 1, "only the sessions asked about: {read:?}");
+            assert_eq!(read["s1"], "fix the login redirect");
+            // Other words in a file of the same time and size: it is not read again.
+            let was = std::fs::metadata(&path).unwrap().modified().unwrap();
+            let text = std::fs::read_to_string(&path).unwrap();
+            std::fs::write(&path, text.replace("login", "LOGIN")).unwrap();
+            let file = std::fs::File::options().write(true).open(&path).unwrap();
+            file.set_modified(was).unwrap();
+            assert_eq!(firsts.of(&ws, &listed)["s1"], "fix the login redirect");
+            // Its size changed: read again.
+            std::fs::write(&path, text.replace("login", "sign-in")).unwrap();
+            assert_eq!(firsts.of(&ws, &listed)["s1"], "fix the sign-in redirect");
+            // Gone, it names nothing.
+            std::fs::remove_file(&path).unwrap();
+            assert!(firsts.of(&ws, &listed).is_empty());
+            // A name that is not one folder names no file.
+            let outside = vec![("..".to_string(), "s1".to_string())];
+            assert!(firsts.of(&ws, &outside).is_empty());
         });
     }
 

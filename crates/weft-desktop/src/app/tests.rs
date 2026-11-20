@@ -69,6 +69,12 @@ impl Wire {
         self.out.write_all(&line.encode()).expect("written");
     }
 
+    /// A refusal with the daemon's own code.
+    pub(crate) fn refuse_as(&mut self, id: u64, code: &str, message: &str) {
+        let line = Line::Error { id, code: code.into(), message: message.into() };
+        self.out.write_all(&line.encode()).expect("written");
+    }
+
     pub(crate) fn event(&mut self, event: Event) {
         self.out.write_all(&Line::Event(event).encode()).expect("written");
     }
@@ -202,9 +208,12 @@ fn populate_sample_project(c: &mut ProjectClient) {
     let mut r4 = Row::of("claude", "s4", State::Ended, None, 912);
     r4.title = Some("readme fix".into());
     c.sessions = vec![r1, r2, r3, r4];
-    for i in 0..14 {
-        c.sessions.push(Row::of("claude", &format!("old_{i}"), State::Ended, None, 800 - i));
-    }
+    // Earlier ones the daemon counts, and the first page of them read.
+    c.earlier = 14;
+    c.earlier_rows.rows = (0..14)
+        .map(|i| Row::of("claude", &format!("old_{i}"), State::Ended, None, 800 - i))
+        .collect();
+    c.earlier_rows.total = 14;
 
     // health endpoint judged by Eval 3; build number sealed by Seal 4 on Eval 2.
     let record = weft_core::work::record(&[
@@ -456,7 +465,8 @@ fn the_conversation_is_read_through_the_daemon_and_drawn_with_its_waiting_line()
             pane: Some(pane),
             lines: None,
             before: None,
-            after: None
+            after: None,
+            q: None,
         }
     );
     let mut step = item("20.0", Kind::Step, Some(1121), None);
@@ -625,15 +635,16 @@ fn an_ask_goes_to_the_daemon_and_its_staged_send_is_answered() {
     wire.event(Event::Resolved { id: "p1".into(), yes: true });
     pumped(&mut app, |a| a.clients[0].waiting.is_empty());
 
-    // A refusal is said in the bar.
+    // A refusal is said in the bar, and stays until the person acts.
     app.dispatch(TreeAct::SelectWork { project: weft(), unit: "ask_1".into() });
     app.dispatch(BarAct::Eval);
     let (id, call) = wire.call();
     assert!(matches!(call, Call::Act { ref act, .. } if act == "eval"));
     wire.refuse(id, "no agent can run it");
-    pumped(&mut app, |a| {
-        a.bottom_bar == BottomBarState::WhyNot { sentence: "no agent can run it".into() }
-    });
+    pumped(&mut app, |a| a.failed.as_deref() == Some("no agent can run it"));
+    assert!(!app.expire_why_not(Instant::now() + Duration::from_secs(60)));
+    let bar = app.render();
+    assert_eq!(bar.find_layer("failed sentence").unwrap().all_text(), "no agent can run it");
 }
 
 /// With Sense (17.22, 17.23): while the words are read the sheet shows one
@@ -878,6 +889,118 @@ fn a_harness_read_as_not_set_up_warns_in_the_dialog_and_never_stops_the_act() {
     pumped(&mut app, |a| !a.clients[0].waiting.is_empty());
     let said = app.render().find_layer("Cancel / Send bar").unwrap().all_text();
     assert!(said.contains("is not set up for RingFrame. Updates… in ☰ sets it up."), "{said}");
+}
+
+/// The Eval dialog's staged for `harness`: the daemon's dialog `id`, named
+/// in its answer to the act.
+pub(crate) fn eval_staged(
+    app: &mut WeftDesktopApp,
+    wire: &mut Wire,
+    id: &str,
+    start: Option<&str>,
+) {
+    let call = loop {
+        match wire.call() {
+            (call, Call::Act { act, start: s, .. }) if act == "eval" => break (call, s),
+            _ => continue,
+        }
+    };
+    assert_eq!(call.1.as_deref(), start, "read by");
+    wire.event(Event::Pending {
+        id: id.into(),
+        pane: u32::MAX,
+        what: words::word("dialog.eval.title").into(),
+        why: format!(
+            "fix login · 1 Ask\n{} reads the whole change.",
+            start.unwrap_or("Antigravity")
+        ),
+        payload: Vec::new(),
+        sends: None,
+        go: Some(weft_proto::Go { word: "act.eval".into(), warn: false }),
+    });
+    wire.answer(call.0, json!({"pending": id}));
+    let id = id.to_string();
+    pumped(app, |a| a.eval_pick.as_ref().and_then(|p| p.pending.as_ref()) == Some(&id));
+}
+
+/// The Eval dialog's Read by starts on who would read it, saying why; picking
+/// another stages the dialog again for it, the one shown going once the new
+/// one is there, and nothing runs until Eval.
+#[test]
+fn the_eval_dialog_picks_who_reads_it_and_runs_only_on_eval() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    app.dispatch(TreeAct::SelectWork { project: weft(), unit: "ask_1".into() });
+    app.dispatch(BarAct::Eval);
+    eval_staged(&mut app, &mut wire, "p1", None);
+    let dom = app.render();
+    let row = dom.find_layer("read by").expect("Read by");
+    assert_eq!(row.find_layer("read by choice").unwrap().all_text(), "Antigravity ▾");
+    assert!(row.all_text().contains("the work’s latest agent"), "{}", row.all_text());
+
+    app.dispatch(BarAct::ToggleReadBy);
+    let dom = app.render();
+    let list = dom.find_layer("read by list").expect("every harness set up here");
+    for h in ["antigravity", "claude", "codex", "grok"] {
+        assert!(list.find_layer(&format!("read by {h}")).is_some(), "{h}");
+    }
+    assert!(list.find_layer("read by antigravity").unwrap().all_text().contains('✓'));
+
+    app.dispatch(BarAct::ReadBy("codex".into()));
+    let dom = app.render();
+    let row = dom.find_layer("read by").expect("still the dialog shown");
+    assert_eq!(row.find_layer("read by choice").unwrap().all_text(), "Codex ▾", "kept");
+    assert!(!row.all_text().contains("latest agent"), "not the one it started on");
+    eval_staged(&mut app, &mut wire, "p2", Some("codex"));
+    // The dialog it replaced is answered no, once the new one is there.
+    let no = wire.calls().into_iter().any(
+        |(_, c)| matches!(c, Call::Resolve { ref pending, yes: false, .. } if pending == "p1"),
+    );
+    assert!(no, "the first dialog goes");
+    wire.event(Event::Resolved { id: "p1".into(), yes: false });
+    pumped(&mut app, |a| a.clients[0].waiting.len() == 1);
+    let dom = app.render();
+    assert_eq!(dom.find_layer("read by choice").unwrap().all_text(), "Codex ▾");
+    let said = dom.find_layer("Cancel / Send bar").unwrap().all_text();
+    assert!(said.contains("codex reads the whole change."), "the daemon's sentence: {said}");
+    let ran = wire.calls().into_iter().any(|(_, c)| matches!(c, Call::Resolve { yes: true, .. }));
+    assert!(!ran, "nothing runs on a pick");
+
+    app.dispatch(BarAct::Resolve { project: weft(), pending: "p2".into(), answer: Answer::Yes });
+    let (_, call) = wire.call();
+    assert!(matches!(call, Call::Resolve { ref pending, yes: true, .. } if pending == "p2"));
+    assert!(app.eval_pick.is_none(), "its pick goes with it");
+}
+
+/// Read by set in Settings says so; a pick the daemon refuses leaves the
+/// dialog shown and its pick, and says why.
+#[test]
+fn the_eval_dialog_says_a_reader_set_in_settings_and_keeps_its_pick_when_refused() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    app.clients[0].routing = weft_core::routing::Routing::of(
+        json!({"eval": "claude"}),
+        Value::Null,
+        Value::Null,
+        Value::Null,
+        Value::Null,
+    );
+    app.dispatch(TreeAct::SelectWork { project: weft(), unit: "ask_1".into() });
+    app.dispatch(BarAct::Eval);
+    eval_staged(&mut app, &mut wire, "p1", None);
+    let row = app.render().find_layer("read by").unwrap().clone();
+    assert_eq!(row.find_layer("read by choice").unwrap().all_text(), "Claude Code ▾");
+    assert!(row.all_text().contains("set in Settings"), "{}", row.all_text());
+
+    app.dispatch(BarAct::ReadBy("grok".into()));
+    let (id, call) = wire.call();
+    assert!(matches!(call, Call::Act { ref start, .. } if start.as_deref() == Some("grok")));
+    wire.refuse(id, "grok is not set up here");
+    pumped(&mut app, |a| a.eval_pick.as_ref().is_some_and(|p| p.pending.is_some()));
+    let dom = app.render();
+    assert_eq!(dom.find_layer("read by choice").unwrap().all_text(), "Claude Code ▾");
+    let said = dom.find_layer("Cancel / Send bar").unwrap().all_text();
+    assert!(said.contains("grok is not set up here"), "{said}");
+    let gone = wire.calls().into_iter().any(|(_, c)| matches!(c, Call::Resolve { .. }));
+    assert!(!gone, "the dialog shown stays");
 }
 
 /// 17.24: RingFrame refuses the sheet's read for the agent in SEND TO. The
@@ -1385,8 +1508,9 @@ fn what_was_asked_is_read_through_the_daemon_and_nothing_is_shown_until_it_is() 
         .collect();
     assert_eq!(reads[0].1, "source");
     assert_eq!(reads[1].1, "wording");
-    let before = app.render().find_layer("sheet WorkDetail").unwrap().all_text();
-    assert!(!before.contains("the prompt as typed"), "nothing typed shown before it is read");
+    let before = app.render().find_layer("sheet WorkDetail").unwrap().clone();
+    assert!(!before.all_text().contains("fix the login flow"), "nothing typed before it is read");
+    assert!(before.find_layer("loading").is_some(), "lines breathe while it is read");
     wire.answer(reads[0].0, json!({"text": "fix the login flow"}));
     wire.answer(reads[1].0, json!({"text": "Fix login: the token refresh."}));
     pumped(&mut app, |a| a.clients[0].read.len() == 2);
@@ -1406,7 +1530,7 @@ fn a_seals_receipt_is_checked_through_the_daemon_and_not_claimed_before() {
         matches!(call, Call::Read { ref what, ref unit, .. } if what == "seal" && unit == "sel_4")
     );
     let sheet = app.render().find_layer("sheet SealDetail").unwrap().all_text();
-    assert!(sheet.contains(words::word("desktop.seal.unchecked")), "{sheet}");
+    assert!(sheet.contains(words::word("wait.checking_receipt")), "{sheet}");
     assert!(!sheet.contains(words::word("web.seal.holds")));
     wire.answer(id, json!({"seal_id": "sel_4", "codes": ["receipt_hash_mismatch"]}));
     pumped(&mut app, |a| !a.clients[0].read.is_empty());
@@ -2054,7 +2178,13 @@ fn a_conversation_is_read_again_when_the_agent_moves_not_when_its_read_is_answer
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(wire.calls().is_empty(), "its own answer asks nothing again");
-    wire.event(Event::Agents { panes: vec![Some(Turn::Working)], sessions: Vec::new(), zone: 0 });
+    wire.event(Event::Agents {
+        panes: vec![Some(Turn::Working)],
+        changed: Vec::new(),
+        gone: Vec::new(),
+        earlier: 0,
+        zone: 0,
+    });
     pumped(&mut app, |a| a.clients[0].owes(&Then::Conversation { pane }));
     let (_, call) = wire.call();
     assert!(matches!(call, Call::Read { ref what, .. } if what == "conversation"));
@@ -2130,7 +2260,7 @@ fn a_seal_opened_again_claims_nothing_until_checked_again() {
     app.dispatch(TreeAct::SelectSeal { project: weft(), seal: "sel_4".into() });
     let text = app.render().all_text();
     assert!(!text.contains(words::word("web.seal.holds")), "the old check is not shown");
-    assert!(text.contains(words::word("desktop.seal.unchecked")));
+    assert!(text.contains(words::word("wait.checking_receipt")));
 }
 
 #[test]
@@ -2153,11 +2283,244 @@ fn nothing_written_is_lost_while_the_daemon_is_not_connected() {
     assert_eq!(app.ask.text(), "fix the login");
 }
 
+/// The machine goes by what the daemon calls it: its settings' name once
+/// they are told, what it said when it answered before that, and the name
+/// the window started with until it answers.
 #[test]
-fn the_machine_is_named_by_its_host_name_and_never_made_up() {
-    assert_eq!(machine_name_of("studio.local"), "studio");
-    assert_eq!(machine_name_of("build-box"), "build-box");
-    assert_eq!(machine_name_of(""), words::word("desktop.this_machine"));
+fn the_machine_is_named_by_the_daemon_once_it_answers() {
+    let (_tmp, mut app, _wire) = wired_app();
+    app.clients[0].config = None;
+    app.clients[0].machine_name = None;
+    assert_eq!(app.machine_name(), "studio", "before the daemon answers");
+    app.clients[0].machine_name = Some("Ada’s MacBook Pro".into());
+    assert_eq!(app.machine_name(), "Ada’s MacBook Pro", "as it said when it answered");
+    app.clients[0].config = Some(json!({"machine": {}, "effective": {"name": "Lab"}}));
+    assert_eq!(app.machine_name(), "Lab", "as its settings say now");
+}
+
+/// Settings › General names the machine: its title and the Name field say
+/// what the daemon calls it; the field starts as that name, and what is
+/// typed is set through the daemon, emptied as nothing set.
+#[test]
+fn settings_name_the_machine_and_its_name_is_set_through_the_daemon() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    let long = "Ada’s MacBook Pro with a name far longer than any field it is shown in";
+    app.clients[0].config =
+        Some(json!({"machine": {}, "project": null, "effective": {"name": long}}));
+    app.dispatch(WindowAct::OpenSettings);
+    let dom = app.render();
+    let sheet = dom.find_layer("sheet Settings").expect("the Settings sheet");
+    assert!(sheet.all_text().contains(&format!("Settings · {long}")), "the title names it");
+    let row = sheet.find_layer("setting Name").expect("the Name row");
+    assert_eq!(row.find_layer("setting value").unwrap().all_text(), long);
+
+    let typed = |app: &mut WeftDesktopApp, text: &str| {
+        app.dispatch(SheetAct::EditSetting { project: None, key: vec!["name".into()] });
+        assert_eq!(app.setting_field.text(), long, "it starts as the name now");
+        app.setting_field.set_text(text);
+        app.dispatch(SheetAct::CommitSetting);
+    };
+    typed(&mut app, "  Studio ");
+    let set = |value| Call::ConfigSet { scope: "machine".into(), key: vec!["name".into()], value };
+    assert_eq!(wire.call().1, set(Some(json!("Studio"))));
+    typed(&mut app, "   ");
+    assert_eq!(wire.call().1, set(None), "emptied: the system's own name again");
+}
+
+/// Keep ended sessions: the days that apply, typed and set through the
+/// daemon as a number; emptied, the default again; anything else, nothing.
+#[test]
+fn settings_keep_ended_sessions_for_the_days_typed() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    app.clients[0].config =
+        Some(json!({"machine": {}, "project": null, "effective": {"keep_days": 7}}));
+    app.dispatch(WindowAct::OpenSettings);
+    let dom = app.render();
+    let row = dom.find_layer("setting Keep ended sessions").expect("the row");
+    assert_eq!(row.find_layer("setting value").unwrap().all_text(), "7");
+    assert!(row.all_text().contains("days"));
+    let key = vec!["sessions".to_string(), "keep_days".to_string()];
+    let typed = |app: &mut WeftDesktopApp, text: &str| {
+        app.dispatch(SheetAct::EditSetting { project: None, key: key.clone() });
+        assert_eq!(app.setting_field.text(), "7", "it starts as the days now");
+        app.setting_field.set_text(text);
+        app.dispatch(SheetAct::CommitSetting);
+    };
+    let set = |value| Call::ConfigSet { scope: "machine".into(), key: key.clone(), value };
+    typed(&mut app, " 30 ");
+    assert_eq!(wire.call().1, set(Some(json!(30))));
+    typed(&mut app, "");
+    assert_eq!(wire.call().1, set(None), "emptied: seven again");
+    typed(&mut app, "a week");
+    typed(&mut app, "0");
+    assert_eq!(wire.call().1, set(Some(json!(0))), "words set nothing; 0 keeps them all");
+}
+
+/// The daemon carries today's sessions and counts the earlier ones: the tree
+/// follows what moved, counts them, and the first page of them is read.
+#[test]
+fn the_tree_follows_what_moved_and_counts_the_earlier_sessions() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    let kept: Vec<String> = app.clients[0].sessions.iter().map(Row::key).collect();
+    let mut s1 = app.clients[0].sessions[0].clone();
+    s1.turn = Some(Turn::Working);
+    let today = Row::of("codex", "s-new", State::Ended, None, 1200);
+    wire.event(Event::Agents {
+        panes: vec![Some(Turn::Working)],
+        changed: vec![s1, today],
+        gone: vec![kept[3].clone()],
+        earlier: 1_204,
+        zone: 0,
+    });
+    pumped(&mut app, |a| a.clients[0].earlier == 1_204);
+    let ids: Vec<_> = app.clients[0].sessions.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(ids, ["s2", "s1", "s3", "s-new"], "s4 went; s1 moved in place");
+    let (id, call) = wire.call();
+    assert!(matches!(&call, Call::Read { what, after: None, q: None, .. } if what == "sessions"));
+    wire.answer(id, earlier_page(1_204, 0, ""));
+    pumped(&mut app, |a| a.clients[0].earlier_rows.rows.len() == 50);
+    let dom = app.render();
+    let earlier = dom.find_layer("row earlier sessions").expect("counted");
+    assert!(earlier.all_text().contains("1,204"), "{}", earlier.all_text());
+}
+
+/// `total` earlier sessions `old-<n>`, newest first, as the daemon answers
+/// a page of them from row `from`; a search's finds are named for it.
+fn earlier_page(total: usize, from: usize, q: &str) -> Value {
+    let end = (from + 50).min(total);
+    let rows: Vec<Row> = (from..end)
+        .map(|i| {
+            let mut r = Row::of("codex", &format!("old-{i}"), State::Ended, None, 1_000 - i as i64);
+            r.title = Some(format!("{q} {i}").trim().to_string());
+            r
+        })
+        .collect();
+    let next = (end < total).then(|| format!("codex/old-{}", end - 1));
+    json!({"rows": rows, "total": total, "next": next})
+}
+
+/// Opened, the earlier sessions list 50, newest first, then "Show 50 more"
+/// with how many of all are shown; each page appends, the last says how
+/// many are left, and once all are shown there is no such row.
+#[test]
+fn earlier_sessions_open_a_page_at_a_time() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    let root = app.clients[0].root.clone();
+    wire.event(Event::Agents {
+        panes: vec![Some(Turn::Working)],
+        changed: vec![],
+        gone: vec![],
+        earlier: 120,
+        zone: 0,
+    });
+    pumped(&mut app, |a| a.clients[0].earlier == 120);
+    let (id, _) = wire.call();
+    wire.answer(id, earlier_page(120, 0, ""));
+    pumped(&mut app, |a| a.clients[0].earlier_rows.rows.len() == 50);
+    let tree = |app: &WeftDesktopApp| app.render().find_layer("tree").unwrap().clone();
+    let folded = tree(&app);
+    assert!(folded.find_layer("row agent codex 0").is_none(), "folded: none listed");
+    assert!(folded.all_text().contains("120 earlier sessions ›"), "{}", folded.all_text());
+
+    app.dispatch(TreeAct::OpenEarlier(root.clone()));
+    let opened = tree(&app);
+    let head = opened.find_layer("row earlier sessions").unwrap().all_text();
+    assert_eq!(head, "▾ Earlier sessions 120");
+    let more = opened.find_layer("row earlier more").expect("more to show");
+    assert_eq!(more.all_text(), "Show 50 more 50 of 120");
+    assert!(opened.find_layer("row agent codex 49").is_some(), "the 50th listed");
+    assert!(opened.find_layer("row agent codex 50").is_none(), "not the 51st");
+    // An earlier one selected opens its Details, as a carried one's do.
+    app.dispatch(TreeAct::SelectAgent {
+        project: root.clone(),
+        session: "old-3".into(),
+        pane: None,
+    });
+    let sheet = app.render().find_layer("sheet SessionDetail").expect("its Details").clone();
+    assert!(
+        !sheet.all_text().contains(words::word("desktop.session.gone")),
+        "{}",
+        sheet.all_text()
+    );
+
+    app.dispatch(TreeAct::MoreEarlier(root.clone()));
+    let (id, call) = wire.call();
+    assert!(
+        matches!(&call, Call::Read { after: Some(a), q: None, .. } if a == "codex/old-49"),
+        "{call:?}"
+    );
+    wire.answer(id, earlier_page(120, 50, ""));
+    pumped(&mut app, |a| a.clients[0].earlier_rows.rows.len() == 100);
+    let more = tree(&app).find_layer("row earlier more").unwrap().all_text();
+    assert_eq!(more, "Show 20 more 100 of 120", "fewer than a page are left");
+
+    app.dispatch(TreeAct::MoreEarlier(root.clone()));
+    let (id, _) = wire.call();
+    wire.answer(id, earlier_page(120, 100, ""));
+    pumped(&mut app, |a| a.clients[0].earlier_rows.rows.len() == 120);
+    let all = tree(&app);
+    assert!(all.find_layer("row earlier more").is_none(), "all shown");
+    assert!(all.find_layer("row agent codex 119").is_some());
+
+    // Closed and opened again, it lists one page.
+    app.dispatch(TreeAct::OpenEarlier(root.clone()));
+    app.dispatch(TreeAct::OpenEarlier(root));
+    let again = tree(&app);
+    assert_eq!(again.find_layer("row earlier more").unwrap().all_text(), "Show 50 more 50 of 120");
+}
+
+/// The search reaches every earlier session through the daemon, not only
+/// the rows read: what it finds is listed and counted.
+#[test]
+fn a_search_finds_earlier_sessions_through_the_daemon() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    wire.event(Event::Agents {
+        panes: vec![Some(Turn::Working)],
+        changed: vec![],
+        gone: vec![],
+        earlier: 1_204,
+        zone: 0,
+    });
+    pumped(&mut app, |a| a.clients[0].earlier == 1_204);
+    let (id, _) = wire.call();
+    wire.answer(id, earlier_page(1_204, 0, ""));
+    pumped(&mut app, |a| a.clients[0].earlier_rows.rows.len() == 50);
+
+    app.search.set_text("pane resize");
+    app.pump();
+    let (id, call) = wire.call();
+    assert!(
+        matches!(&call, Call::Read { what, after: None, q: Some(q), .. }
+            if what == "sessions" && q == "pane resize"),
+        "{call:?}"
+    );
+    app.pump();
+    assert!(wire.calls().is_empty(), "asked once for the same words");
+    wire.answer(id, earlier_page(70, 0, "pane resize"));
+    pumped(&mut app, |a| a.clients[0].earlier_found.as_ref().is_some_and(|f| f.rows.len() == 50));
+    let tree = app.render().find_layer("tree").unwrap().clone();
+    assert!(tree.all_text().contains("70 match"), "{}", tree.all_text());
+    assert!(tree.find_layer("row agent codex pane resize 0").is_some());
+    assert_eq!(tree.find_layer("row earlier more").unwrap().all_text(), "Show 20 more 50 of 70");
+    app.dispatch(TreeAct::MoreEarlier(app.clients[0].root.clone()));
+    let (_, call) = wire.call();
+    assert!(
+        matches!(&call, Call::Read { after: Some(a), q: Some(q), .. }
+            if a == "codex/old-49" && q == "pane resize"),
+        "{call:?}"
+    );
+
+    // Other words: a new search, and the answer to the old one is let go.
+    app.search.set_text("eval");
+    app.pump();
+    let (id, _) = wire.call();
+    wire.answer(id, earlier_page(0, 0, "eval"));
+    pumped(&mut app, |a| {
+        a.clients[0].earlier_found.as_ref().is_some_and(|f| f.q == "eval" && !f.asking())
+    });
+    app.search.set_text("");
+    app.pump();
+    assert!(app.clients[0].earlier_found.is_none(), "no search, nothing found");
 }
 
 #[test]
@@ -2193,13 +2556,21 @@ fn mark_colour_of(sheet: &crate::gpui::Element, key: &str) -> String {
 }
 
 /// Open the Eval view and answer its read with `view`.
-fn open_view(app: &mut WeftDesktopApp, wire: &mut Wire, view: &weft_core::eval_view::EvalView) {
+pub(crate) fn open_view(
+    app: &mut WeftDesktopApp,
+    wire: &mut Wire,
+    view: &weft_core::eval_view::EvalView,
+) {
     app.dispatch(SheetAct::EvalView { project: weft(), eval: "evl_3".into() });
     answer_view(app, wire, view);
 }
 
 /// Answer the Eval view's newest read with `view`.
-fn answer_view(app: &mut WeftDesktopApp, wire: &mut Wire, view: &weft_core::eval_view::EvalView) {
+pub(crate) fn answer_view(
+    app: &mut WeftDesktopApp,
+    wire: &mut Wire,
+    view: &weft_core::eval_view::EvalView,
+) {
     let (id, call) = wire
         .calls()
         .into_iter()
@@ -2215,8 +2586,9 @@ fn answer_view(app: &mut WeftDesktopApp, wire: &mut Wire, view: &weft_core::eval
 fn the_eval_view_lists_its_items_and_shows_the_one_picked_in_plain_prose() {
     let (_tmp, mut app, mut wire) = wired_app();
     app.dispatch(SheetAct::EvalView { project: weft(), eval: "evl_3".into() });
-    let before = app.render().find_layer("sheet EvalView").unwrap().all_text();
-    assert!(before.contains(words::word("desktop.eval.no_record")), "{before}");
+    let before = app.render().find_layer("sheet EvalView").unwrap().clone();
+    assert!(before.find_layer("loading").is_some(), "it breathes while it is read");
+    assert!(!before.all_text().contains(words::word("desktop.eval.no_record")));
     open_view(&mut app, &mut wire, &an_eval_view());
 
     let sheet = app.render().find_layer("sheet EvalView").unwrap().clone();
@@ -2276,6 +2648,10 @@ fn the_eval_view_lists_its_items_and_shows_the_one_picked_in_plain_prose() {
         .find(|(_, c)| matches!(c, Call::Read { what, .. } if what == "window"))
         .expect("its lines");
     assert!(matches!(call, Call::Read { ref unit, .. } if unit == "evl_3/w_log"));
+    // While they come, lines breathe in their place, never "not come yet".
+    let coming = app.render().find_layer("eval lines").unwrap().clone();
+    assert!(coming.find_layer("loading").is_some());
+    assert!(!coming.all_text().contains(words::word("desktop.eval.no_lines")));
     wire.answer(id, json!({"text": "@@ -40,1 +40,2 @@\n fail() {\n+  log.warn(email)\n"}));
     pumped(&mut app, |a| !a.clients[0].owes_any(|t| matches!(t, Then::Window { .. })));
     let lines = app.render().find_layer("eval lines").unwrap().clone();
@@ -2283,6 +2659,20 @@ fn the_eval_view_lists_its_items_and_shows_the_one_picked_in_plain_prose() {
     assert!(lines.all_text().contains("src/auth/login.ts"), "{}", lines.all_text());
     let lit = lines.find_layer("line lit").expect("the quoted line is brighter");
     assert!(lit.all_text().contains("log.warn(email)"));
+    // Read again and refused: why, where the lines would be, with Try again.
+    app.dispatch(SheetAct::EvalBack);
+    app.dispatch(SheetAct::EvalOpen("lines".into()));
+    let (id, _) = wire
+        .calls()
+        .into_iter()
+        .find(|(_, c)| matches!(c, Call::Read { what, .. } if what == "window"))
+        .expect("its lines again");
+    wire.refuse(id, "the diff is gone");
+    pumped(&mut app, |a| !a.clients[0].owes_any(|t| matches!(t, Then::Window { .. })));
+    let lines = app.render().find_layer("eval lines").unwrap().clone();
+    let failed = lines.find_layer("failed").expect("why").all_text();
+    assert!(failed.contains("This could not be read: the diff is gone"), "{failed}");
+    assert!(failed.contains(words::word("wait.try_again")));
     // Back to the item, then to Details.
     app.dispatch(SheetAct::EvalBack);
     assert!(app.render().find_layer("eval detail").is_some());
@@ -2419,7 +2809,9 @@ fn an_agent_that_starts_waiting_off_screen_is_told_once() {
     // codex is in front: its own wait is not told; claude's is, once.
     let turns = |a: Option<Turn>, b: Option<Turn>| Event::Agents {
         panes: vec![a, b],
-        sessions: Vec::new(),
+        changed: Vec::new(),
+        gone: Vec::new(),
+        earlier: 0,
         zone: 0,
     };
     wire.event(turns(Some(Turn::Working), Some(Turn::Waiting)));
@@ -2782,9 +3174,13 @@ fn two_waiting(app: &mut WeftDesktopApp, wire: &mut Wire) -> (u32, u32) {
     hooked.pane = Some(a);
     let mut read = Row::of("codex", "s-b", State::Running, Some(Turn::Working), 1);
     read.pane = Some(b);
+    // The sample's sessions went: only these two are carried.
+    let gone = app.clients[0].sessions.iter().map(Row::key).collect();
     wire.event(Event::Agents {
         panes: vec![Some(Turn::Waiting), Some(Turn::Waiting)],
-        sessions: vec![hooked, read],
+        changed: vec![hooked, read],
+        gone,
+        earlier: 0,
         zone: 0,
     });
     pumped(app, |a| a.clients[0].sessions.len() == 2);
@@ -2824,7 +3220,9 @@ fn needs_you_goes_to_each_waiting_agent_in_turn() {
     assert_eq!(app.active_tab().map(|t| t.pane), Some(b));
     wire.event(Event::Agents {
         panes: vec![Some(Turn::Working), Some(Turn::Working)],
-        sessions: Vec::new(),
+        changed: Vec::new(),
+        gone: Vec::new(),
+        earlier: 0,
         zone: 0,
     });
     pumped(&mut app, |a| a.clients[0].view(b).is_some_and(|v| v.turn == Some(Turn::Working)));
@@ -3414,9 +3812,89 @@ fn ringframe_folds_its_rules_after_five() {
     let dom = app.render();
     assert!(dom.find_layer("rule r4").is_some() && dom.find_layer("rule r5").is_none());
     assert_eq!(dom.find_layer("more rules").unwrap().all_text(), "+ 3 more");
-    app.dispatch(SheetAct::AllRules);
+    app.dispatch(SheetAct::AllRules("practices/software-development".into()));
     let dom = app.render();
     assert!(dom.find_layer("rule r7").is_some() && dom.find_layer("more rules").is_none());
+}
+
+/// Each practice turned on lists its rules below the base practice's, with
+/// the same controls, each change written to that practice's catalog; one
+/// turned off lists none.
+#[test]
+fn ringframe_lists_the_rules_of_each_practice_turned_on() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    let trading = "practices/autonomous-trading";
+    app.clients[0].config = Some(json!({"machine": {"ringframe": {"deltas": {
+        trading: {"domain": "autonomous-trading"}}}}, "project": null}));
+    app.dispatch(WindowAct::OpenSettings);
+    app.dispatch(SheetAct::SettingsTab(SettingsTab::RingFrame));
+    let (id, _) = wire.call();
+    let many: Vec<Value> = (0..8)
+        .map(|i| json!({"id": format!("trading.r{i}"), "label": format!("R{i}"), "source": "shipped"}))
+        .collect();
+    wire.answer(
+        id,
+        json!({
+        "domains": [{"domain": "software-development", "base": true},
+                    {"domain": "autonomous-trading", "base": false},
+                    {"domain": "machine-learning", "base": false}],
+        "catalogs": [
+            {"catalog": "practices/software-development", "entries": [
+                {"id": "practice.kiss", "label": "KISS", "source": "shipped"},
+                {"id": "own.1", "label": "Mine", "source": "weft"}]},
+            {"catalog": trading, "entries": many},
+            {"catalog": "practices/machine-learning", "entries": [
+                {"id": "ml.baseline", "label": "Baseline", "source": "shipped"}]}]}),
+    );
+    pumped(&mut app, |a| {
+        a.clients[0].read.contains_key(&crate::daemon::Then::Rules { project: false })
+    });
+    let dom = app.render();
+    let head = dom.find_layer(&format!("rules head {trading}")).expect("its rules' head");
+    assert!(head.all_text().contains("AUTONOMOUS TRADING · RULES"), "{}", head.all_text());
+    assert!(dom.find_layer("rules practices/machine-learning").is_none(), "turned off");
+    let listed = dom.find_layer(&format!("rules {trading}")).expect("its rules");
+    assert!(listed.find_layer("rule trading.r4").is_some());
+    assert!(listed.find_layer("rule trading.r5").is_none(), "folded after five");
+    let base = dom.find_layer("rules practices/software-development").unwrap();
+    assert!(base.find_layer("more rules").is_none(), "the base's own fold");
+
+    app.dispatch(SheetAct::AllRules(trading.into()));
+    let dom = app.render();
+    let listed = dom.find_layer(&format!("rules {trading}")).unwrap();
+    assert!(
+        listed.find_layer("rule trading.r7").is_some() && listed.find_layer("more rules").is_none()
+    );
+
+    // Its switch writes its own catalog.
+    let switch = listed.find_layer("rule trading.r0").unwrap().find_layer("rule switch").unwrap();
+    app.dispatch(switch.action.clone().expect("a switch"));
+    let call = loop {
+        match wire.call() {
+            (_, Call::Read { .. }) => continue,
+            (_, call) => break call,
+        }
+    };
+    let k = |parts: &[&str]| parts.iter().map(|p| p.to_string()).collect::<Vec<_>>();
+    assert_eq!(
+        call,
+        Call::ConfigSet {
+            scope: "machine".into(),
+            key: k(&["ringframe", "deltas", trading, "entries"]),
+            value: Some(json!([{"id": "trading.r0", "enabled": false}])),
+        }
+    );
+    // A rule of the person's own goes into that practice, its id one no
+    // practice holds, typed under its rules only.
+    let add = head.find_layer("add rule").unwrap().action.clone().expect("+ Add a rule");
+    app.dispatch(add);
+    let editing = app.setting_editing.clone().map(|(_, k)| k);
+    assert_eq!(editing, Some(k(&["ringframe", "deltas", trading, "entries", "own.2", "text"])));
+    let dom = app.render();
+    let listed = dom.find_layer(&format!("rules {trading}")).unwrap();
+    assert!(listed.find_layer("setting value").is_some(), "typed here");
+    let base = dom.find_layer("rules practices/software-development").unwrap();
+    assert!(base.find_layer("setting value").is_none(), "not under the base's");
 }
 
 /// RingFrame would not say its rules: the sheet says why, asks nothing more
@@ -3466,7 +3944,8 @@ fn ringframe_shows_the_rules_and_writes_each_change_as_ringframe_reads_it() {
             pane: None,
             lines: None,
             before: None,
-            after: None
+            after: None,
+            q: None,
         }
     );
     wire.answer(id, json!({

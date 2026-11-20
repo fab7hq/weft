@@ -1,8 +1,8 @@
 //! The desktop's window: its event loop, the threads that connect to the
 //! daemon and take what it sends, and the element tree drawn with GPUI.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -13,9 +13,10 @@ use ::gpui::{
     Animation, AnimationExt, AnyElement, App, Bounds, ClipboardItem, Context, Div, ElementId,
     EntityInputHandler, FocusHandle, Focusable, FontWeight, IntoElement, KeyDownEvent, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, PathPromptOptions, Pixels, Point,
-    Render, Rgba, ScrollHandle, ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled,
-    SystemNotification, UTF16Selection, Window, WindowBounds as GpuiWindowBounds, WindowOptions,
-    div as gpui_div, point, prelude::*, px, relative, rgba, size,
+    Render, Rgba, ScrollHandle, ScrollWheelEvent, SharedString, StatefulInteractiveElement,
+    StyleRefinement, Styled, SystemNotification, UTF16Selection, WeakEntity, Window,
+    WindowBounds as GpuiWindowBounds, WindowOptions, div as gpui_div, point, prelude::*, px,
+    relative, rgba, size,
 };
 use anyhow::Result;
 use weft_core::state::WindowBounds;
@@ -28,6 +29,7 @@ use crate::gpui::{Element, palette};
 use crate::keys::{self, Shortcut};
 use crate::panes_view::TabDrag;
 use crate::terminal_input::{self, Act, Button, Held};
+use crate::terminal_view::TerminalView;
 use crate::text_field::{Outcome, TextField};
 use crate::text_input::{self as field_view, FieldElement, Look, Painted};
 
@@ -74,6 +76,8 @@ pub(crate) struct SharedState {
     instance: Option<crate::instance::Listening>,
     /// The window is to come in front: another start asked for it.
     raise: bool,
+    /// The panes whose terminal had output since the window last looked.
+    output: Vec<(PathBuf, u32)>,
 }
 
 #[derive(Clone, Copy)]
@@ -98,6 +102,128 @@ struct GpuiDesktopView {
     painted: Rc<RefCell<Painted>>,
     /// Each scroll that reads more above its top, and its first child's id.
     scrolls: RefCell<HashMap<String, (ScrollHandle, Option<String>)>>,
+    /// The element tree last built from the app.
+    last: Option<Element>,
+    /// The view was told something changed since it last drew.
+    stale: bool,
+    /// Only terminals were told to draw again since the view last drew.
+    output_only: bool,
+    /// This draw builds the tree from the app again.
+    rebuilding: Cell<bool>,
+    /// How many times the tree was built from the app, for a test.
+    builds: usize,
+    /// Each pane's terminal, a view of its own.
+    terminals: RefCell<HashMap<(PathBuf, u32), ::gpui::Entity<TerminalView>>>,
+    /// The boxes that hold no terminal and take their size from around
+    /// them, each a view of its own, by their place in the tree.
+    parts: RefCell<HashMap<String, ::gpui::Entity<Part>>>,
+    /// The terminals and parts this build drew.
+    kept: RefCell<Kept>,
+}
+
+/// The terminals and parts one build drew; the rest are dropped.
+#[derive(Default)]
+struct Kept {
+    terminals: HashSet<(PathBuf, u32)>,
+    parts: HashSet<String>,
+}
+
+/// A box of the window that holds no terminal and whose size is set by the
+/// boxes around it, not by what it holds. It is laid out and drawn again
+/// only when the window was told something changed, so a terminal's output
+/// leaves it as it was.
+struct Part {
+    desktop: WeakEntity<GpuiDesktopView>,
+    /// The box, filling the place the window gives it.
+    el: Element,
+    text: InheritedText,
+    path: String,
+    /// How many times it was drawn, for a test.
+    drawn: usize,
+}
+
+impl Render for Part {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.drawn += 1;
+        let Some(desktop) = self.desktop.upgrade() else { return gpui_div().into_any_element() };
+        let (el, text, path) = (&self.el, self.text, &self.path);
+        desktop.update(cx, |view, cx| view.build_gpui_element(el, text, false, path, None, cx))
+    }
+}
+
+/// Whether the box an element sits in has a width and a height the layout
+/// gives it, and how it lays its children out.
+#[derive(Clone, Copy)]
+struct Room {
+    width: bool,
+    height: bool,
+    flex: bool,
+    row: bool,
+}
+
+/// The styles that place a box and size it in its parent; the rest draw it
+/// and lay its children out.
+const PLACING: &[&str] = &[
+    "width",
+    "height",
+    "min-width",
+    "min-height",
+    "max-width",
+    "max-height",
+    "flex",
+    "flex-shrink",
+    "align-self",
+    "position",
+    "inset",
+    "top",
+    "left",
+    "right",
+    "bottom",
+    "z-index",
+];
+
+/// Whether an element's width and height are set by the box it sits in and
+/// its own styles, never by what it holds: `(width, height)`.
+fn sized(el: &Element, parent_is_row: bool, parent: Room) -> (bool, bool) {
+    let get = |k: &str| el.styles.iter().find(|(s, _)| s == k).map(|(_, v)| v.as_str());
+    let stretched = get("align-self") == Some("stretch");
+    // As the window draws it: a stretched box fills its parent across.
+    let width_set = |has: bool| match get("width") {
+        Some(v) if v.ends_with("px") => true,
+        Some("100%") => has,
+        Some(_) => false,
+        None => stretched && !parent_is_row && has,
+    };
+    let height_set = |has: bool| match get("height") {
+        Some(v) if v.ends_with("px") => true,
+        Some("100%") => has,
+        Some(_) => false,
+        None => stretched && parent_is_row && has,
+    };
+    let (w, h) = (width_set(parent.width), height_set(parent.height));
+    if get("position") == Some("absolute") {
+        return match get("inset") {
+            Some("0") => (parent.width, parent.height),
+            _ => (w, h),
+        };
+    }
+    if !parent.flex {
+        // A block fills its parent's width; its height is what it holds.
+        return (w || (get("width").is_none() && parent.width), h);
+    }
+    // `flex: 1` grows from nothing and may shrink to nothing: its share of
+    // the room left, whatever it holds.
+    let grows = get("flex").is_some_and(|v| v.starts_with('1'));
+    let (main, cross) =
+        if parent.row { (parent.width, parent.height) } else { (parent.height, parent.width) };
+    let main = grows && main;
+    let cross = stretched && cross;
+    if parent.row { (w || main, h || cross) } else { (w || cross, h || main) }
+}
+
+/// Whether a pane's terminal is in an element or under it.
+fn holds_terminal(el: &Element) -> bool {
+    el.tag == "terminal" || el.children.iter().any(holds_terminal)
 }
 
 impl Focusable for GpuiDesktopView {
@@ -238,6 +364,7 @@ pub fn run_interactive(mut app: WeftDesktopApp) -> Result<()> {
         grids: HashMap::new(),
         instance: None,
         raise: false,
+        output: Vec::new(),
     }));
 
     // An app started after this one hands its project over and ends.
@@ -268,8 +395,12 @@ pub fn run_interactive(mut app: WeftDesktopApp) -> Result<()> {
                 if guard.app.quit_requested {
                     break;
                 }
-                if guard.app.pump() {
-                    guard.dirty = true;
+                let redraw = guard.app.pump();
+                guard.dirty |= redraw.window;
+                for t in redraw.terminals {
+                    if !guard.output.contains(&t) {
+                        guard.output.push(t);
+                    }
                 }
             }
             write_state(&pump_shared);
@@ -308,10 +439,10 @@ pub fn run_interactive(mut app: WeftDesktopApp) -> Result<()> {
             },
             move |window, cx| {
                 cx.new(|cx| {
-                    let focus_handle = cx.focus_handle();
-                    focus_handle.focus(window, cx);
+                    let view = GpuiDesktopView::new(Arc::clone(&view_shared), window, cx);
 
                     cx.observe_window_bounds(window, |this: &mut GpuiDesktopView, window, _cx| {
+                        this.stale = true;
                         let wb = window.bounds();
                         // Each pane's terminal sizes itself from its own rectangle.
                         if let Ok(mut guard) = this.shared.lock() {
@@ -347,14 +478,15 @@ pub fn run_interactive(mut app: WeftDesktopApp) -> Result<()> {
                     cx.spawn(async move |this, cx| {
                         loop {
                             cx.background_executor().timer(Duration::from_millis(30)).await;
-                            let (dirty, quit, notices, raise) = match poll_shared.lock() {
+                            let (dirty, output, quit, notices, raise) = match poll_shared.lock() {
                                 Ok(mut guard) => (
                                     std::mem::take(&mut guard.dirty),
+                                    std::mem::take(&mut guard.output),
                                     guard.app.quit_requested,
                                     guard.app.take_notices(),
                                     std::mem::take(&mut guard.raise),
                                 ),
-                                Err(_) => (false, true, Vec::new(), false),
+                                Err(_) => (false, Vec::new(), true, Vec::new(), false),
                             };
                             if raise {
                                 cx.update(|cx| cx.activate(true));
@@ -373,21 +505,22 @@ pub fn run_interactive(mut app: WeftDesktopApp) -> Result<()> {
                                 cx.update(|cx| cx.quit());
                                 break;
                             }
-                            if dirty && this.update(cx, |_, cx| cx.notify()).is_err() {
+                            // Output alone draws its panes' terminals, not the window.
+                            let drawn = if dirty {
+                                this.update(cx, |_, cx| cx.notify())
+                            } else if !output.is_empty() {
+                                this.update(cx, |view, cx| view.draw_terminals(&output, cx))
+                            } else {
+                                Ok(())
+                            };
+                            if drawn.is_err() {
                                 break;
                             }
                         }
                     })
                     .detach();
 
-                    GpuiDesktopView {
-                        shared: view_shared,
-                        focus_handle,
-                        wheel_accum: 0.0,
-                        selecting: None,
-                        painted: Rc::default(),
-                        scrolls: RefCell::default(),
-                    }
+                    view
                 })
             },
         );
@@ -404,6 +537,49 @@ pub fn run_interactive(mut app: WeftDesktopApp) -> Result<()> {
 }
 
 impl GpuiDesktopView {
+    /// The view over `shared`, with the keyboard.
+    fn new(shared: Arc<Mutex<SharedState>>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let focus_handle = cx.focus_handle();
+        focus_handle.focus(window, cx);
+        // Told something changed: the tree is built again, and every part of
+        // it drawn again with it.
+        cx.observe_self(|this: &mut Self, cx| {
+            this.stale = true;
+            let parts: Vec<_> = this.parts.borrow().values().cloned().collect();
+            for part in parts {
+                part.update(cx, |_, cx| cx.notify());
+            }
+        })
+        .detach();
+        GpuiDesktopView {
+            shared,
+            focus_handle,
+            wheel_accum: 0.0,
+            selecting: None,
+            painted: Rc::default(),
+            scrolls: RefCell::default(),
+            last: None,
+            stale: true,
+            output_only: false,
+            rebuilding: Cell::new(true),
+            builds: 0,
+            terminals: RefCell::default(),
+            parts: RefCell::default(),
+            kept: RefCell::default(),
+        }
+    }
+
+    /// The terminals of these panes draw again, and only they: what the
+    /// window shows around them did not change.
+    fn draw_terminals(&mut self, panes: &[(PathBuf, u32)], cx: &mut Context<Self>) {
+        let shown: Vec<_> =
+            panes.iter().filter_map(|p| self.terminals.borrow().get(p).cloned()).collect();
+        for terminal in &shown {
+            terminal.update(cx, |_, cx| cx.notify());
+        }
+        self.output_only |= !shown.is_empty();
+    }
+
     /// Ask the system for a folder or a file, then hand it to `then`.
     fn pick(
         &self,
@@ -784,23 +960,31 @@ impl GpuiDesktopView {
         // What sits inside the field beside its words.
         for (idx, child) in el.children.iter().enumerate() {
             let child_path = format!("{path}/{idx}");
-            field_box =
-                field_box.child(self.build_gpui_element(child, text_style, true, &child_path, cx));
+            field_box = field_box.child(self.build_gpui_element(
+                child,
+                text_style,
+                true,
+                &child_path,
+                None,
+                cx,
+            ));
         }
         field_box.into_any_element()
     }
 
     /// An element as GPUI draws it; one with a `z-index` is painted after
-    /// everything else, over what follows it, where it is laid out.
+    /// everything else, over what follows it, where it is laid out. `room`
+    /// is the box it sits in, while its parts are still to be found.
     fn build_gpui_element(
         &self,
         el: &Element,
         parent_text: InheritedText,
         parent_is_row: bool,
         path: &str,
+        room: Option<Room>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let built = self.build_gpui_box(el, parent_text, parent_is_row, path, cx);
+        let built = self.build_gpui_box(el, parent_text, parent_is_row, path, room, cx);
         match el.styles.iter().find(|(k, _)| k == "z-index") {
             Some((_, z)) => {
                 ::gpui::deferred(built).with_priority(z.parse().unwrap_or(1)).into_any_element()
@@ -815,6 +999,7 @@ impl GpuiDesktopView {
         parent_text: InheritedText,
         parent_is_row: bool,
         path: &str,
+        room: Option<Room>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         // Only while its scroll is away from its end.
@@ -822,6 +1007,15 @@ impl GpuiDesktopView {
             && self.scrolls.borrow().get(key).is_none_or(|(h, _)| at_end(h))
         {
             return gpui_div().into_any_element();
+        }
+        // The size this box gets from around it, when it gets one.
+        let own = room.map(|r| sized(el, parent_is_row, r));
+        if own == Some((true, true))
+            && el.field.is_none()
+            && !el.children.is_empty()
+            && !holds_terminal(el)
+        {
+            return self.part(el, parent_text, parent_is_row, path, cx);
         }
         if el.tag == "img" {
             if el.styles.iter().any(|(k, v)| k == "animation" && v == "spin") {
@@ -927,8 +1121,7 @@ impl GpuiDesktopView {
                 (attr("data-project"), attr("data-pane").and_then(|p| p.parse().ok()))
             {
                 let project = PathBuf::from(project);
-                let shared = Arc::clone(&self.shared);
-                let view = crate::terminal_view::terminal(shared, project.clone(), pane);
+                let view = self.terminal_view(&project, pane, cx);
                 return self
                     .terminal_pointer(d.size_full(), project, pane, cx)
                     .child(view)
@@ -991,9 +1184,22 @@ impl GpuiDesktopView {
             }
         }
 
+        // The room this box gives its children.
+        let flex =
+            el.styles.iter().any(|(k, v)| (k == "display" && v == "flex") || k == "flex-direction")
+                || el.children.iter().any(|c| c.tag == "span");
+        let column = el.styles.iter().any(|(k, v)| k == "flex-direction" && v == "column");
+        let inner = own.map(|(width, height)| Room { width, height, flex, row: flex && !column });
         for (idx, child) in el.children.iter().enumerate() {
             let child_path = format!("{path}/{idx}");
-            d = d.child(self.build_gpui_element(child, text_style, child_is_row, &child_path, cx));
+            d = d.child(self.build_gpui_element(
+                child,
+                text_style,
+                child_is_row,
+                &child_path,
+                inner,
+                cx,
+            ));
         }
 
         // A tab dragged over: shown where it would go, and taken there.
@@ -1071,8 +1277,94 @@ impl GpuiDesktopView {
             let id = ElementId::Name(SharedString::from(format!("pulse:{path}")));
             return d.with_animation(id, pulse, |d, t| d.opacity(t)).into_any_element();
         }
+        // Still working: its stripe runs along the bar, again and again.
+        if el.styles.iter().any(|(k, v)| k == "animation" && v == "slide") {
+            let slide = Animation::new(Duration::from_millis(1800))
+                .repeat()
+                .with_easing(::gpui::ease_in_out);
+            let id = ElementId::Name(SharedString::from(format!("slide:{path}")));
+            return d
+                .with_animation(id, slide, |d, t| d.left(::gpui::relative(t * 1.3 - 0.3)))
+                .into_any_element();
+        }
 
         d.into_any_element()
+    }
+
+    /// The view of a pane's terminal, the same from draw to draw.
+    fn terminal_view(
+        &self,
+        project: &std::path::Path,
+        pane: u32,
+        cx: &mut Context<Self>,
+    ) -> ::gpui::Entity<TerminalView> {
+        let key = (project.to_path_buf(), pane);
+        self.kept.borrow_mut().terminals.insert(key.clone());
+        if let Some(view) = self.terminals.borrow().get(&key) {
+            return view.clone();
+        }
+        let shared = Arc::clone(&self.shared);
+        let view = cx.new(|_| TerminalView::new(shared, project.to_path_buf(), pane));
+        self.terminals.borrow_mut().insert(key, view.clone());
+        view
+    }
+
+    /// A box that holds no terminal and takes its size from around it, as a
+    /// view of its own: laid out in its place from its own placing styles,
+    /// and drawn inside from the rest.
+    fn part(
+        &self,
+        el: &Element,
+        parent_text: InheritedText,
+        parent_is_row: bool,
+        path: &str,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut place = gpui_div();
+        for (k, v) in el.styles.iter().filter(|(k, _)| PLACING.contains(&k.as_str())) {
+            place = style(place, k, v).unwrap_or_else(|d| d);
+        }
+        let has = |k: &str| el.styles.iter().any(|(s, _)| s == k);
+        if el.styles.iter().any(|(k, v)| k == "align-self" && v == "stretch") {
+            if parent_is_row {
+                if !has("height") {
+                    place = place.h_full();
+                }
+            } else if !has("width") {
+                place = place.w_full();
+            }
+        }
+        let placing: StyleRefinement = Styled::style(&mut place).clone();
+
+        self.kept.borrow_mut().parts.insert(path.to_string());
+        let existing = self.parts.borrow().get(path).cloned();
+        let part = match existing {
+            // Touched on every draw, built or not: the window is told of a
+            // part only when its last draw touched it.
+            Some(part) => {
+                let filled = self.rebuilding.get().then(|| filling(el));
+                part.update(cx, |p, _| {
+                    if let Some(el) = filled {
+                        (p.el, p.text) = (el, parent_text);
+                    }
+                });
+                part
+            }
+            None => {
+                let desktop = cx.weak_entity();
+                let (el, path) = (filling(el), path.to_string());
+                let part = cx.new(|_| Part {
+                    desktop,
+                    el,
+                    text: parent_text,
+                    path: path.clone(),
+                    drawn: 0,
+                });
+                self.parts.borrow_mut().insert(path, part.clone());
+                part
+            }
+        };
+        part.cached(placing).into_any_element()
     }
 
     /// The scroll of an element that reads more above its top, kept from
@@ -1106,6 +1398,15 @@ impl GpuiDesktopView {
         }
         handle.clone()
     }
+}
+
+/// A part's box as drawn inside its place: every style but those that place
+/// it, filling the place.
+fn filling(el: &Element) -> Element {
+    let mut inner = el.clone();
+    inner.styles.retain(|(k, _)| !PLACING.contains(&k.as_str()));
+    inner.ends = None;
+    inner.style("width", "100%").style("height", "100%")
 }
 
 /// A dragged tab, under the pointer: its status and name.
@@ -1160,6 +1461,7 @@ pub(crate) const STYLES: &[&str] = &[
     "background",
     "border",
     "border-bottom",
+    "border-color",
     "border-left",
     "border-radius",
     "border-right",
@@ -1184,10 +1486,15 @@ pub(crate) const STYLES: &[&str] = &[
     "max-width",
     "min-height",
     "min-width",
+    "opacity",
     "overflow",
     "overflow-x",
     "overflow-y",
     "padding",
+    "padding-bottom",
+    "padding-left",
+    "padding-right",
+    "padding-top",
     "position",
     "right",
     "text-align",
@@ -1290,6 +1597,18 @@ fn style(d: Div, k: &str, v: &str) -> std::result::Result<Div, Div> {
             let (t, r, b, l) = parse_box_edges(v);
             d.pt(px(t)).pr(px(r)).pb(px(b)).pl(px(l))
         }
+        "padding-top" => d.pt(px(n.unwrap_or(0.0))),
+        "padding-right" => d.pr(px(n.unwrap_or(0.0))),
+        "padding-bottom" => d.pb(px(n.unwrap_or(0.0))),
+        "padding-left" => d.pl(px(n.unwrap_or(0.0))),
+        "opacity" => match v.parse::<f32>() {
+            Ok(o) => d.opacity(o.clamp(0.0, 1.0)),
+            Err(_) => d,
+        },
+        "border-color" => match parse_border_color(v) {
+            Some(c) => d.border_color(c),
+            None => d,
+        },
         "background" if v == "transparent" => d,
         "background" => d.bg(parse_color(v)),
         "border-radius" => match n {
@@ -1469,10 +1788,19 @@ impl EntityInputHandler for GpuiDesktopView {
 
 impl Render for GpuiDesktopView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let root_el = match self.shared.lock() {
-            Ok(guard) => guard.app.render(),
-            Err(_) => crate::gpui::div(),
-        };
+        // Drawn for terminals' output alone, the tree and its parts are as
+        // they were; told anything else, both are built again.
+        let output_only = std::mem::take(&mut self.output_only);
+        let rebuild = std::mem::take(&mut self.stale) || !output_only || self.last.is_none();
+        if rebuild {
+            self.last = Some(match self.shared.lock() {
+                Ok(guard) => guard.app.render(),
+                Err(_) => crate::gpui::div(),
+            });
+            self.builds += 1;
+            *self.kept.borrow_mut() = Default::default();
+        }
+        self.rebuilding.set(rebuild);
         let root_text = InheritedText {
             color: parse_color(palette::TEXT),
             font_size: 13.0,
@@ -1483,7 +1811,7 @@ impl Render for GpuiDesktopView {
             ellipsis: false,
             pre: false,
         };
-        gpui_div()
+        let drawn = gpui_div()
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::on_key_down))
             .size_full()
@@ -1491,8 +1819,17 @@ impl Render for GpuiDesktopView {
             .flex_col()
             .bg(parse_color(palette::CANVAS))
             .text_color(parse_color(palette::TEXT))
-            .font_family(crate::fonts::SANS)
-            .child(self.build_gpui_element(&root_el, root_text, false, "0", cx))
+            .font_family(crate::fonts::SANS);
+        let window = Room { width: true, height: true, flex: true, row: false };
+        let root_el = self.last.as_ref().expect("built above");
+        let root = self.build_gpui_element(root_el, root_text, false, "0", Some(window), cx);
+        if rebuild {
+            // What this build did not draw is gone.
+            let kept = self.kept.borrow();
+            self.terminals.borrow_mut().retain(|k, _| kept.terminals.contains(k));
+            self.parts.borrow_mut().retain(|k, _| kept.parts.contains(k));
+        }
+        drawn.child(root)
     }
 }
 
@@ -1623,6 +1960,7 @@ mod tests {
             grids: HashMap::new(),
             instance: None,
             raise: false,
+            output: Vec::new(),
         });
         let opened = hand_over(&shared, || {
             assert_eq!(crate::app::load_state_from_home(tmp.path()), want, "written before");
@@ -1658,20 +1996,11 @@ mod tests {
             grids: HashMap::new(),
             instance: None,
             raise: false,
+            output: Vec::new(),
         }));
         let view_shared = Arc::clone(&shared);
-        let (view, cx) = cx.add_window_view(|window, cx| {
-            let focus_handle = cx.focus_handle();
-            focus_handle.focus(window, cx);
-            GpuiDesktopView {
-                shared: view_shared,
-                focus_handle,
-                wheel_accum: 0.0,
-                selecting: None,
-                painted: Rc::default(),
-                scrolls: RefCell::default(),
-            }
-        });
+        let (view, cx) =
+            cx.add_window_view(|window, cx| GpuiDesktopView::new(view_shared, window, cx));
         cx.run_until_parked();
         (tmp, shared, view, wire, cx)
     }
@@ -1690,6 +2019,94 @@ mod tests {
     /// This system's key for `edit`, as a test types it.
     fn key(edit: Edit) -> &'static str {
         weft_core::text_keys::keys(System::this()).find(|(_, e)| *e == edit).expect("a key").0
+    }
+
+    /// Take what the daemon sent until something is to be drawn.
+    fn pumped(shared: &Arc<Mutex<SharedState>>) -> crate::daemon::Redraw {
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let redraw = shared.lock().unwrap().app.pump();
+            if redraw.window || !redraw.terminals.is_empty() {
+                return redraw;
+            }
+            assert!(std::time::Instant::now() < deadline, "nothing came");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// A pane's output draws its terminal again and nothing else: the tree
+    /// is not built again and no part of the window is laid out or drawn
+    /// again. Anything else builds and draws all of it, as before.
+    #[test]
+    fn a_panes_output_draws_its_terminal_and_not_the_window() {
+        windowed(|cx| {
+            let (_tmp, shared, view, mut wire, cx) = opened_view(cx);
+            let key = {
+                let g = shared.lock().unwrap();
+                let tab = &g.app.state.panes.groups[0].tabs[0];
+                (tab.project.clone(), tab.pane)
+            };
+            let counts = |cx: &mut VisualTestContext| {
+                view.read_with(cx, |v, cx| {
+                    let parts: usize = v.parts.borrow().values().map(|p| p.read(cx).drawn).sum();
+                    let terminal = v.terminals.borrow()[&key].read(cx).drawn;
+                    (v.builds, parts, terminal)
+                })
+            };
+            let (builds, parts, terminal) = counts(cx);
+            assert!(parts > 0, "the tree and the bars are parts of their own");
+
+            wire.event(weft_proto::Event::Output {
+                pane: key.1,
+                seq: 1_000,
+                bytes: b"hello from the agent".to_vec(),
+            });
+            let redraw = pumped(&shared);
+            assert_eq!(
+                redraw,
+                crate::daemon::Redraw { window: false, terminals: vec![key.clone()] },
+                "output alone redraws its terminal"
+            );
+            view.update(cx, |v, cx| v.draw_terminals(&redraw.terminals, cx));
+            cx.run_until_parked();
+            let after = counts(cx);
+            assert_eq!((after.0, after.1), (builds, parts), "nothing built or laid out again");
+            assert!(after.2 > terminal, "the terminal drew again");
+            let shown = shared.lock().unwrap().app.pane_view(&key.0, key.1).unwrap().contents();
+            assert!(shown.contains("hello from the agent"), "{shown}");
+
+            // Anything else: the tree is built again and every part drawn again.
+            view.update(cx, |_, cx| cx.notify());
+            cx.run_until_parked();
+            let told = counts(cx);
+            assert!(told.0 > after.0 && told.1 > after.1, "{after:?} then {told:?}");
+        });
+    }
+
+    /// Output that takes a pane scrolled back to its end hides the way back
+    /// to the end, so it redraws the window.
+    #[test]
+    fn output_that_ends_a_panes_scroll_back_redraws_the_window() {
+        let (_tmp, mut app, mut wire) = wired_app();
+        let pane = start(&mut app, &mut wire, "claude");
+        let root = app.clients[0].root.clone();
+        let lines: String = (0..100).map(|i| format!("line {i}\r\n")).collect();
+        wire.event(weft_proto::Event::Output { pane, seq: 1, bytes: lines.into_bytes() });
+        let shared = Arc::new(Mutex::new(SharedState {
+            app,
+            dirty: false,
+            grids: HashMap::new(),
+            instance: None,
+            raise: false,
+            output: Vec::new(),
+        }));
+        assert_eq!(pumped(&shared).terminals, vec![(root.clone(), pane)]);
+        shared.lock().unwrap().app.pane_view_mut(&root, pane).unwrap().scroll(5);
+        // The program takes the other screen, which has no history.
+        wire.event(weft_proto::Event::Output { pane, seq: 2, bytes: b"\x1b[?1049h".to_vec() });
+        let redraw = pumped(&shared);
+        assert!(redraw.window, "the button over the pane goes");
+        assert_eq!(redraw.terminals, vec![(root, pane)]);
     }
 
     fn message(shared: &Arc<Mutex<SharedState>>) -> String {
@@ -1958,6 +2375,54 @@ mod tests {
         });
     }
 
+    /// A finding with a very long path and line, in the Eval dialog of a
+    /// 960-px window: its words and its line end inside its box, and its
+    /// button stays whole within it.
+    #[test]
+    fn a_long_finding_stays_inside_the_eval_dialog() {
+        windowed(|cx| {
+            let (_tmp, shared, cx) = opened(cx);
+            let long = format!("{}/", "a-folder-with-a-long-name".repeat(20));
+            {
+                let mut g = shared.lock().unwrap();
+                let finding = serde_json::json!({
+                    "kind": "data_bulk", "path": long, "files": 13_708,
+                    "kinds_of_files": [["json", 13_708]],
+                    "fix": {"file": ".gitattributes",
+                            "line": format!("{long}** linguist-generated=true")},
+                });
+                let reads = serde_json::json!({"reads": {
+                    "since": "ask", "when": "2026-11-08T09:12:00Z", "commits": 52,
+                    "files": 13_852, "skipped": {}, "large": false, "findings": [finding],
+                }});
+                g.app.clients[0].waiting.push(crate::daemon::Staged {
+                    id: "p1".into(),
+                    pane: u32::MAX,
+                    what: "Eval this work?".into(),
+                    why: String::new(),
+                    payload: serde_json::to_vec(&reads).unwrap(),
+                    sends: None,
+                    go: None,
+                });
+                g.dirty = true;
+            }
+            cx.simulate_resize(size(px(960.0), px(640.0)));
+            for _ in 0..2 {
+                cx.update(|window, _| window.refresh());
+                cx.run_until_parked();
+            }
+            let mut at = |name: &'static str| {
+                cx.debug_bounds(name).unwrap_or_else(|| panic!("{name} was not drawn"))
+            };
+            let (list, said, button) =
+                (at("findings"), at("finding said"), at("btn Mark as generated"));
+            assert!(list.right() <= px(960.0), "{list:?} inside the window");
+            assert!(said.right() <= button.left(), "{said:?} ends before {button:?}");
+            assert!(button.right() <= list.right(), "{button:?} inside {list:?}");
+            assert!(button.size.width > px(100.0), "the button whole: {button:?}");
+        });
+    }
+
     #[test]
     fn overflow_auto_or_scroll_scrolls_on_its_axis() {
         let axes = |k: &str, v: &str| scroll_axes(&[(k.to_string(), v.to_string())]);
@@ -1973,6 +2438,23 @@ mod tests {
             assert!(style(gpui_div(), k, "0").is_ok(), "{k}");
         }
         assert!(style(gpui_div(), "letter-spacing", "0").is_err(), "one it cannot draw");
+    }
+
+    /// One side's padding, a resting control's opacity and a border's own
+    /// colour are drawn, not dropped.
+    #[test]
+    fn a_sides_padding_opacity_and_a_border_colour_are_drawn() {
+        for (k, v) in [
+            ("padding-top", "14px"),
+            ("padding-right", "8px"),
+            ("padding-bottom", "2px"),
+            ("padding-left", "28px"),
+            ("opacity", "0.45"),
+            ("border-color", crate::gpui::palette::AMBER),
+        ] {
+            assert!(style(gpui_div(), k, v).is_ok(), "{k}: {v}");
+            assert!(STYLES.contains(&k), "{k} is listed");
+        }
     }
 
     #[test]

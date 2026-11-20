@@ -45,9 +45,13 @@ pub struct Project {
     work: weft_core::work::Work,
     /// The Eval record behind each check, as the daemon read it.
     records: Value,
-    /// The project's session index, and the Mac's distance from
-    /// UTC, in milliseconds.
+    /// The project's sessions weftd carries as they are (the running, those
+    /// panes hold, and the newest of today's), how many earlier ones it lists a page at a time, the
+    /// earlier ones a device has read so far, by id, and the Mac's distance
+    /// from UTC, in milliseconds.
     sessions: Vec<weft_core::sessions::Row>,
+    earlier: usize,
+    paged: HashMap<String, weft_core::sessions::Row>,
     zone: i64,
     /// What each harness is short of, by the daemon's word.
     readiness: Value,
@@ -113,6 +117,8 @@ impl Project {
             records: answer["records"].clone(),
             sessions: serde_json::from_value(answer["agents"]["sessions"].clone())
                 .unwrap_or_default(),
+            earlier: answer["agents"]["earlier"].as_u64().unwrap_or(0) as usize,
+            paged: HashMap::new(),
             zone: answer["agents"]["zone"].as_i64().unwrap_or(0),
             readiness: answer["readiness"].clone(),
             routing: Routing::opened(&answer["routing"]),
@@ -152,10 +158,15 @@ impl Project {
                 Some(p) => p.running = false,
                 None => return false,
             },
-            Event::Agents { panes, sessions, zone } => {
+            Event::Agents { panes, changed, gone, earlier, zone } => {
                 self.zone = *zone;
                 self.turns = panes.clone();
-                self.sessions = sessions.clone();
+                weft_core::sessions::apply(&mut self.sessions, changed, gone);
+                self.earlier = *earlier;
+                // A row read earlier that is carried now is the daemon's word.
+                for r in changed {
+                    self.paged.remove(&r.id);
+                }
             }
             Event::Units { units, records, work } => {
                 self.units = units.clone();
@@ -316,6 +327,7 @@ impl Project {
             panes: &self.panes,
             agents: &self.turns,
             sessions: &self.sessions,
+            earlier: self.earlier,
             work: &self.work,
             readiness: &ready,
             routing: &self.routing,
@@ -442,9 +454,10 @@ impl Project {
         Ok(serde_json::to_value(d).unwrap_or_default())
     }
 
-    /// One session of this project, as the index holds it.
+    /// One session of this project: one carried as it is, or an earlier
+    /// one a device has read.
     pub fn session_row(&self, id: &str) -> Option<&weft_core::sessions::Row> {
-        self.sessions.iter().find(|r| r.id == id)
+        self.sessions.iter().find(|r| r.id == id).or_else(|| self.paged.get(id))
     }
 
     /// A session as AGENTS sends it (remote.md §6 `Agent`).
@@ -455,6 +468,12 @@ impl Project {
     }
 
     /// An agent's turn, as its hooks reported it.
+    /// Whether an agent runs in this pane; an Eval, Seal or Undo dialog
+    /// is held by none.
+    pub fn holds(&self, pane: u32) -> bool {
+        self.panes.iter().any(|p| p.pane == pane)
+    }
+
     pub fn turn_of(&self, pane: u32) -> Option<Turn> {
         let i = self.panes.iter().position(|p| p.pane == pane)?;
         self.turns.get(i).copied().flatten()
@@ -594,6 +613,20 @@ impl Project {
         Ok(v)
     }
 
+    /// Whether a Seal's receipt still holds, from RingFrame's check of it:
+    /// the receipt checked, `holds`, and what no longer holds, in words.
+    pub fn receipt(&self, id: &str, checked: &Value) -> Result<Value, Refusal> {
+        let s = self
+            .work
+            .record
+            .seals
+            .iter()
+            .find(|s| s.id == id)
+            .ok_or(("no_seal", format!("{id} is no Seal here")))?;
+        let d = weft_core::offers::seal_detail(s, &[], &self.work.record, Some(checked));
+        Ok(json!({"receipt": d.receipt, "holds": d.holds, "broken": d.broken}))
+    }
+
     /// A session's Details (T11.5).
     pub fn session(&self, id: &str) -> Result<Value, Refusal> {
         let row = self.session_row(id).ok_or(("no_session", format!("{id} is no session here")))?;
@@ -646,14 +679,14 @@ impl Project {
         json!({"units": rows, "next": next})
     }
 
-    /// The earlier sessions, past the tree's, narrowed by `q` and grouped by
-    /// the Mac's date, a page at a time.
-    pub fn sessions(&self, q: Option<&str>, after: Option<&str>, now: i64) -> Value {
-        use weft_core::sessions::{Group, matches, split};
-        let found: Vec<Value> = split(&self.sessions)
-            .1
+    /// A page of the earlier sessions, as weftd answered `read` `sessions`
+    /// (narrowed by its `q`, after its cursor), grouped by the Mac's date;
+    /// each row kept, so a device can open or resume it.
+    pub fn sessions(&mut self, answer: &Value, now: i64) -> Value {
+        use weft_core::sessions::{Group, Row};
+        let read: Vec<Row> = serde_json::from_value(answer["rows"].clone()).unwrap_or_default();
+        let rows: Vec<Value> = read
             .iter()
-            .filter(|r| q.is_none_or(|q| matches(r, q)))
             .map(|r| {
                 let group = match Group::of(r.last, now, self.zone) {
                     Group::Today => "today",
@@ -665,9 +698,10 @@ impl Project {
                        "asks": r.asks, "at": r.last, "group": group})
             })
             .collect();
-        let total = found.len();
-        let (rows, next) = page(&found, after, |r| r["session"].as_str().unwrap_or_default());
-        json!({"total": total, "rows": rows, "next": next})
+        for r in read.into_iter().filter(|r| weft_core::sessions::is_id(&r.id)) {
+            self.paged.insert(r.id.clone(), r);
+        }
+        json!({"total": answer["total"], "rows": rows, "next": answer["next"]})
     }
 
     /// What a device's act asks the daemon (remote.md §6): an Ask to the
@@ -736,8 +770,9 @@ impl Project {
         {
             return Err(said(why));
         }
-        // An Ask can go into a new agent, of a harness this project starts.
-        let start = match m["start"].as_str().filter(|_| asking) {
+        // An Ask can go into a new agent, of a harness this project starts;
+        // an Eval is read by one.
+        let start = match m["start"].as_str().filter(|_| asking || act == Act::Eval) {
             Some(harness) => {
                 self.start(harness)?;
                 Some(harness.to_string())
@@ -1349,6 +1384,37 @@ mod tests {
         assert!(d.get("sections").is_none(), "no Eval or Seal section");
     }
 
+    /// A Seal's facts carry nothing of its receipt; RingFrame's check of it
+    /// says whether it holds, and what no longer does.
+    #[test]
+    fn a_seals_facts_say_nothing_of_its_receipt_until_it_is_checked() {
+        let mut p = opened();
+        let mut events = judged_events(&["ask_1"]);
+        events.push(json!({"type": "seal.created", "id": "sel_1", "time": "2026-10-08T10:06:00Z",
+            "actor": {"kind": "human", "id": "local-user"},
+            "links": [{"rel": "seals", "id": "ask_1"}, {"rel": "seals", "id": "evl_1"}],
+            "data": {"basis": {"asks": ["ask_1"]}, "disposition": "accepted"}}));
+        p.units[0].seal_id = Some("sel_1".into());
+        p.work = work_of(&p.units, &events);
+
+        let facts = p.seal("sel_1", None, None).unwrap();
+        assert_eq!(
+            (facts["decision"].clone(), facts["holds"].clone()),
+            (json!("accepted"), Value::Null)
+        );
+        let holds =
+            p.receipt("sel_1", &json!({"seal_id": "sel_1", "subject_matches": true})).unwrap();
+        assert_eq!(holds, json!({"receipt": "sel_1", "holds": true, "broken": []}));
+        let moved =
+            p.receipt("sel_1", &json!({"seal_id": "sel_1", "subject_matches": false})).unwrap();
+        assert_eq!(
+            moved,
+            json!({"receipt": "sel_1", "holds": false,
+                   "broken": ["the work has moved on since it was sealed"]})
+        );
+        assert_eq!(p.receipt("sel_9", &json!({})).unwrap_err().0, "no_seal");
+    }
+
     /// A unit of work's Details: its workflow and its acts.
     #[test]
     fn a_units_details_are_its_workflow() {
@@ -1414,26 +1480,22 @@ mod tests {
     }
 
     /// A large project: the tree carries Sealed and the earlier sessions as
-    /// counts, and stays under one WebSocket message; pages cover every row
-    /// once, in order; `q` narrows by title, harness and id.
+    /// counts, and stays under one WebSocket message; the earlier sessions
+    /// are weftd's pages, each row kept so a device can open or resume it.
     #[test]
     fn three_hundred_sessions_and_four_hundred_asks_travel_as_counts_and_pages() {
         use weft_core::sessions::{Row, State};
+        let row = |i: i64| {
+            let state = if i < 5 { State::Running } else { State::Ended };
+            let harness = if i % 2 == 0 { "claude" } else { "codex" };
+            let mut r = Row::of(harness, &format!("s{i:03}"), state, None, 10_000 - i);
+            r.title = Some(format!("work number {i}"));
+            r
+        };
         let mut p = opened();
-        p.sessions = (0..300)
-            .map(|i| {
-                let state = if i < 5 { State::Running } else { State::Ended };
-                let mut r = Row::of(
-                    if i % 2 == 0 { "claude" } else { "codex" },
-                    &format!("s{i:03}"),
-                    state,
-                    None,
-                    10_000 - i,
-                );
-                r.title = Some(format!("work number {i}"));
-                r
-            })
-            .collect();
+        // The daemon carries the running and today's, and counts the rest.
+        p.sessions = (0..8).map(row).collect();
+        p.earlier = 292;
         let mut events = Vec::new();
         for i in 0..400 {
             events.push(json!({"type": "ask.compiled", "id": format!("ask_{i:03}"), "time": "2026-10-08T10:00:00Z",
@@ -1458,25 +1520,22 @@ mod tests {
         );
         assert_eq!(tree["work"]["units"].as_array().map(Vec::len), Some(13));
 
-        let mut seen = Vec::new();
-        let mut after: Option<String> = None;
-        loop {
-            let page = p.sessions(None, after.as_deref(), 10_000);
-            assert_eq!(page["total"], 292);
-            seen.extend(
-                page["rows"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|r| r["session"].as_str().unwrap().to_string()),
-            );
-            match page["next"].as_str() {
-                Some(n) => after = Some(n.to_string()),
-                None => break,
-            }
-        }
-        let want: Vec<String> = (8..300).map(|i| format!("s{i:03}")).collect();
-        assert_eq!(seen, want, "every earlier session once, in order");
+        // A page as weftd answers it, as a device reads it.
+        let answer = json!({"total": 292, "next": "codex/s057",
+                            "rows": (8..58).map(row).collect::<Vec<_>>()});
+        let page = p.sessions(&answer, 10_000);
+        assert_eq!(
+            (page["total"].clone(), page["next"].clone()),
+            (json!(292), json!("codex/s057"))
+        );
+        assert_eq!(
+            page["rows"][0],
+            json!({"session": "s008", "harness": "claude",
+            "title": "work number 8", "asks": 0, "at": 9_992, "group": "today"})
+        );
+        assert_eq!(p.session_row("s057").map(|r| r.harness.as_str()), Some("codex"));
+        assert!(p.resume("codex", "s057").is_ok(), "an earlier session read is resumed");
+        assert!(p.session_row("s200").is_none(), "one never read");
         let mut sealed = Vec::new();
         let mut after: Option<String> = None;
         loop {
@@ -1495,9 +1554,5 @@ mod tests {
         }
         let want: Vec<String> = (0..387).rev().map(|i| format!("ask_{i:03}")).collect();
         assert_eq!(sealed, want, "every earlier sealed unit once, newest first");
-        let found = |q: &str| p.sessions(Some(q), None, 10_000)["total"].clone();
-        assert_eq!(found("number 29"), json!(11), "29 and 290–299");
-        assert_eq!(found("CODEX"), json!(146));
-        assert_eq!(found("s123"), json!(1));
     }
 }

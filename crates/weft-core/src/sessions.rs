@@ -262,13 +262,69 @@ pub fn index(
             (row.asks, row.title) = (*n, Some(latest.title.clone()));
         }
     }
-    rows.sort_by(|a, b| {
-        (b.state == State::Running)
-            .cmp(&(a.state == State::Running))
-            .then(b.last.cmp(&a.last))
-            .then(a.id.cmp(&b.id))
-    });
+    rows.sort_by(order);
     rows
+}
+
+/// The index's order: running first, then the rest, each newest first.
+pub fn order(a: &Row, b: &Row) -> std::cmp::Ordering {
+    (b.state == State::Running)
+        .cmp(&(a.state == State::Running))
+        .then(b.last.cmp(&a.last))
+        .then(a.id.cmp(&b.id))
+        .then(a.harness.cmp(&b.harness))
+        .then(a.pane.cmp(&b.pane))
+}
+
+impl Row {
+    /// What names this row from one list to the next: its harness and
+    /// session, or, for a pane whose session is not named yet, its pane.
+    pub fn key(&self) -> String {
+        match (self.id.is_empty(), self.pane) {
+            (true, Some(pane)) => format!("{}/pane {pane}", self.harness),
+            _ => format!("{}/{}", self.harness, self.id),
+        }
+    }
+}
+
+/// How many of today's ended sessions a project's list carries as they are.
+/// A day of thousands of sessions keeps the list small: the older ones of
+/// the day are listed a page at a time with the earlier sessions.
+pub const TODAY_ENDED: usize = 20;
+
+/// How many earlier sessions one page lists.
+pub const PAGE: usize = 50;
+
+/// The rows a project's list carries as they are, from `rows` in the
+/// index's order: every running one and every one a pane holds, then the
+/// newest [`TODAY_ENDED`] of the rest last used today on the Mac's calendar.
+/// Every other row is earlier, listed a page at a time.
+pub fn carried(rows: &[Row], now: i64, offset: i64) -> Vec<Row> {
+    let mut ended = 0;
+    rows.iter()
+        .filter(|r| {
+            if r.state == State::Running || r.pane.is_some() {
+                return true;
+            }
+            if Group::of(r.last, now, offset) != Group::Today || ended == TODAY_ENDED {
+                return false;
+            }
+            ended += 1;
+            true
+        })
+        .cloned()
+        .collect()
+}
+
+/// A client's rows after an `agents` event: the rows `gone` names taken
+/// out, `changed` put in place of the rows they name or added, in the
+/// index's order.
+pub fn apply(rows: &mut Vec<Row>, changed: &[Row], gone: &[String]) {
+    let moved: std::collections::HashSet<String> =
+        gone.iter().cloned().chain(changed.iter().map(Row::key)).collect();
+    rows.retain(|r| !moved.contains(&r.key()));
+    rows.extend(changed.iter().cloned());
+    rows.sort_by(order);
 }
 
 /// Rows no Ask has titled take their session's first prompt, as RingFrame
@@ -277,16 +333,6 @@ pub fn first_prompt_titles(rows: &mut [Row], firsts: &std::collections::BTreeMap
     for row in rows.iter_mut().filter(|r| r.title.is_none()) {
         row.title = firsts.get(&row.id).cloned();
     }
-}
-
-/// How many ended sessions the tree shows after the running ones.
-pub const ENDED_IN_TREE: usize = 3;
-
-/// The tree's rows, and the earlier sessions it counts but does not list:
-/// every running row, then the first [`ENDED_IN_TREE`] of the rest.
-pub fn split(rows: &[Row]) -> (&[Row], &[Row]) {
-    let running = rows.iter().take_while(|r| r.state == State::Running).count();
-    rows.split_at((running + ENDED_IN_TREE).min(rows.len()))
 }
 
 /// Where an earlier session is listed, by the Mac's local date of its `last`.
@@ -337,6 +383,32 @@ pub fn when(at: i64, now: i64, offset: i64) -> String {
             format!("{} {time}", DAYS[local_day(at, offset).rem_euclid(7) as usize])
         }
         Group::Earlier => crate::turns::stamp(local)[..10].to_string(),
+    }
+}
+
+/// A time with its day, as an agent's row reads it: `Today 11:29`,
+/// `Yesterday 18:40`, or its date, `Nov 12 08:15`, with the year when it is
+/// not this one, `Dec 30 2025 08:15`.
+pub fn day_time(at: i64, now: i64, offset: i64) -> String {
+    let local = at + offset;
+    let time = clock(local);
+    match Group::of(at, now, offset) {
+        Group::Today => crate::words::fill("time.today", &[("time", &time)]),
+        Group::Yesterday => crate::words::fill("time.yesterday", &[("time", &time)]),
+        Group::Week | Group::Earlier => {
+            const MONTHS: [&str; 12] = [
+                "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+            ];
+            let date = crate::turns::stamp(local);
+            let (year, month, day) = (&date[..4], &date[5..7], &date[8..10]);
+            let month = MONTHS[month.parse::<usize>().unwrap_or(1).clamp(1, 12) - 1];
+            let day = day.trim_start_matches('0');
+            if year == &crate::turns::stamp(now + offset)[..4] {
+                format!("{month} {day} {time}")
+            } else {
+                format!("{month} {day} {year} {time}")
+            }
+        }
     }
 }
 
@@ -590,7 +662,7 @@ mod tests {
     }
 
     #[test]
-    fn running_rows_come_first_then_the_rest_newest_first_and_the_tree_cuts_at_three() {
+    fn running_rows_come_first_then_the_rest_newest_first() {
         let alive = |p: &Process| p.pid < 10;
         let mut heard_ = Vec::new();
         for (i, id) in ["e1", "e2", "e3", "e4", "e5"].iter().enumerate() {
@@ -604,13 +676,68 @@ mod tests {
         heard_.push(heard("agy", "q1", NOON, Turn::TurnEnded, NOON + 10 * MIN));
         let rows = index(&heard_, &[pane(2, "claude-code", "r2", true)], &[], &alive);
         assert_eq!(ids(&rows), ["r2", "r1", "q1", "e5", "e4", "e3", "e2", "e1"]);
-        let (tree, earlier) = split(&rows);
+        // Carried as they are: the running, and those used today.
         assert_eq!(
-            (ids(tree), ids(earlier)),
-            (vec!["r2", "r1", "q1", "e5", "e4"], vec!["e3", "e2", "e1"])
+            ids(&carried(&rows, NOON + 20 * MIN, 0)),
+            ["r2", "r1", "q1", "e5", "e4", "e3", "e2", "e1"]
         );
-        let (tree, earlier) = split(&rows[..3]);
-        assert_eq!((tree.len(), earlier.len()), (3, 0));
+        assert_eq!(ids(&carried(&rows, NOON + DAY, 0)), ["r2", "r1"], "yesterday's are earlier");
+    }
+
+    /// A batch day: every running session and every pane's is carried, but
+    /// only the newest 20 of the day's ended ones.
+    #[test]
+    fn a_day_of_thousands_carries_only_its_newest_twenty_ended() {
+        let mut rows: Vec<Row> = (0..3000)
+            .map(|i| Row::of("codex", &format!("b{i:04}"), State::Ended, None, NOON + i))
+            .collect();
+        rows.extend((0..30).map(|i| {
+            Row::of("codex", &format!("r{i:02}"), State::Running, Some(Turn::Working), NOON - DAY)
+        }));
+        let held = Row { pane: Some(7), ..Row::of("agy", "held", State::Quiet, None, NOON - DAY) };
+        rows.push(held);
+        rows.push(Row::of("claude", "old", State::Ended, None, NOON - DAY));
+        rows.sort_by(order);
+        let carried = carried(&rows, NOON + 4000, 0);
+        assert_eq!(carried.len(), 30 + 1 + TODAY_ENDED, "the running, the pane's, twenty ended");
+        assert!(carried.iter().any(|r| r.id == "held"), "a pane's session is carried");
+        let ended: Vec<_> =
+            carried.iter().filter(|r| r.id.starts_with('b')).map(|r| r.id.as_str()).collect();
+        assert_eq!((ended[0], ended[TODAY_ENDED - 1]), ("b2999", "b2980"), "the newest");
+        assert!(carried.iter().all(|r| r.id != "old"), "yesterday's ended is earlier");
+    }
+
+    #[test]
+    fn a_change_is_applied_row_by_row_in_the_index_order() {
+        let mut rows = vec![
+            Row::of("codex", "a", State::Running, Some(Turn::Working), 30),
+            Row::of("codex", "b", State::Ended, None, 20),
+            Row::of("claude", "c", State::Ended, None, 10),
+        ];
+        let mut unbound = Row::of("grok", "", State::Running, None, 5);
+        unbound.pane = Some(4);
+        rows.push(unbound.clone());
+        rows.sort_by(order);
+        assert_eq!(unbound.key(), "grok/pane 4");
+        assert_eq!(rows[0].key(), "codex/a");
+        // a ended, c resumed, a new one, and the unbound pane named its session.
+        let changed = [
+            Row::of("codex", "a", State::Ended, None, 30),
+            Row::of("claude", "c", State::Running, Some(Turn::Working), 40),
+            Row::of("codex", "d", State::Ended, None, 25),
+            Row { pane: Some(4), ..Row::of("grok", "g", State::Running, None, 5) },
+        ];
+        apply(&mut rows, &changed, &["codex/b".into(), unbound.key()]);
+        let got: Vec<_> = rows.iter().map(|r| (r.id.as_str(), r.state)).collect();
+        assert_eq!(
+            got,
+            [
+                ("c", State::Running),
+                ("g", State::Running),
+                ("a", State::Ended),
+                ("d", State::Ended)
+            ]
+        );
     }
 
     #[test]
@@ -641,6 +768,17 @@ mod tests {
         assert_eq!(when(NOON - DAY, NOON, 0), "12:00");
         assert_eq!(when(NOON - 2 * DAY, NOON, 0), "Tue 12:00");
         assert_eq!(when(NOON - 9 * DAY, NOON, 0), "2026-09-29");
+    }
+
+    #[test]
+    fn an_agents_time_carries_its_day() {
+        let seven = 7 * 60 * MIN;
+        assert_eq!(day_time(NOON + 31 * MIN, NOON + 40 * MIN, 0), "Today 12:31");
+        assert_eq!(day_time(NOON + 31 * MIN, NOON + 40 * MIN, seven), "Today 19:31");
+        assert_eq!(day_time(NOON - DAY, NOON, 0), "Yesterday 12:00");
+        assert_eq!(day_time(NOON - 2 * DAY, NOON, 0), "Oct 6 12:00");
+        assert_eq!(day_time(NOON - 9 * DAY, NOON, 0), "Sep 29 12:00");
+        assert_eq!(day_time(NOON - 300 * DAY, NOON, 0), "Dec 12 2025 12:00");
     }
 
     #[test]
