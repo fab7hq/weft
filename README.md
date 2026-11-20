@@ -12,10 +12,11 @@
 <a href="https://docs.getfab7.com/weft/getting-started">Get started</a> ·
 <a href="https://docs.getfab7.com/weft/sdlc">Map your SDLC</a></sub></p>
 
-Weft checks what your coding agents call "done". Judges that did none of
-the work read each thing you asked against the change, and code gives the
-verdict: aligned, drifted or not enough proof. It is advice, not a gate:
-the call stays yours, and Seal keeps your decision with its reason.
+Weft checks what your coding agents call "done". An Eval reads the whole
+change at once with an independent reader you pick, re-reads only what it is
+unsure of, and shows what to look at with cited lines and confidence dots —
+never calling the work done. Seal asks what you meant, one question at a time,
+and every later Eval remembers your decisions.
 
 Around the check, every agent is in one place, at your desk or on your
 phone. It has no cloud model of its own: Sense, a small model that runs
