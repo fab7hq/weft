@@ -243,10 +243,7 @@ mod tests {
                 .iter()
                 .map(|c| c["id"].as_str().unwrap())
                 .collect();
-            assert_eq!(
-                ids,
-                ["native_direct", "native_goal", "native_plan", "native_review"].into()
-            );
+            assert_eq!(ids, ["native_direct", "native_goal", "native_plan"].into());
             for c in p["capabilities"].as_array().unwrap() {
                 if c["id"] != "native_direct" {
                     assert_eq!(c["delivery_mode"], "human_handoff", "{}", c["id"]);

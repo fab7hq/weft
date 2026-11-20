@@ -20,7 +20,7 @@ title = "Codex"
 path_names = ["codex"]
 
 [routing]
-precedence = ["native_goal", "native_review", "native_plan", "native_direct"]
+precedence = ["native_goal", "native_plan", "native_direct"]
 
 [[capabilities]]
 id = "native_plan"
@@ -86,25 +86,3 @@ requires_explicit_request_for_effects = [
 ]
 qualification = {}
 limitations = ["no delivery receipt exists for same-turn continuation"]
-
-[[capabilities]]
-id = "native_review"
-sources = [
-  "https://developers.openai.com/codex/cli/slash-commands",
-  "https://github.com/openai/codex/blob/main/codex-rs/tui/src/slash_command.rs",
-]
-purpose = "Native code review with the compiled prompt as custom review instructions"
-activation = {}
-continuation = """\
-The person submits the prompt; Codex reviews the specified changes and \
-reports findings."""
-effects = ["workspace_read"]
-permission_owner = "host"
-delivery_mode = "human_handoff"
-prompt_prefix = "/review "
-prompt_prefix_kind = "inline"   # a one-shot action over the current changes
-qualification = {}
-limitations = [
-  "User submission is required by this RingFrame mapping.",
-  "Installed native review invocation and semantic routing are not qualified by CLI tests.",
-]

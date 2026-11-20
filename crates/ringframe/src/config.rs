@@ -368,7 +368,7 @@ mod tests {
                 ),
                 (
                     "harnesses/codex.toml",
-                    "7e85d99eae2b1634e1df81edb891a9e285edf040658bc67c76d9dc60a088210e",
+                    "e16b9db308fafb07bc0f932b953d7c6222bf2c5185aa9c648ccf8703aef37f1a",
                 ),
                 (
                     "harnesses/unknown.toml",
@@ -415,7 +415,7 @@ mod tests {
                     ),
                     (
                         "config/harnesses/codex.toml",
-                        "f04bd24a5db3891d9860075472d396a1e273767f30d6c9b342b23e589df581c9",
+                        "01219fd0be30fad11cf03368b3981fdca01361dca0a373fd03ef617989950367",
                     ),
                     (
                         "config/harnesses/unknown.toml",

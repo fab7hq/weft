@@ -866,7 +866,6 @@ pub const WORDS: &[(&str, &str)] = &[
     ("desktop.harness.native_plan", "Plan"),
     ("desktop.harness.native_goal", "Goal"),
     ("desktop.harness.native_direct", "Direct"),
-    ("desktop.harness.native_review", "Review"),
     ("desktop.harness.weft_sends", "Weft sends"),
     ("desktop.harness.you_send", "you send"),
     ("desktop.harness.limit", "at most {n} characters"),
