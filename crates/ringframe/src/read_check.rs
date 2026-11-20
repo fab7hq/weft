@@ -630,7 +630,12 @@ fn sub_repos(root: &Path, project: &Project, range: Option<&crate::reads::Range>
             .map(|d| {
                 s.spawn(move || {
                     let dir = root.join(d);
-                    let status = git_bytes(&dir, &["status", "--porcelain=v1", "-z"], &[0]).ok()?;
+                    let status = git_bytes(
+                        &dir,
+                        &["-c", "core.fsmonitor=false", "status", "--porcelain=v1", "-z"],
+                        &[0],
+                    )
+                    .ok()?;
                     let changed = changed_paths(&String::from_utf8_lossy(&status));
                     let commits = began.map_or(0, |ms| {
                         git(

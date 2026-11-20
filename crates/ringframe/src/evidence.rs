@@ -821,7 +821,13 @@ pub fn other_repos(
         let ok = !r.anchor.is_empty()
             && git(
                 &r.root,
-                &["rev-parse", "--verify", "--quiet", &format!("{}^{{commit}}", r.anchor)],
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    "--end-of-options",
+                    &format!("{}^{{commit}}", r.anchor),
+                ],
             )
             .is_ok();
         if !ok {

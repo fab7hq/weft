@@ -49,6 +49,25 @@ pub(crate) fn array_of<'a>(v: &'a Value, key: &str) -> &'a [Value] {
     v.get(key).and_then(Value::as_array).map_or(&[], Vec::as_slice)
 }
 
+/// The commit a ref names, as its full id. A ref that is not a commit here,
+/// or that Git would read as an option, is refused.
+pub(crate) fn commit_of(root: &Path, reference: &str) -> Result<String, EvalError> {
+    git(
+        root,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "--end-of-options",
+            &format!("{reference}^{{commit}}"),
+        ],
+    )
+    .map(|id| id.trim().to_string())
+    .map_err(|_| {
+        ledger("eval.anchor_missing", format!("{reference} is not a commit in this workspace"))
+    })
+}
+
 pub(crate) fn git(root: &Path, args: &[&str]) -> Result<String, EvalError> {
     Ok(String::from_utf8_lossy(&git_bytes(root, args, &[0])?).to_string())
 }
@@ -759,10 +778,7 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
     let superseded: Vec<String> = dangling.iter().map(|r| str_of(r, "eval_id")).collect();
     let anchor = anchor_of(ws, &asks, unit.as_deref(), args.anchor)?;
     let anchor_ref = str_of(&anchor, "ref");
-    git(&ws.root, &["rev-parse", "--verify", "--quiet", &format!("{anchor_ref}^{{commit}}")])
-        .map_err(|_| {
-            ledger("eval.anchor_missing", format!("{anchor_ref} is not a commit in this workspace"))
-        })?;
+    commit_of(&ws.root, &anchor_ref)?;
     let began = anchor_since(ws, &asks, &anchor);
     let eval_id = ids::new_id("evl");
     let later = later_prompts(ws, &asks)?;
@@ -1215,6 +1231,15 @@ mod tests {
                 "an ignored file is not part of the subject"
             );
             refused(subject_digest(ws, "planet", "mars").unwrap_err(), "subject.kind");
+        });
+    }
+
+    #[test]
+    fn a_ref_git_would_read_as_an_option_is_not_a_commit() {
+        eval_bench(|ws| {
+            assert_eq!(commit_of(&ws.root, "HEAD").unwrap(), head(&ws.root));
+            refused(commit_of(&ws.root, "--output=x").unwrap_err(), "eval.anchor_missing");
+            assert!(!ws.root.join("x").exists());
         });
     }
 

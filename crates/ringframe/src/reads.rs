@@ -101,6 +101,7 @@ pub(crate) fn range(ws: &Workspace, ask: &str) -> Result<Range, EvalError> {
     };
     let began = evaluate::anchor_since(ws, &asks, &anchor);
     let root = ws.root.as_path();
+    let anchor_ref = evaluate::commit_of(root, &anchor_ref)?;
     let numstat = git(root, &["diff", "--numstat", "-z", "--relative", &anchor_ref, "--", "."])?;
     let untracked = crate::untracked::listed(root, began)?;
     Ok(Range {
