@@ -40,7 +40,7 @@ pub const WORDS: &[(&str, &str)] = &[
     ("tree.sealed_earlier", "{n} sealed earlier"),
     // Done: every sealed unit of a project, in the sidebar.
     ("done.title", "Done"),
-    ("done.search", "Title, verdict, decision or reason"),
+    ("done.search", "Title, harness, decision or reason"),
     ("done.parked", "PARKED"),
     ("done.sealed", "SEALED"),
     ("done.none", "Nothing sealed matches {q}."),
@@ -302,7 +302,7 @@ pub const WORDS: &[(&str, &str)] = &[
     ("export.git_note", "Git note"),
     (
         "export.git_note_what",
-        "What was asked, the verdict and your decision, attached to the commit you sealed",
+        "What was asked, what its Eval found and your decision, attached to the commit you sealed",
     ),
     (
         "export.foot",
@@ -315,7 +315,7 @@ pub const WORDS: &[(&str, &str)] = &[
     ),
     (
         "dialog.export.sample",
-        "RingFrame Seal <its id>\nAsk: <the work's title>\nVerdict: <the verdict>, judged by <harness>\nDecision: <your decision>\nReason: <your reason, when you gave one>\nBy: <you>\nAt: <when>",
+        "RingFrame Seal <its id>\nAsk: <the work's title>\nEval: <what it found>, read by <harness>\nDecision: <your decision>\nReason: <your reason, when you gave one>\nBy: <you>\nAt: <when>",
     ),
     ("dialog.export.go", "Turn on"),
     ("follow_up.from_findings", "Fix what the last Eval found:"),

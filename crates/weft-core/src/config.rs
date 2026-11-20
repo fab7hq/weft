@@ -47,13 +47,13 @@ pub const STARTING: &str = r#"# Weft: where each RingFrame act goes, how an Eval
 
 [eval.debate]                  # Weft gathers the Eval itself; the debate goes here
 # harness = "<harness>"        # where every role runs, unless it names its own
-# map     = { harness = "<harness>", model = "<model>", effort = "low" }
-# reduce  = { model = "<model>", effort = "high" }   # also confirm
+# read     = { harness = "<harness>", model = "<model>", effort = "medium" }
+# question = { model = "<model>", effort = "medium" }
 
 [ringframe]                    # RingFrame overrides, in RingFrame's keys
 # [ringframe.deltas."practices/software-development"]
 # ...
-# [ringframe.eval]             # what an Eval's judges must not do; replaces
+# [ringframe.eval]             # what an Eval's readers must not do; replaces
 # deny = ["Push to any remote."]   # RingFrame's own list whole, [] denies nothing
 
 # [projects."/Users/me/work/thing"]      # one project: the same tables
