@@ -4092,7 +4092,7 @@ fn harnesses_show_how_ringframe_sends_and_switch_a_route_rule_s_status() {
         plan.contains("Plans first") && !plan.contains("before implementation"),
         "for people, not the model: {plan}"
     );
-    assert!(dom.find_layer("sends folds").unwrap().all_text().contains("512"));
+    assert!(dom.find_layer("sends folds").is_none(), "no row for long pastes");
     let rule = dom.find_layer("route rule agy.plan_as_files").expect("its route rule");
     assert!(rule.find_layer("status desktop.harness.candidate").is_some());
 

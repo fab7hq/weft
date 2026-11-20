@@ -869,11 +869,6 @@ pub const WORDS: &[(&str, &str)] = &[
     ("desktop.harness.weft_sends", "Weft sends"),
     ("desktop.harness.you_send", "you send"),
     ("desktop.harness.limit", "at most {n} characters"),
-    ("desktop.harness.folds", "Long pastes"),
-    (
-        "desktop.harness.folds_what",
-        "Folded from {n} characters; Weft types them so they arrive whole",
-    ),
     ("desktop.harness.route_rules", "Route rules · {harness}"),
     ("desktop.harness.qualified", "Qualified"),
     ("desktop.harness.candidate", "Candidate"),

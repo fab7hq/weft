@@ -53,8 +53,6 @@
   "desktop.eval.no_record": "Its record has not come from RingFrame yet.",
   "desktop.eval.not_judged": "No judge has read this change yet. Eval on its work goes on with it.",
   "desktop.harness.candidate": "Candidate",
-  "desktop.harness.folds": "Long pastes",
-  "desktop.harness.folds_what": "Folded from {n} characters; Weft types them so they arrive whole",
   "desktop.harness.found": "Found on this machine",
   "desktop.harness.in_updates": "In Updates ›",
   "desktop.harness.limit": "at most {n} characters",

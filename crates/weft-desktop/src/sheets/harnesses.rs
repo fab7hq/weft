@@ -208,26 +208,6 @@ fn sends(props: &SheetProps, host: &str) -> Element {
                 ),
         );
     }
-    if let Some(n) = p["paste_fold_chars"].as_u64() {
-        rows.push(
-            div()
-                .layer("sends folds")
-                .self_stretch()
-                .flex_row()
-                .gap(12)
-                .pad(8, 14)
-                .child(
-                    div().w(170).font_weight(600).font_size(13).text(word("desktop.harness.folds")),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .font_size(12)
-                        .color(palette::MUTED)
-                        .text(fill("desktop.harness.folds_what", &[("n", &n.to_string())])),
-                ),
-        );
-    }
     row_list(rows)
 }
 
