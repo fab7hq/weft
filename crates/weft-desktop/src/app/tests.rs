@@ -619,19 +619,14 @@ fn an_ask_goes_to_the_daemon_and_its_staged_send_is_answered() {
     assert!(!said.contains("Weft will type"), "{said}");
     app.dispatch(BarAct::Resolve { project: weft(), pending: "p1".into(), answer: Answer::Yes });
     let (_, call) = wire.call();
-    assert_eq!(
-        call,
-        Call::Resolve { pending: "p1".into(), yes: true, force: false, to: None, start: None }
-    );
+    assert_eq!(call, Call::Resolve { pending: "p1".into(), yes: true, to: None, start: None });
 
-    // The agent is working: Weft says it has not said it is ready.
+    // The agent is working: the dialog is the same, and its Send just sends.
     app.clients[0].view_mut(pane).unwrap().turn = Some(Turn::Working);
     let bar = app.render();
     let bar = bar.find_layer("Cancel / Send bar").expect("still waiting until resolved");
-    assert!(bar.all_text().contains("Weft did not type it: the agent is working."));
-    app.dispatch(BarAct::Resolve { project: weft(), pending: "p1".into(), answer: Answer::Anyway });
-    let (_, call) = wire.call();
-    assert!(matches!(call, Call::Resolve { force: true, yes: true, .. }));
+    assert!(bar.find_layer("btn Send").is_some(), "{}", bar.all_text());
+    assert!(!bar.all_text().contains("Weft did not type it"), "{}", bar.all_text());
     wire.event(Event::Resolved { id: "p1".into(), yes: true });
     pumped(&mut app, |a| a.clients[0].waiting.is_empty());
 

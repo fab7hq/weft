@@ -440,7 +440,7 @@ impl Typist {
             let sent = self.send(b"\r");
             self.injecting.store(false, Ordering::SeqCst);
             sent.map_err(|_| Refusal::NoProcess)?;
-            return Ok(Attempt { bytes: 0, bracketed, submitted: true });
+            return Ok(Attempt { bytes: 0, bracketed });
         }
         let steps = inject::compose(payload, bracketed);
         // The screen before the paste, to tell whether the paste changed it.
@@ -457,40 +457,33 @@ impl Typist {
                 Step::Wait(d) => {
                     // A fixed pause is not enough: a harness that is still
                     // settling drops the Enter and the prompt sits unsent in
-                    // its composer. Wait for the paste to land instead.
+                    // its composer. Wait for the paste to land instead, and
+                    // send Enter anyway once the wait is over: a harness may
+                    // take a paste without showing it.
                     std::thread::sleep(*d);
-                    if !self.paste_landed(&before.1, inject::PASTE_TIMEOUT) {
-                        // The screen never changed, so the paste did not land
-                        // where Enter would send it. Never a blind retry.
-                        self.injecting.store(false, Ordering::SeqCst);
-                        return Ok(Attempt { bytes: payload.len(), bracketed, submitted: false });
-                    }
+                    self.wait_for_paste(&before.1, inject::PASTE_TIMEOUT);
                 }
             }
         }
         self.injecting.store(false, Ordering::SeqCst);
-        Ok(Attempt { bytes: payload.len(), bracketed, submitted: true })
+        Ok(Attempt { bytes: payload.len(), bracketed })
     }
 
-    /// Whether the screen changed from `before` and then held still for
+    /// Wait until the screen changed from `before` and then held still for
     /// [`inject::COMPOSER_SETTLE`], so Enter lands on a composer that took
-    /// the paste rather than one still taking it. Only whether it changed is
-    /// compared, never what it says: a harness may show a long
-    /// paste whole, folded or scrolled. Changed but never still (a spinner)
-    /// is taken as landed when the time is up; never changed is not.
-    fn paste_landed(&self, before: &str, timeout: std::time::Duration) -> bool {
+    /// the paste rather than one still taking it, or until `timeout`. Only
+    /// whether it changed is compared, never what it says: a harness may show
+    /// a long paste whole, folded or scrolled, or not at all.
+    fn wait_for_paste(&self, before: &str, timeout: std::time::Duration) {
         let deadline = std::time::Instant::now() + timeout;
         let mut last = (std::time::Instant::now(), before.to_string());
-        let mut changed = false;
         while std::time::Instant::now() < deadline {
             let quiet = gone_quiet(&self.term, &mut last, inject::COMPOSER_SETTLE);
-            changed |= last.1 != before;
-            if changed && quiet {
-                return true;
+            if last.1 != before && quiet {
+                return;
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        changed
     }
 }
 
@@ -509,9 +502,6 @@ pub struct Frame {
 pub struct Attempt {
     pub bytes: usize,
     pub bracketed: bool,
-    /// Whether Enter was sent at all. It is not when the paste never changed
-    /// the screen: the text may be in the composer, and the person is told.
-    pub submitted: bool,
 }
 
 #[cfg(test)]
@@ -665,8 +655,7 @@ mod tests {
             at: "/plan ".len(),
             active: "Plan mode".into(),
         };
-        let attempt = pane.inject_as(b"/plan ship it", &how).expect("typed");
-        assert!(attempt.submitted, "{attempt:?}");
+        pane.inject_as(b"/plan ship it", &how).expect("typed");
         std::thread::sleep(std::time::Duration::from_millis(300));
         let text = pane.with_term(|t| t.contents());
         assert!(text.contains("SUBMITTED[ship it]"), "the body was dropped: {text:?}");
@@ -695,8 +684,7 @@ while True:
             Pane::spawn_args("test", "python3", &["-c", host], "/tmp", &[], 24, 80).expect("spawn");
         std::thread::sleep(std::time::Duration::from_millis(800));
         let how = Handoff::TypeCommand { command: "/clear".into(), at: "/clear".len() };
-        let attempt = pane.inject_as(b"/clear", &how).expect("typed");
-        assert!(attempt.submitted, "{attempt:?}");
+        pane.inject_as(b"/clear", &how).expect("typed");
         std::thread::sleep(std::time::Duration::from_millis(300));
         let text = pane.with_term(|t| t.contents());
         assert!(text.contains("SUBMITTED[/clear ]"), "not submitted: {text:?}");
@@ -820,23 +808,20 @@ while True:
     #[test]
     fn a_scrolling_composer_gets_enter_for_a_long_prompt() {
         let prompt = long_prompt();
-        let (attempt, took) = composer_takes("scroll", &Handoff::Whole, &prompt);
-        assert!(attempt.submitted, "{attempt:?}");
+        let (_, took) = composer_takes("scroll", &Handoff::Whole, &prompt);
         assert_eq!(took.as_bytes(), prompt.as_slice());
     }
 
     #[test]
     fn a_folding_composer_gets_enter_for_a_long_prompt() {
         let prompt = long_prompt();
-        let (attempt, took) = composer_takes("fold", &Handoff::Whole, &prompt);
-        assert!(attempt.submitted, "{attempt:?}");
+        let (_, took) = composer_takes("fold", &Handoff::Whole, &prompt);
         assert_eq!(took.as_bytes(), prompt.as_slice());
     }
 
     #[test]
     fn a_plain_composer_gets_enter_for_a_short_prompt() {
-        let (attempt, took) = composer_takes("plain", &Handoff::Whole, b"Ship it.");
-        assert!(attempt.submitted, "{attempt:?}");
+        let (_, took) = composer_takes("plain", &Handoff::Whole, b"Ship it.");
         assert_eq!(took, "Ship it.");
     }
 
@@ -848,20 +833,37 @@ while True:
         let mut long = b"/goal ".to_vec();
         long.extend(long_prompt());
         for (style, payload) in [("plain", b"/goal ship it".to_vec()), ("scroll", long.clone())] {
-            let (attempt, took) = composer_takes(style, &how, &payload);
-            assert!(attempt.submitted, "{style}: {attempt:?}");
+            let (_, took) = composer_takes(style, &how, &payload);
             assert_eq!(took.as_bytes(), payload.as_slice(), "{style}");
         }
     }
 
-    /// A paste that never changes the screen did not land where Enter would
-    /// send it: Enter is withheld, and the attempt says so.
+    /// A paste that never changes the screen still gets its Enter once the
+    /// wait is over: a harness may take a paste without showing it.
     #[test]
-    fn enter_is_withheld_when_the_paste_never_changes_the_screen() {
-        let mut pane = sh("stty -echo; printf 'ready'; cat > /dev/null");
-        std::thread::sleep(std::time::Duration::from_millis(400));
-        let attempt = pane.inject(b"Return the real build number").expect("allowed to write");
-        assert!(!attempt.submitted, "Enter withheld: {attempt:?}");
+    fn enter_is_sent_when_the_paste_never_changes_the_screen() {
+        let host = r#"import os, sys, tty
+fd = sys.stdin.fileno()
+tty.setraw(fd)
+os.write(1, b'ready\r\n')
+buf = ''
+while True:
+    c = os.read(fd, 1).decode()
+    if c == '\r':
+        os.write(1, ('SUBMITTED[' + buf + ']\r\n').encode())
+        buf = ''
+    else:
+        buf += c
+"#;
+        let mut pane =
+            Pane::spawn_args("test", "python3", &["-c", host], "/tmp", &[], 24, 80).expect("spawn");
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        pane.inject(b"Return the real build number").expect("allowed to write");
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let text = pane.with_term(|t| t.contents());
+        assert!(text.contains("SUBMITTED["), "Enter was withheld: {text:?}");
+        assert!(text.contains("Return the real build number]"), "{text:?}");
+        pane.stop();
     }
 
     #[test]

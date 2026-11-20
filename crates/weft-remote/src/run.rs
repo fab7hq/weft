@@ -266,7 +266,6 @@ struct Remote {
     pendings: BTreeMap<String, (usize, Value)>,
     /// Pendings a device was told its agent is not ready for: only these may it
     /// then send anyway.
-    not_ready: HashSet<String>,
     /// When the person last typed on the machine.
     last_presence: Option<Instant>,
     /// The VAPID public key a device subscribes with.
@@ -367,7 +366,6 @@ impl Remote {
             calls: HashMap::new(),
             answered: HashMap::new(),
             gathering: HashMap::new(),
-            not_ready: HashSet::new(),
             next_gathering: 0,
             pendings: BTreeMap::new(),
             last_presence: None,

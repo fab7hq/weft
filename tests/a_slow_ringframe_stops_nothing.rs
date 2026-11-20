@@ -245,7 +245,6 @@ fn a_slow_ringframe_holds_up_only_what_waits_on_it() {
     let yes = |pending: &serde_json::Value| Call::Resolve {
         pending: pending.as_str().unwrap().to_string(),
         yes: true,
-        force: false,
         to: None,
         start: None,
     };

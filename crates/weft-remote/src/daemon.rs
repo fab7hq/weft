@@ -12,8 +12,10 @@ use std::sync::mpsc::Sender;
 use serde_json::Value;
 use weft_proto::{Call, Event, Line, Lines, PROTOCOL};
 
-/// What a project's client hears, for the loop.
+/// What a project's client hears, for the loop. Each is moved once over a
+/// channel and matched by its event, so it is not boxed.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum Heard {
     Event(usize, Event),
     /// The answer to a call this client made: its result, or its error's
@@ -130,8 +132,7 @@ impl Project {
 /// The calls `weft remote` may make (remote.md §4), and its own handshake
 /// and view; `agent.start` with the command line the daemon's harness file
 /// gives; `project.dismiss`. Never `agent.close`, `stage`, `setup`,
-/// `project.turbo`, `shutdown`, `update` or `service.login`;
-/// `force: true` only as protocol.rs allows it. The machine's settings, read
+/// `project.turbo`, `shutdown`, `update` or `service.login`. The machine's settings, read
 /// and changed as the desktop does (weft-after-desktop ADR-0003 D6).
 pub fn allowed(call: &Call) -> bool {
     match call {
@@ -322,20 +323,7 @@ mod tests {
                 after: None,
                 q: None,
             },
-            Call::Resolve {
-                pending: "pnd_1".into(),
-                yes: true,
-                force: false,
-                to: None,
-                start: None,
-            },
-            Call::Resolve {
-                pending: "pnd_1".into(),
-                yes: true,
-                force: true,
-                to: None,
-                start: None,
-            },
+            Call::Resolve { pending: "pnd_1".into(), yes: true, to: None, start: None },
             Call::StartAgent {
                 harness: "sh".into(),
                 spec: "sh resume s".into(),

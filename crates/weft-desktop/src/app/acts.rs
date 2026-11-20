@@ -605,7 +605,7 @@ impl WeftDesktopApp {
                         self.eval_pick = None;
                     }
                 }
-                let (yes, force) = (answer != Answer::No, answer == Answer::Anyway);
+                let yes = answer != Answer::No;
                 // Where the person sent it, when not where it was staged.
                 let staged = self
                     .client(&project)
@@ -626,7 +626,7 @@ impl WeftDesktopApp {
                 };
                 self.send_to_open = false;
                 let resolved = self.client_mut(&project).map(|c| {
-                    let call = c.resolve(&pending, yes, force, to, start.as_deref());
+                    let call = c.resolve(&pending, yes, to, start.as_deref());
                     if let (Ok(id), Some(w)) = (&call, working) {
                         c.owed_for(*id, Then::Working(w));
                     }

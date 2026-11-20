@@ -209,7 +209,6 @@ struct Bench {
     stream: UnixStream,
     lines: Lines<UnixStream>,
     id: u64,
-    shared: bool,
 }
 
 impl Bench {
@@ -269,7 +268,6 @@ impl Bench {
             stream,
             lines,
             id: 0,
-            shared: mode == "shared",
         };
         b.call(Call::Hello { client: "test".into(), protocol: PROTOCOL });
         let path = b.root.to_string_lossy().into_owned();
@@ -348,9 +346,8 @@ impl Bench {
                 _ => {}
             }
         };
-        // An agent that has said nothing is sent to on the person's say-so.
         let start = start.map(str::to_string);
-        let yes = self.call(Call::Resolve { pending, yes: true, force: self.shared, to, start });
+        let yes = self.call(Call::Resolve { pending, yes: true, to, start });
         let deadline = Instant::now() + Duration::from_secs(15);
         while Instant::now() < deadline {
             match self.next(Duration::from_millis(100)) {
@@ -502,8 +499,9 @@ fn the_asks_prompt_arriving_is_the_delivery_and_weft_records_none_of_its_own() {
     assert_eq!(b.took(), format!("{WORDING}\n"), "typed once");
 }
 
-/// Typing waits on the pane (here the 2.5 s for a paste that never shows),
-/// never on the daemon: it answers every call while the typing waits.
+/// Typing waits on the pane (here the 2.5 s for a paste that never shows,
+/// before Enter is pressed anyway), never on the daemon: it answers every
+/// call while the typing waits.
 #[test]
 fn a_send_that_waits_on_its_pane_leaves_the_daemon_answering() {
     let mut b = Bench::new("weft-proven-deaf", "loom", "deaf");
@@ -520,7 +518,7 @@ fn a_send_that_waits_on_its_pane_leaves_the_daemon_answering() {
         Event::Pending { id, .. } => Some(id),
         _ => None,
     });
-    b.call(Call::Resolve { pending, yes: true, force: false, to: None, start: None });
+    b.call(Call::Resolve { pending, yes: true, to: None, start: None });
     // A call every 100 ms until the typing gives up, each timed to its answer.
     let mut asked = std::collections::HashMap::new();
     let mut slowest = Duration::ZERO;
@@ -544,7 +542,7 @@ fn a_send_that_waits_on_its_pane_leaves_the_daemon_answering() {
             }
         }
     }
-    assert_eq!(said, Some(Some("PasteNotShown".into())), "Enter withheld");
+    assert_eq!(said, Some(None), "typed, Enter pressed anyway");
     assert!(asked.is_empty(), "every call answered");
     assert!(slowest < Duration::from_millis(500), "a call waited {slowest:?} on the typing");
 }
@@ -593,17 +591,13 @@ fn a_prompt_recorded_only_in_a_transcript_arrives_with_a_later_hook() {
     assert!(!b.calls().contains("ask submitted"), "{}", b.calls());
 }
 
-/// An agent whose turn is running is not typed into: the Send is refused at
-/// once, with why, and nothing is typed.
+/// An agent whose turn is running is typed into all the same, for its
+/// harness to queue: a Send never asks twice.
 #[test]
-fn a_busy_agent_is_refused_at_send() {
+fn a_busy_agent_is_sent_to() {
     let mut b = Bench::new("weft-proven-busy", "loom", "busy");
-    let asked = Instant::now();
-    let said = b.send();
-    assert_eq!(said, Ok(Some("Weft did not type it: the agent is working.".into())));
-    assert!(asked.elapsed() < Duration::from_secs(2), "at once: {:?}", asked.elapsed());
-    std::thread::sleep(Duration::from_millis(300));
-    assert_eq!(b.took(), "", "nothing typed");
+    assert_eq!(b.send(), Ok(None), "typed, not refused");
+    assert_eq!(b.took(), format!("{WORDING}\n"), "typed once");
 }
 
 /// A send said yes to before a fresh agent has said anything waits until it

@@ -628,7 +628,6 @@ pub struct Session {
 struct Compiling {
     w: Waiting,
     into: Option<Elsewhere>,
-    force: bool,
 }
 
 /// What a call answers with. Everything gets one, so a client is never left
@@ -3066,7 +3065,7 @@ impl Session {
                     }
                 }
             }
-            Call::Resolve { pending, yes, force, to, start } => {
+            Call::Resolve { pending, yes, to, start } => {
                 let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
                 // Taken, not read: whoever answers first answers for everyone,
                 // and a second answer finds nothing to answer.
@@ -3091,27 +3090,9 @@ impl Session {
                     }
                     _ => None,
                 };
-                // Send into an agent that says it is busy or asking is refused
-                // at once: nothing is recorded or typed, and the dialog stays
-                // for a Send once it is ready, or for the person's send anyway.
-                // An agent that has said nothing yet is starting: the send
-                // waits for it to say it is ready, as `type_it` does.
+                // A Send is typed whatever the agent's state: `type_it` waits
+                // a little for one not ready, then types anyway.
                 let typed_into = typed_into(into.as_ref(), &self.projects[at].waiting[i]);
-                if yes && !force {
-                    let pane = typed_into;
-                    let p = &mut self.projects[at];
-                    let pane = pane.filter(|pane| p.slot(*pane).is_some_and(|s| s.pane.running()));
-                    let state = pane.and_then(|pane| self.pane_state(at, pane));
-                    if let (Some(pane), Some(_)) = (pane, state)
-                        && let Err(why) = crate::turns::may_type(state)
-                    {
-                        let why = weft_core::words::fill("not_typed.why", &[("why", why)]);
-                        let said =
-                            Out::Injected { pane, refusal: Some(why.clone()), unrecorded: None };
-                        self.clients.broadcast(at, &said);
-                        return Ok(Answer::No("not_ready", why));
-                    }
-                }
                 let mut w = self.projects[at].waiting.remove(i);
                 self.clients.broadcast(at, &Out::Resolved { id: pending, yes });
                 if !yes {
@@ -3135,7 +3116,7 @@ impl Session {
                         slot.and_then(|s| s.map.session.as_ref()).map(|b| b.session.clone());
                     let over = self.projects[at].ringframe.clone();
                     let tx = self.tx.clone();
-                    let send = Box::new(Compiling { w, into, force });
+                    let send = Box::new(Compiling { w, into });
                     std::thread::spawn(move || {
                         let compiled = crate::ringframe::compile(&root, &draft, over.as_deref())
                             .map(Some)
@@ -3146,7 +3127,7 @@ impl Session {
                     });
                     return Ok(Answer::Later);
                 }
-                let send = Compiling { w, into, force };
+                let send = Compiling { w, into };
                 return Ok(self.compiled((client, call_id), at, send, Ok(None)));
             }
             // A client leaving is not the session ending. That is the point.

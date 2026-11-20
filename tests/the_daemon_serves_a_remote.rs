@@ -173,13 +173,7 @@ fn a_client_attaching_after_a_stage_sees_it_and_can_answer_it() {
     );
 
     remote
-        .answer(Call::Resolve {
-            pending: id.clone(),
-            yes: false,
-            force: false,
-            to: None,
-            start: None,
-        })
+        .answer(Call::Resolve { pending: id.clone(), yes: false, to: None, start: None })
         .unwrap();
     app.wait_for(|e| {
         matches!(e, Event::Resolved { id: got, yes: false } if *got == id).then_some(())

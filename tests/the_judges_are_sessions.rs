@@ -117,7 +117,7 @@ impl Client {
             Event::Pending { id, what, why, .. } => Some((id.clone(), what.clone(), why.clone())),
             _ => None,
         });
-        self.call(Call::Resolve { pending, yes: true, force: false, to: None, start: None });
+        self.call(Call::Resolve { pending, yes: true, to: None, start: None });
         (what, why)
     }
 }

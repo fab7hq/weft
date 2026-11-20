@@ -1356,7 +1356,7 @@ impl WeftDesktopApp {
                     pick.pending = Some(id);
                 }
                 if let (Some(old), Some(c)) = (no, self.client_mut(root)) {
-                    let _ = c.resolve(&old, false, false, None, None);
+                    let _ = c.resolve(&old, false, None, None);
                 }
             }
             Err(why) if pick.replacing.is_some() => {

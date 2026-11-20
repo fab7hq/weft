@@ -144,20 +144,14 @@ fn an_eval_is_one_dialog_and_is_opened_by_its_send_once() {
     assert!(events(&ledger, "eval.opened").is_empty(), "nothing opened before Send");
 
     // Cancel records nothing.
-    call(
-        &mut stream,
-        Call::Resolve { pending: pnd, yes: false, force: false, to: None, start: None },
-    );
+    call(&mut stream, Call::Resolve { pending: pnd, yes: false, to: None, start: None });
     std::thread::sleep(Duration::from_millis(300));
     assert!(events(&ledger, "eval.opened").is_empty(), "a Cancel opens nothing");
 
     // Eval: Weft opens and gathers through the crate, then starts a judge.
     call(&mut stream, check());
     let (pnd, _, _) = pending(&mut frames, &stream);
-    call(
-        &mut stream,
-        Call::Resolve { pending: pnd, yes: true, force: false, to: None, start: None },
-    );
+    call(&mut stream, Call::Resolve { pending: pnd, yes: true, to: None, start: None });
     let first = judge(&mut frames, &stream);
     let opened = events(&ledger, "eval.opened");
     assert_eq!(opened.len(), 1, "{opened:?}");
@@ -204,10 +198,7 @@ fn an_eval_is_one_dialog_and_is_opened_by_its_send_once() {
     std::thread::sleep(Duration::from_millis(600));
     call(&mut stream, check());
     let (pnd, _, _) = pending(&mut frames, &stream);
-    call(
-        &mut stream,
-        Call::Resolve { pending: pnd, yes: true, force: false, to: None, start: None },
-    );
+    call(&mut stream, Call::Resolve { pending: pnd, yes: true, to: None, start: None });
     std::thread::sleep(Duration::from_millis(600));
     assert_eq!(events(&ledger, "eval.opened").len(), 1, "gathered once");
 

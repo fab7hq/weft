@@ -175,9 +175,6 @@ pub enum Call {
     Resolve {
         pending: String,
         yes: bool,
-        /// The person saw what Weft read off the screen and said to type it
-        /// anyway. The inference is Weft's; the decision is theirs.
-        force: bool,
         /// A send of an Ask typed into this pane instead of the one it was
         /// staged for, or into a new agent of this harness, started for it.
         to: Option<u32>,
@@ -590,9 +587,9 @@ impl Call {
             Call::StartAtLogin { on, program, path } => {
                 ("service.login", json!({"on": on, "program": program, "path": path}))
             }
-            Call::Resolve { pending, yes, force, to, start } => (
+            Call::Resolve { pending, yes, to, start } => (
                 "pending.resolve",
-                json!({"pending": pending, "yes": yes, "force": force, "to": to, "start": start}),
+                json!({"pending": pending, "yes": yes, "to": to, "start": start}),
             ),
             Call::Detach => ("detach", json!({})),
             Call::Dismiss => ("project.dismiss", json!({})),
@@ -686,16 +683,12 @@ impl Call {
                 program: s("program").unwrap_or_default(),
                 path: s("path").unwrap_or_default(),
             },
-            "pending.resolve" => {
-                Call::Resolve {
-                    pending: s("pending")?,
-                    yes: p.get("yes")?.as_bool()?,
-                    // Absent from an older client, which never forced.
-                    force: p.get("force").and_then(Value::as_bool).unwrap_or(false),
-                    to: n("to").map(|n| n as u32),
-                    start: s("start"),
-                }
-            }
+            "pending.resolve" => Call::Resolve {
+                pending: s("pending")?,
+                yes: p.get("yes")?.as_bool()?,
+                to: n("to").map(|n| n as u32),
+                start: s("start"),
+            },
             "detach" => Call::Detach,
             "project.dismiss" => Call::Dismiss,
             "skip.check" => Call::SkipCheck,
@@ -1155,24 +1148,11 @@ mod tests {
             Call::Resize { pane: 1, rows: 24, cols: 80 },
             Call::Attach { pane: 1, form: "screen".into() },
             Call::Attach { pane: 1, form: "none".into() },
-            Call::Resolve {
-                pending: "pnd_1".into(),
-                yes: false,
-                force: false,
-                to: None,
-                start: None,
-            },
+            Call::Resolve { pending: "pnd_1".into(), yes: false, to: None, start: None },
+            Call::Resolve { pending: "pnd_1".into(), yes: true, to: Some(3), start: None },
             Call::Resolve {
                 pending: "pnd_1".into(),
                 yes: true,
-                force: false,
-                to: Some(3),
-                start: None,
-            },
-            Call::Resolve {
-                pending: "pnd_1".into(),
-                yes: true,
-                force: false,
                 to: None,
                 start: Some("codex".into()),
             },

@@ -173,13 +173,7 @@ fn a_restarted_weft_finishes_an_open_eval() {
             match line {
                 Line::Event(Event::Pending { id, .. }) if pending.is_none() => {
                     pending = Some(id.clone());
-                    c.call(Call::Resolve {
-                        pending: id.clone(),
-                        yes: true,
-                        force: false,
-                        to: None,
-                        start: None,
-                    });
+                    c.call(Call::Resolve { pending: id.clone(), yes: true, to: None, start: None });
                 }
                 Line::Event(Event::Added { pane, .. }) => judge = Some(*pane),
                 _ => {}

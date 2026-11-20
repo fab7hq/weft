@@ -167,14 +167,7 @@ impl Remote {
                 }
                 self.send(asked.conn, ok);
             }
-            Err((code, message)) => {
-                if let Carries::Resolve(id, _) = &asked.carries
-                    && code == "not_ready"
-                {
-                    self.not_ready.insert(id.clone());
-                }
-                self.error(asked.conn, &asked.req, &code, &message)
-            }
+            Err((code, message)) => self.error(asked.conn, &asked.req, &code, &message),
         }
     }
 
@@ -541,28 +534,15 @@ impl Remote {
         self.ask(at, call, conn, req, Carries::Agent)
     }
 
-    /// Yes or no. Weft types on its own only into an agent that has said it is
-    /// ready: a yes for one that has not is refused with why, and only then may
-    /// the device say to send it anyway (`force`).
+    /// Yes or no. A yes is typed whatever the agent's state: the machine
+    /// waits a little for one not ready, then types anyway.
     fn resolve(&mut self, conn: u64, m: &Value, req: &Value) -> Result<bool, Refusal> {
         let id = m["pending"].as_str().ok_or(("bad_request", "no pending".to_string()))?;
         let yes = m["yes"].as_bool().ok_or(("bad_request", "yes or no".to_string()))?;
-        let force = m["force"].as_bool().unwrap_or(false);
-        if force && !self.not_ready.contains(id) {
-            return Err(("not_allowed", "send anyway follows not_ready".into()));
-        }
-        let (at, staged) = self
+        let at = self
             .pendings
             .get(id)
-            .map(|(at, p)| {
-                (
-                    *at,
-                    p["agent"]
-                        .as_str()
-                        .and_then(|a| a.rsplit_once('-'))
-                        .and_then(|(_, n)| n.parse::<u32>().ok()),
-                )
-            })
+            .map(|(at, _)| *at)
             .ok_or(("gone", "that was already answered".to_string()))?;
         // A send can go to another agent here, or a new one (remote.md §6).
         let to = match m["to"].as_str() {
@@ -581,28 +561,9 @@ impl Remote {
         {
             return Err(("not_a_send", "only an Ask's prompt can go to another agent".into()));
         }
-        // A new agent is waited for by the daemon; one already running has to
-        // have said it is ready.
-        // A yes that types nothing into an agent (an Eval, a Seal, an Undo)
-        // waits for no agent to be ready.
-        let pane = if start.is_some() { None } else { to.or(staged) };
-        let types = to.is_some()
-            || self.pendings.get(id).is_some_and(|(_, p)| !p["sends"].is_null())
-            || pane.is_some_and(|p| self.projects[at].as_ref().is_some_and(|o| o.agents.holds(p)));
-        if yes && !force && start.is_none() && types {
-            let turn = self.projects[at].as_ref().zip(pane).and_then(|(o, p)| o.agents.turn_of(p));
-            if let Err(why) = weft_core::turns::may_type(turn) {
-                self.not_ready.insert(id.to_string());
-                return Err((
-                    "not_ready",
-                    weft_core::words::fill("not_typed.why", &[("why", why)]),
-                ));
-            }
-        }
-        self.not_ready.remove(id);
         let opens =
             yes && self.pendings.get(id).is_some_and(|(_, p)| p["go"]["word"] == "act.eval");
-        let call = Call::Resolve { pending: id.into(), yes, force: force && yes, to, start };
+        let call = Call::Resolve { pending: id.into(), yes, to, start };
         self.ask(at, call, conn, req, Carries::Resolve(id.into(), opens))
     }
 

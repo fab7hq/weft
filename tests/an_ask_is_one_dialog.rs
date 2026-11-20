@@ -215,43 +215,22 @@ fn an_ask_shows_its_exact_prompt_and_send_types_only_that() {
     assert!(compiled(&root).is_empty(), "nothing recorded before Send");
 
     // Cancel records nothing.
-    c.call(Call::Resolve { pending, yes: false, force: false, to: None, start: None });
+    c.call(Call::Resolve { pending, yes: false, to: None, start: None });
     std::thread::sleep(Duration::from_millis(300));
     assert!(compiled(&root).is_empty(), "a Cancel records nothing");
 
-    // Send while the agent works: refused at once, nothing recorded or
-    // typed, and the dialog stays.
+    // Send while the agent works: no second question, the Send just sends,
+    // compiled, confirmed by Weft, and typed as shown for the harness to queue.
     let (pending, _, _, _) = ask(&mut c);
-    let turn = |c: &mut Client, line: &str, want: Option<Turn>| {
-        let id = c.call(Call::Input { pane, bytes: format!("{line}\r").into_bytes() });
-        c.wait(id, |e| match e {
-            Event::Agents { panes, .. } if panes.first().copied().flatten() == want => Some(()),
-            _ => None,
-        })
-        .expect("the agent's turn");
-    };
-    turn(&mut c, "work", Some(Turn::Working));
-    let busy = c.call(Call::Resolve {
-        pending: pending.clone(),
-        yes: true,
-        force: false,
-        to: None,
-        start: None,
-    });
-    let why = "Weft did not type it: the agent is working.";
-    let said = c.wait(busy, |e| match e {
-        Event::Injected { refusal, .. } => Some(refusal),
+    let id = c.call(Call::Input { pane, bytes: b"work\r".to_vec() });
+    c.wait(id, |e| match e {
+        Event::Agents { panes, .. } if panes.first().copied().flatten() == Some(Turn::Working) => {
+            Some(())
+        }
         _ => None,
-    });
-    assert_eq!(said, Ok(Some(why.into())), "everyone watching is told");
-    assert_eq!(c.wait(busy, |_| None::<()>), Err(why.into()), "and the Send is refused");
-    std::thread::sleep(Duration::from_millis(300));
-    assert!(compiled(&root).is_empty(), "a refused Send records nothing");
-    assert!(!std::fs::read_to_string(dir.join("took")).unwrap().contains("/goal"), "nor types");
-
-    // Send once it is ready: compiled, confirmed by Weft, and typed as shown.
-    turn(&mut c, "rest", Some(Turn::Ready));
-    let yes = c.call(Call::Resolve { pending, yes: true, force: false, to: None, start: None });
+    })
+    .expect("the agent works");
+    let yes = c.call(Call::Resolve { pending, yes: true, to: None, start: None });
     let refusal = c.wait(yes, |e| match e {
         Event::Injected { refusal, .. } => Some(refusal),
         _ => None,

@@ -533,26 +533,14 @@ fn a_staged_prompt_reaches_every_client_and_is_answered_once() {
 
     // The second client answers. The first is told, and its own answer finds
     // nothing left to answer.
-    two.send(Call::Resolve {
-        pending: id_two.clone(),
-        yes: true,
-        force: false,
-        to: None,
-        start: None,
-    });
+    two.send(Call::Resolve { pending: id_two.clone(), yes: true, to: None, start: None });
     assert_eq!(one.wait_for_resolved(), (id_one.clone(), true));
     assert!(one.wait_for("ship the endpoint", 3).contains("ship the endpoint"), "typed once");
 
     // And the first client's own answer finds nothing left to answer, rather
     // than typing the prompt a second time.
     assert_eq!(
-        one.answer(Call::Resolve {
-            pending: id_one,
-            yes: true,
-            force: false,
-            to: None,
-            start: None
-        }),
+        one.answer(Call::Resolve { pending: id_one, yes: true, to: None, start: None }),
         Err("gone".to_string())
     );
 
@@ -896,41 +884,31 @@ fn the_daemon_types_on_its_own_only_into_an_agent_that_said_it_is_ready() {
     // A fresh agent that has said nothing yet: the Send waits for it to say
     // it is ready, and types then.
     let id = stage(&mut c, "first-typed");
-    c.send(Call::Resolve { pending: id, yes: true, force: false, to: None, start: None });
+    c.send(Call::Resolve { pending: id, yes: true, to: None, start: None });
     assert_eq!(c.injected_within(Duration::from_millis(800)), None, "it waits");
     agent_says(&socket, &root, "codex", 0, "c1", "ready");
     assert_eq!(c.wait_for_refusal(), None, "typed once the agent said it is ready");
 
     // The person types in it and presses Enter, and its hook says it is
-    // working: a Send is refused at once, with why, and its dialog stays.
+    // working: a Send is typed all the same, for the harness to queue.
     c.send(Call::Input { pane: 0, bytes: b"go\r".to_vec() });
     std::thread::sleep(Duration::from_millis(50));
     agent_says(&socket, &root, "codex", 0, "c1", "working");
     c.wait_for_state(Some(Turn::Working));
-    let id = stage(&mut c, "not-yet");
-    let resolve = |c: &mut Client, id: &str| {
-        let pending = id.to_string();
-        c.send(Call::Resolve { pending, yes: true, force: false, to: None, start: None });
-        c.injected_within(Duration::from_secs(2)).expect("refused at once")
-    };
-    let said = resolve(&mut c, &id);
-    assert_eq!(said.as_deref(), Some("Weft did not type it: the agent is working."));
-
-    let id = stage(&mut c, "anyway-typed");
-    c.send(Call::Resolve { pending: id, yes: true, force: true, to: None, start: None });
-    assert_eq!(c.wait_for_refusal(), None, "the person said to type it anyway");
+    let id = stage(&mut c, "busy-typed");
+    c.send(Call::Resolve { pending: id, yes: true, to: None, start: None });
+    assert_eq!(c.wait_for_refusal(), None, "typed into a working agent");
 
     agent_says(&socket, &root, "codex", 0, "c1", "turn_ended");
     c.wait_for_state(Some(Turn::TurnEnded));
     let id = stage(&mut c, "now-typed");
-    c.send(Call::Resolve { pending: id, yes: true, force: false, to: None, start: None });
+    c.send(Call::Resolve { pending: id, yes: true, to: None, start: None });
     assert_eq!(c.wait_for_refusal(), None);
 
     let mut stop = Client::attach(&socket, &root);
     let replay = stop.replay();
-    assert!(!replay.contains("not-yet"), "{replay}");
     assert!(
-        ["first-typed", "anyway-typed", "now-typed"].iter().all(|t| replay.contains(t)),
+        ["first-typed", "busy-typed", "now-typed"].iter().all(|t| replay.contains(t)),
         "{replay}"
     );
     stop.send(Call::Shutdown);
@@ -1081,7 +1059,7 @@ fn a_seal_names_its_units_eval_and_an_eval_acts_on_the_unit() {
         _ => None,
     });
     assert_eq!(pending.1, "Eval this work?");
-    c.send(Call::Resolve { pending: pending.0, yes: true, force: false, to: None, start: None });
+    c.send(Call::Resolve { pending: pending.0, yes: true, to: None, start: None });
     std::thread::sleep(Duration::from_millis(600));
     let read = Call::Read {
         what: "history".into(),

@@ -95,7 +95,7 @@ impl Session {
             job: Some(job),
             reads: None,
         };
-        self.type_it(at, typing, false);
+        self.type_it(at, typing);
         Answer::nothing()
     }
 

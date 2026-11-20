@@ -237,7 +237,6 @@ pub const WORDS: &[(&str, &str)] = &[
     ("act.eval_view", "Eval view"),
     ("act.cancel", "Cancel"),
     ("act.send", "Send"),
-    ("act.send_anyway", "Send anyway"),
     ("act.resume", "Resume"),
     ("act.start", "Start"),
     ("act.close", "Close"),
@@ -352,11 +351,6 @@ pub const WORDS: &[(&str, &str)] = &[
     ("seal.r.waiting_on_something", "waiting on something"),
     ("seal.r.not_needed", "not needed"),
     ("seal.r.superseded", "superseded"),
-    ("not_ready.title", "The agent has not said it is ready"),
-    (
-        "not_ready.why",
-        "Weft types on its own only into an agent that has said it is ready. If you can see it is, say so and Weft will type.",
-    ),
     ("not_ready.working", "the agent is working"),
     ("not_ready.asking", "the agent is asking you something"),
     ("not_ready.unknown", "Weft can't tell whether the agent is ready"),
@@ -372,10 +366,6 @@ pub const WORDS: &[(&str, &str)] = &[
     ),
     ("not_typed.in_flight", "Weft did not type it: it is still typing the last one."),
     // A send is proven by what the harness reported it received.
-    (
-        "not_typed.paste_not_shown",
-        "Weft did not press Enter: the agent's screen did not change when the Ask was pasted. The text may be in its composer.",
-    ),
     (
         "not_typed.not_the_ask",
         "The agent received something other than the Ask, so the Ask was not delivered. You can stop the agent in Terminal.",

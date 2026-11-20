@@ -2,7 +2,6 @@
 //! be done; or what waits on the person: a staged prompt, a Seal's
 //! disposition, a device asking to connect, a device to remove, quitting.
 
-use weft_core::turns;
 use weft_core::words::{fill, word};
 
 use crate::action::{Answer, BarAct, SheetAct};
@@ -169,31 +168,6 @@ fn render_staged_bar(
             )
             .child(crate::sheets::send_to::render(v, pick))
     });
-    // The agent has not said it is ready: Weft did not type it, and why. A
-    // dialog that types nothing waits on no agent.
-    let not_ready = client.last_refusal.clone().or_else(|| {
-        turns::may_type(pane.and_then(|p| p.turn))
-            .err()
-            .filter(|_| !staged.typed().is_empty())
-            .map(|why| fill("not_typed.why", &[("why", why)]))
-    });
-    if let Some(reason) = not_ready {
-        return asking_bar("Cancel / Send bar", palette::BLUE_BORDER)
-            .child(title(word("not_ready.title")))
-            .child(note(reason, palette::MUTED))
-            .child(note(word("not_ready.why"), palette::MUTED))
-            .children(choice)
-            .child(bar_acts(vec![
-                cancel,
-                button(
-                    "btn Send anyway",
-                    word("act.send_anyway"),
-                    resolve(Answer::Anyway),
-                    Tone::Primary,
-                    Size::Sheet,
-                ),
-            ]));
-    }
     // Its title, why, and the exact bytes Send types, when it types any, the
     // route's command marked.
     let typed = String::from_utf8_lossy(staged.typed()).into_owned();

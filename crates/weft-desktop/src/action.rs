@@ -128,8 +128,6 @@ pub enum TreeAct {
 pub enum Answer {
     No,
     Yes,
-    /// Yes, though the agent has not said it is ready.
-    Anyway,
 }
 
 /// The bar along the window's foot, and what it asks.

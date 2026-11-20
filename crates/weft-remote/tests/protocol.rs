@@ -19,18 +19,17 @@ fn nothing_the_never_sent_list_names_reaches_the_daemon() {
         json!({"type": "act", "agent": agent, "act": "follow_up", "text": "x", "req": 2}),
         json!({"type": "act", "agent": agent, "act": "start", "req": 3}),
         json!({"type": "act", "agent": agent, "act": "confirm", "req": 4}),
-        json!({"type": "resolve", "pending": "pnd_1", "yes": true, "force": true, "req": 5}),
-        json!({"type": "read", "agent": agent, "what": "wording", "req": 6}),
-        json!({"type": "start", "harness": "sh", "spec": "/bin/sh", "req": 7}),
-        json!({"type": "agent.start", "harness": "sh", "req": 8}),
-        json!({"type": "close", "agent": agent, "req": 9}),
-        json!({"type": "stage", "agent": agent, "text": "rm -rf", "req": 10}),
-        json!({"type": "setup", "req": 11}),
-        json!({"type": "turbo", "on": true, "req": 12}),
-        json!({"type": "shutdown", "req": 13}),
-        json!({"type": "confirm", "unit": "ask_1", "req": 14}),
+        json!({"type": "read", "agent": agent, "what": "wording", "req": 5}),
+        json!({"type": "start", "harness": "sh", "spec": "/bin/sh", "req": 6}),
+        json!({"type": "agent.start", "harness": "sh", "req": 7}),
+        json!({"type": "close", "agent": agent, "req": 8}),
+        json!({"type": "stage", "agent": agent, "text": "rm -rf", "req": 9}),
+        json!({"type": "setup", "req": 10}),
+        json!({"type": "turbo", "on": true, "req": 11}),
+        json!({"type": "shutdown", "req": 12}),
+        json!({"type": "confirm", "unit": "ask_1", "req": 13}),
         // A resume names a session's id, never "the latest" (remote.md §6).
-        json!({"type": "start", "project": "work", "harness": "sh", "resume": true, "req": 15}),
+        json!({"type": "start", "project": "work", "harness": "sh", "resume": true, "req": 14}),
     ];
     for (n, attempt) in attempts.iter().enumerate() {
         d.send(attempt.clone());

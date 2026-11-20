@@ -148,7 +148,7 @@ fn each_judge_starts_in_its_roles_harness() {
         }
     };
     assert!(why.contains("sh-a") && why.contains("sh-b"), "{why}");
-    c.call(Call::Resolve { pending, yes: true, force: false, to: None, start: None });
+    c.call(Call::Resolve { pending, yes: true, to: None, start: None });
 
     let ws = api::workspace(&root).expect("the workspace");
     let mut judges: BTreeMap<u32, Judge> = BTreeMap::new();

@@ -503,14 +503,12 @@ pub struct ProjectClient {
     /// What failed of a job no wait of this window shows: said once, in
     /// the bar.
     pub jobs_failed: Vec<String>,
-    /// Typing a message was refused, while no dialog was there to say so:
-    /// the window says it, once.
+    /// Typing was refused: the window says it, once.
     pub typing_refused: Option<String>,
     /// How many times the daemon has said what `weft remote` is at.
     pub remotes: u64,
     told: HashMap<u32, (u16, u16)>,
     pub panes: Vec<PaneView>,
-    pub last_refusal: Option<String>,
     pub unrecorded: Option<String>,
     pub units: Vec<Unit>,
     pub readiness: Value,
@@ -605,7 +603,6 @@ impl ProjectClient {
             remotes: 0,
             told: HashMap::new(),
             panes: Vec::new(),
-            last_refusal: None,
             unrecorded: None,
             units: Vec::new(),
             readiness: serde_json::json!({}),
@@ -1323,11 +1320,9 @@ impl ProjectClient {
             Event::Progress { job } => self.take_job(job),
             Event::Resolved { id, .. } => self.waiting.retain(|w| w.id != id),
             Event::Injected { refusal, unrecorded, .. } => {
-                // With no dialog to say it, a message's refusal is the window's.
-                if self.waiting.is_empty() && refusal.is_some() {
-                    self.typing_refused = refusal.clone();
+                if refusal.is_some() {
+                    self.typing_refused = refusal;
                 }
-                self.last_refusal = refusal;
                 self.unrecorded = unrecorded;
             }
             Event::Readiness { states } => self.readiness = states,
@@ -1429,7 +1424,6 @@ impl ProjectClient {
         eval: Option<&str>,
         start: Option<&str>,
     ) -> Result<u64> {
-        self.last_refusal = None;
         self.unrecorded = None;
         let call = Call::Act {
             act: act.to_string(),
@@ -1446,7 +1440,6 @@ impl ProjectClient {
     /// Eval the work `unit` names, read by `start` when the person picked a
     /// harness in its dialog; the answer names the dialog staged.
     pub fn eval(&mut self, unit: &str, pane: Option<u32>, start: Option<&str>) -> Result<u64> {
-        self.last_refusal = None;
         self.unrecorded = None;
         let call = Call::Act {
             act: "eval".into(),
@@ -1469,7 +1462,6 @@ impl ProjectClient {
         text: &str,
         draft: Option<weft_core::ask::Draft>,
     ) -> Result<u64> {
-        self.last_refusal = None;
         self.unrecorded = None;
         let call = Call::Act {
             act: act.to_string(),
@@ -1492,7 +1484,6 @@ impl ProjectClient {
         reason: Option<&str>,
         answers: Option<Vec<weft_core::ask::SealAnswer>>,
     ) -> Result<u64> {
-        self.last_refusal = None;
         let call = Call::Act {
             act: "seal".into(),
             unit: None,
@@ -1577,14 +1568,12 @@ impl ProjectClient {
         &mut self,
         pending: &str,
         yes: bool,
-        force: bool,
         to: Option<u32>,
         start: Option<&str>,
     ) -> Result<u64> {
         let call = Call::Resolve {
             pending: pending.to_string(),
             yes,
-            force,
             to,
             start: start.map(str::to_string),
         };

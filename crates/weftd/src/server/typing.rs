@@ -13,12 +13,25 @@ pub(super) const STARTED_QUIET: std::time::Duration = std::time::Duration::from_
 /// still.
 pub(super) const STARTED_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// Whether a prompt may be typed into an agent now: at once when it says it
+/// is ready and its screen has settled (an agent whose hooks say it is ready
+/// may have drawn nothing); otherwise once its screen has drawn something and
+/// held still, or once the start wait is over. A state read wrong never holds
+/// a prompt, and a harness at work queues what is typed into it.
+pub(super) fn may_send(
+    ready: bool,
+    settled: bool,
+    still: bool,
+    waited: std::time::Duration,
+) -> bool {
+    (ready && settled) || still || waited >= STARTED_TIMEOUT
+}
+
 /// A send waiting for its agent to be ready, until it may be typed or its
 /// deadline passes.
 pub(super) struct Starting {
     w: Waiting,
-    force: bool,
-    until: std::time::Instant,
+    since: std::time::Instant,
     /// The screen when it last changed: only whether it changes is read.
     screen: (std::time::Instant, String),
 }
@@ -140,76 +153,61 @@ impl Session {
     /// Type a prompt that was said yes to, once its agent is ready: its turn
     /// is not running, by its hooks, and its screen has not changed
     /// for [`STARTED_QUIET`]. A busy agent, or one still
-    /// starting, is waited for on the tick, never here. The refusal, if
-    /// there is one, is the person's to see.
-    pub(super) fn type_it(&mut self, project: usize, w: Waiting, force: bool) {
+    /// starting, is waited for on the tick, never here, and typed into
+    /// anyway: see [`may_send`].
+    pub(super) fn type_it(&mut self, project: usize, w: Waiting) {
         if let Some(job) = &w.job {
             job.to("step.waiting_ready");
         }
         let now = std::time::Instant::now();
         let screen = (now, String::new());
-        let until = now + STARTED_TIMEOUT;
-        self.projects[project].starting.push(Starting { w, force, until, screen });
+        self.projects[project].starting.push(Starting { w, since: now, screen });
         self.type_what_started(project);
     }
 
-    /// Type each send whose agent is ready now, or whose wait is over. A
-    /// screen that never holds still (a spinner) does not stop a ready agent
-    /// past the deadline; a turn that is running does.
+    /// Type each send [`may_send`] lets through now.
     pub(super) fn type_what_started(&mut self, project: usize) {
         let waiting = std::mem::take(&mut self.projects[project].starting);
-        let now = std::time::Instant::now();
         for mut s in waiting {
-            let ready =
-                s.force || crate::turns::may_type(self.pane_state(project, s.w.pane)).is_ok();
-            // The words on it are not read, only whether it has gone still. An
-            // agent whose hooks say it is ready may have drawn nothing; one the
-            // person forced must at least have drawn something.
-            let still = match self.projects[project].slot(s.w.pane) {
+            let ready = crate::turns::may_type(self.pane_state(project, s.w.pane)).is_ok();
+            // The words on it are not read, only whether it has gone still.
+            let (still, settled) = match self.projects[project].slot(s.w.pane) {
                 Some(slot) => {
-                    slot.pane.gone_quiet(&mut s.screen, STARTED_QUIET)
-                        || (!s.force && s.screen.0.elapsed() >= STARTED_QUIET)
+                    let still = slot.pane.gone_quiet(&mut s.screen, STARTED_QUIET);
+                    (still, still || s.screen.0.elapsed() >= STARTED_QUIET)
                 }
-                None => true,
+                None => (true, true),
             };
-            if now >= s.until || (ready && still) {
-                self.type_now(project, s.w, s.force);
+            if may_send(ready, settled, still, s.since.elapsed()) {
+                self.type_now(project, s.w);
             } else {
                 self.projects[project].starting.push(s);
             }
         }
     }
 
-    pub(super) fn type_now(&mut self, project: usize, w: Waiting, force: bool) {
-        // Weft types on its own only into an agent that reported it is
-        // ready. When the person has been told and said to type anyway,
-        // the decision is theirs.
-        let not_ready =
-            if force { Ok(()) } else { crate::turns::may_type(self.pane_state(project, w.pane)) };
+    pub(super) fn type_now(&mut self, project: usize, w: Waiting) {
         let tx = self.tx.clone();
         let refusal = match self.projects[project].slot(w.pane) {
-            Some(slot) => match not_ready {
-                Err(why) if slot.pane.running() => Some(why.to_string()),
-                _ => {
-                    if let Some(job) = &w.job {
-                        job.to("step.typing_prompt");
-                        job.to("step.typing_request");
-                    }
-                    let job = Job {
-                        typist: slot.pane.typist(),
-                        payload: w.payload,
-                        how: w.how,
-                        project,
-                        pane: w.pane,
-                        sends: w.sends.clone(),
-                        job: w.job.clone(),
-                    };
-                    match slot.typer.get_or_insert_with(|| typer(tx)).send(job) {
-                        Ok(()) => None,
-                        Err(_) => Some("NoProcess".to_string()),
-                    }
+            Some(slot) => {
+                if let Some(job) = &w.job {
+                    job.to("step.typing_prompt");
+                    job.to("step.typing_request");
                 }
-            },
+                let job = Job {
+                    typist: slot.pane.typist(),
+                    payload: w.payload,
+                    how: w.how,
+                    project,
+                    pane: w.pane,
+                    sends: w.sends.clone(),
+                    job: w.job.clone(),
+                };
+                match slot.typer.get_or_insert_with(|| typer(tx)).send(job) {
+                    Ok(()) => None,
+                    Err(_) => Some("NoProcess".to_string()),
+                }
+            }
             None => Some("NoProcess".to_string()),
         };
         match (refusal, w.sends) {
@@ -266,7 +264,7 @@ impl Session {
         }
     }
 
-    /// A pane's worker finished typing a send. One it could not submit waits
+    /// A pane's worker finished typing a send. One it could not type waits
     /// for no report.
     pub(super) fn typed(
         &mut self,
@@ -278,8 +276,6 @@ impl Session {
     ) {
         let refusal = match typed {
             Err(r) => Some(format!("{r:?}")),
-            // The paste never changed the screen: Enter is withheld.
-            Ok(a) if !a.submitted => Some("PasteNotShown".to_string()),
             Ok(_) => None,
         };
         // Typed: a send of an Ask waits for its agent to say it got it;
@@ -488,7 +484,7 @@ impl Session {
         send: Compiling,
         compiled: Result<Option<String>, String>,
     ) -> Answer {
-        let Compiling { mut w, into, force } = send;
+        let Compiling { mut w, into } = send;
         let job = w.job.clone();
         let fail = |s: &mut Self, code: &'static str, why: String| {
             if let Some(job) = &job {
@@ -540,7 +536,7 @@ impl Session {
             let ask = w.sends.clone();
             job.on(weft_proto::JobOn { ask, pane: Some(w.pane), harness, ..Default::default() });
         }
-        self.type_it(at, w, force);
+        self.type_it(at, w);
         Answer::nothing()
     }
 
@@ -582,8 +578,20 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
+
+    /// A prompt is typed at once into an agent that says it is ready and has
+    /// settled; otherwise once its screen is still, or once the start wait is
+    /// over for a screen that never holds still, whatever state it reads as.
+    #[test]
+    fn a_prompt_is_typed_once_ready_still_or_waited_for() {
+        let (none, some) = (std::time::Duration::ZERO, std::time::Duration::from_secs(1));
+        assert!(may_send(true, true, false, none), "ready and settled");
+        assert!(!may_send(true, false, false, some), "ready, still drawing");
+        assert!(may_send(false, true, true, none), "read as busy, but still");
+        assert!(!may_send(false, true, false, some), "read as busy, blank");
+        assert!(may_send(false, false, false, STARTED_TIMEOUT), "waited out");
+    }
 
     #[test]
     fn a_shared_prompt_answers_only_the_one_fresh_pane_waiting() {
