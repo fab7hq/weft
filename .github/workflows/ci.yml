@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-14]
+        os: [ubuntu-24.04, macos-15]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -50,27 +50,32 @@ jobs:
           echo "$PWD/target/debug" >> "$GITHUB_PATH"
           ./target/debug/ringframe init --global \
             --from crates/ringframe/tests/fixtures/config
-      - name: The Sense bundle this Weft pins, where a first start puts it
-        # The model's tests read it; Weft downloads it rather than ship it.
-        # Checked as Weft checks it: the manifest against the digest
-        # versions.rs names, each file against the manifest.
+      - name: The Sense bundle the tests read, where they look for it
+        # Weft downloads Sense rather than ship it. Checked as Weft checks it:
+        # the manifest against the digest versions.rs pins for tests, each
+        # file it names against the manifest.
         run: |
           set -eu
           v=crates/weftd/src/versions.rs
-          url=$(sed -n 's/^pub const SENSE_URL: &str = "\(.*\)";/\1/p' "$v")
-          want=$(grep -A1 '^pub const SENSE_MANIFEST_SHA256' "$v" | grep -oE '[0-9a-f]{64}')
-          dir="$HOME/.fab7/sense/sense-d"
+          version=$(sed -n 's/^ *pub(crate) const TESTED: &str = "\(.*\)";/\1/p' "$v")
+          want=$(grep -A1 'pub(crate) const TESTED_SHA256' "$v" | grep -oE '[0-9a-f]{64}')
+          [ -n "$version" ] && [ -n "$want" ] || { echo "versions.rs pins no tested Sense"; exit 1; }
+          url="https://huggingface.co/fab7hq/sense-xs/resolve/v$version"
+          dir="$HOME/.fab7/sense/sense-xs"
           mkdir -p "$dir"
-          for f in manifest.json sense.int8.onnx tokenizer.json golden_vectors.jsonl; do
-              curl -fsSL --retry 3 -o "$dir/$f" "$url/$f"
-          done
-          sum() { shasum -a 256 "$1" | cut -d' ' -f1; }
-          [ "$(sum "$dir/manifest.json")" = "$want" ] || { echo "manifest.json is not the pinned one"; exit 1; }
-          python3 - "$dir" <<'PY'
-          import hashlib, json, pathlib, sys
-          d = pathlib.Path(sys.argv[1])
-          for f in json.loads((d / "manifest.json").read_text())["files"].values():
-              assert hashlib.sha256((d / f["path"]).read_bytes()).hexdigest() == f["sha256"], f["path"]
+          curl -fsSL --retry 3 -o "$dir/manifest.json" "$url/manifest.json"
+          [ "$(shasum -a 256 "$dir/manifest.json" | cut -d' ' -f1)" = "$want" ] || { echo "manifest.json is not the pinned one"; exit 1; }
+          python3 - "$dir" "$url" <<'PY'
+          import hashlib, json, pathlib, sys, urllib.request
+          d, url = pathlib.Path(sys.argv[1]), sys.argv[2]
+          m = json.loads((d / "manifest.json").read_text())
+          named = [(f["path"], f["sha256"]) for f in m["files"].values()]
+          named += [(a["file"], a["sha256"]) for a in m.get("adapters", [])]
+          for path, sha in named + [("golden_vectors.jsonl", None)]:
+              (d / path).parent.mkdir(parents=True, exist_ok=True)
+              urllib.request.urlretrieve(f"{url}/{path}", d / path)
+              if sha:
+                  assert hashlib.sha256((d / path).read_bytes()).hexdigest() == sha, path
           PY
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
@@ -90,7 +95,7 @@ jobs:
         include:
           - target: aarch64-apple-darwin
             desktop: aarch64-apple-darwin
-            os: macos-14
+            os: macos-15
           - target: x86_64-unknown-linux-gnu
             desktop: x86_64-unknown-linux-gnu
             os: ubuntu-24.04
