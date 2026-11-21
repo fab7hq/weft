@@ -264,12 +264,8 @@ pub(crate) fn matches(entry: &Value, classification: &Value) -> bool {
             return false;
         }
     }
-    if non_empty_list(a.get("effects"))
-        && !any_shared(&a["effects"], classification.get("effects").unwrap_or(&Value::Null))
-    {
-        return false;
-    }
-    true
+    !non_empty_list(a.get("effects"))
+        || any_shared(&a["effects"], classification.get("effects").unwrap_or(&Value::Null))
 }
 
 /// Installed practice domains, and whether a layer switches each on.

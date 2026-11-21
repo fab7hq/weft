@@ -1177,7 +1177,7 @@ fn blobs(dir: &Path, wanted: &[String]) -> Vec<Option<String>> {
     if asked.is_empty() {
         return texts;
     }
-    let input: Vec<u8> = asked.iter().flat_map(|&i| wanted[i].bytes().chain([b'\n'])).collect();
+    let input: Vec<u8> = asked.iter().flat_map(|&i| wanted[i].bytes().chain(*b"\n")).collect();
     let Some(out) = crate::evaluate::git_input(dir, &["cat-file", "--batch"], &input) else {
         return texts;
     };

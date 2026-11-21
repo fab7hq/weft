@@ -176,7 +176,7 @@ impl Known {
                 drivers.insert(driver.to_string());
             }
         }
-        let paths: Vec<u8> = names.iter().flat_map(|n| n.bytes().chain([b'\n'])).collect();
+        let paths: Vec<u8> = names.iter().flat_map(|n| n.bytes().chain(*b"\n")).collect();
         let ids = |filters: bool| -> Option<Vec<String>> {
             let args: &[&str] = if filters {
                 &["hash-object", "--stdin-paths"]
@@ -206,7 +206,7 @@ impl Known {
         }
         // An id whose prefix names another object is made longer by git.
         let prefixes: Vec<u8> =
-            filtered.iter().flat_map(|id| id[..short].bytes().chain([b'\n'])).collect();
+            filtered.iter().flat_map(|id| id[..short].bytes().chain(*b"\n")).collect();
         let found = String::from_utf8(run(&["cat-file", "--batch-check"], &prefixes)?).ok()?;
         let found: Vec<&str> = found.lines().collect();
         if found.len() != names.len() {
