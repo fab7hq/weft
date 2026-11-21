@@ -34,7 +34,6 @@ pub const WORDS: &[(&str, &str)] = &[
     ("tree.search_placeholder", "Search agents and works"),
     ("tree.search_none", "Nothing matches {q}."),
     ("web.search.clear", "Clear the search"),
-    ("tree.open", "Open"),
     ("tree.eval", "Eval {n}"),
     ("tree.judging", "not read yet"),
     ("tree.sealed_earlier", "{n} sealed earlier"),
@@ -88,9 +87,7 @@ pub const WORDS: &[(&str, &str)] = &[
     ("unit.sealed", "{time} · by {by}"),
     ("unit.not_sealed", "not sealed yet"),
     ("unit.workflow", "Workflow"),
-    ("unit.confidence", "confidence {agreement}"),
     ("tree.not_sealed", "not sealed"),
-    ("tree.sealed", "Sealed"),
     ("tree.seal", "Seal {n}"),
     ("state.running", "running"),
     ("state.ended", "ended"),
@@ -245,7 +242,6 @@ pub const WORDS: &[(&str, &str)] = &[
     ("ask.send_to", "SEND TO"),
     // Beside the agent a prompt was written in, in SEND TO.
     ("send.wrote_it", "wrote it"),
-    ("bar.will_type", "Weft will type  {command}  into {harness}."),
     // The one dialog an Ask has: it shows the exact prompt.
     ("dialog.ask.title", "Ask {harness}?"),
     ("dialog.ask.exact", "This is exactly what {harness} will receive."),
@@ -331,7 +327,6 @@ pub const WORDS: &[(&str, &str)] = &[
     ("follow_up.from_eval", "from what Eval {n} found"),
     // The one dialog a Seal has: the decision, and why when it is not a yes.
     ("dialog.seal.title", "Seal this work?"),
-    ("dialog.seal.verdict", "VERDICT"),
     ("dialog.seal.decision", "DECISION"),
     ("dialog.seal.why", "WHY"),
     ("dialog.seal.optional", "optional"),
@@ -499,7 +494,6 @@ pub const WORDS: &[(&str, &str)] = &[
     ("why.quiet", "Weft can't tell whether this {harness} session runs: resume it to Ask it."),
     ("why.judging", "{title} is not read yet: Eval goes on with it."),
     ("why.split_needs_two", "A split needs two agents in the pane."),
-    ("why.four_panes", "Four panes at most. Move a tab into another pane, or Join all panes."),
     ("web.why.four_panes", "Four panes at most. Move a tab into another pane, or Join all panes."),
     ("why.no_room", "No room for another pane here."),
     ("act.layout", "Layout"),
@@ -701,12 +695,10 @@ pub const WORDS: &[(&str, &str)] = &[
     ("web.push.failed", "The browser could not subscribe to pushes."),
     // The web's own wording of agents and rounds (M/D11.x).
     ("web.bar.selected", "selected: {what}"),
-    ("web.bar.open_round", "Open round"),
     ("web.detail.not_evaluated", "not evaluated yet"),
     ("web.detail.its_session", "Its session"),
     ("web.detail.covers", "covers {n} Asks"),
     ("web.detail.covers_one", "covers 1 Ask"),
-    ("web.eval.asks", "The Asks it covers"),
     ("web.eval.sealed_in", "Sealed in Seal {n}"),
     (
         "web.eval.seal_what",
@@ -798,7 +790,6 @@ pub const WORDS: &[(&str, &str)] = &[
     ("desktop.settings.thorough", "Thorough"),
     ("desktop.settings.custom", "Custom"),
     ("desktop.settings.each_judge", "Each reader"),
-    ("desktop.settings.type_model", "Type a model…"),
     (
         "desktop.settings.effort_reaches_model",
         "In {harness}, this sets each reader's reasoning, and how much it checks beyond the change.",
