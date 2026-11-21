@@ -2292,18 +2292,24 @@ impl Session {
                             .collect();
                         for name in todo {
                             let h = harnesses.find(&name).cloned().expect("a row is a harness");
-                            let latest = base.plugin.clone();
+                            let (latest, release) = (base.plugin.clone(), base.latest.clone());
                             let step =
                                 jobs::step("step.running", &[("command", "")], Some("steps"));
                             let job = update_job(&jobs, asked, &name, &[step]);
-                            let ran = run(out, &h, latest.as_deref(), |state, (i, n)| {
-                                if let weft_core::onboarding::State::Running(line) = &state {
-                                    job.now(0);
-                                    job.arg("command", line.clone());
-                                    job.count(i as u64, Some(n as u64));
-                                }
-                                show(&with(base.clone(), &name, state));
-                            });
+                            let ran = run(
+                                out,
+                                &h,
+                                latest.as_deref(),
+                                release.as_deref(),
+                                |state, (i, n)| {
+                                    if let weft_core::onboarding::State::Running(line) = &state {
+                                        job.now(0);
+                                        job.arg("command", line.clone());
+                                        job.count(i as u64, Some(n as u64));
+                                    }
+                                    show(&with(base.clone(), &name, state));
+                                },
+                            );
                             if let Some(state) = ran {
                                 let why = match &state {
                                     weft_core::onboarding::State::Failed { said, .. } => {

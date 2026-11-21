@@ -131,7 +131,17 @@ pub fn config_sync() -> Result<Value, Error> {
     config_sync_with(&|_| {})
 }
 
-pub use crate::workspace::SyncStep;
+pub use crate::workspace::{Part, SyncStep};
+
+/// Install one fab7 release whole, RingFrame's configuration and `parts` beside it: the
+/// newest release this build runs with, or the copy in `source` (a `.../ringframe/config`).
+pub fn release_sync_with(
+    source: Option<&std::path::Path>,
+    parts: &[Part],
+    progress: &dyn Fn(SyncStep),
+) -> Result<Value, Error> {
+    crate::workspace::install_release(source, parts, progress).map_err(workspace_error)
+}
 
 /// As `config_sync`, telling `progress` each step as it starts.
 pub fn config_sync_with(progress: &dyn Fn(SyncStep)) -> Result<Value, Error> {

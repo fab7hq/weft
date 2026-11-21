@@ -91,6 +91,7 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
           DESKTOP: ${{ matrix.desktop }}
+          FAB7_TAG: ${{ steps.fab7.outputs.tag }}
         run: |
           set -eu
           case "$TAG" in

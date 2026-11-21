@@ -113,6 +113,22 @@ pub fn newest_release<'a>(tags: impl IntoIterator<Item = &'a str>) -> Option<&'a
     tags.into_iter().filter_map(release_version).reduce(|a, b| if older(a, b) { b } else { a })
 }
 
+/// The releases among `tags`, newest first, by version.
+pub fn releases_newest_first<'a>(tags: impl IntoIterator<Item = &'a str>) -> Vec<&'a str> {
+    let mut found: Vec<&str> = tags.into_iter().filter_map(release_version).collect();
+    found.sort_by(|a, b| {
+        if older(a, b) {
+            std::cmp::Ordering::Greater
+        } else if older(b, a) {
+            std::cmp::Ordering::Less
+        } else {
+            std::cmp::Ordering::Equal
+        }
+    });
+    found.dedup();
+    found
+}
+
 /// A release tag's version: `v`, then numbers and dots, and nothing else.
 pub fn release_version(tag: &str) -> Option<&str> {
     let v = tag.strip_prefix('v')?;

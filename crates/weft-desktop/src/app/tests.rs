@@ -125,6 +125,8 @@ fn sample_harnesses() -> Harnesses {
         install_plugin: None,
         update_marketplace: None,
         update_plugin: None,
+        uninstall_plugin: None,
+        remove_marketplace: None,
         listing: None,
         manifest: None,
         resume: vec!["--resume".into()],

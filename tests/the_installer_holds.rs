@@ -92,6 +92,12 @@ impl Release {
         // the latest release page prints where it leads.
         let bin = dir.path().join("bin");
         std::fs::create_dir_all(&bin).unwrap();
+        // A Homebrew that keeps no Weft, whatever the machine running the tests has.
+        let brew = bin.join("brew");
+        std::fs::write(&brew, format!("#!/bin/sh\necho {}\n", dir.path().join("brew").display()))
+            .unwrap();
+        std::fs::set_permissions(&brew, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
         let curl = bin.join("curl");
         let stub = r#"#!/bin/sh
 # A `curl -fsSL [-o OUT] URL` that serves SERVE_DIR by the URL's last segment.
@@ -244,9 +250,7 @@ fn it_downloads_verifies_and_installs_both_binaries() {
     let out = release.install("v0.1.0");
     let text =
         format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-    // `ringframe init --global` runs at the end and the stub is not the real
-    // binary, so the script may end there; what matters is that both binaries
-    // were verified and installed first.
+    // Both binaries are verified, then installed.
     for name in ["weft", "ringframe"] {
         let p = release.installed(name);
         assert!(p.exists(), "{name} was not installed\n{text}");
@@ -318,34 +322,42 @@ fn a_newer_version_takes_over_from_the_older() {
     }
 }
 
-/// Weft's harness files come with the release, and replace whatever was
-/// there: they are never edited.
+/// fab7's files are Weft's to set up when it starts, from the newest fab7 release it runs
+/// with: installing Weft leaves what is there alone, so it never puts an older one back.
 #[test]
-fn the_harness_files_come_with_the_release_and_replace_the_old() {
+fn installing_weft_leaves_fab7_s_files_to_weft() {
     let release = Release::make("v0.1.0", false);
-    let installed = release.dir.path().join("home/.fab7/weft/harnesses");
-    std::fs::create_dir_all(&installed).unwrap();
-    std::fs::write(installed.join("gone.toml"), "title = \"Gone\"\n").unwrap();
+    let home = release.dir.path().join("home");
+    for (dir, file) in [
+        (".fab7/weft/harnesses", "newer.toml"),
+        (".fab7/weft/tools", "newer.toml"),
+        (".fab7/rf/config", ".revision"),
+    ] {
+        std::fs::create_dir_all(home.join(dir)).unwrap();
+        std::fs::write(home.join(dir).join(file), "v9.9.9\n").unwrap();
+    }
     let out = release.install("v0.1.0");
     let text =
         format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-    assert!(installed.join("zed-agent.toml").is_file(), "{text}");
-    assert!(!installed.join("gone.toml").exists(), "replaced, not added to: {text}");
-}
-
-/// The tool files come the same way, and replace the old the same
-/// way.
-#[test]
-fn the_tool_files_are_installed_beside_the_harness_files() {
-    let release = Release::make("v0.1.0", false);
-    let installed = release.dir.path().join("home/.fab7/weft/tools");
-    std::fs::create_dir_all(&installed).unwrap();
-    std::fs::write(installed.join("gone.toml"), "program = \"gone\"\n").unwrap();
-    let out = release.install("v0.1.0");
-    let text =
-        format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-    assert!(installed.join("cloudflared.toml").is_file(), "{text}");
-    assert!(!installed.join("gone.toml").exists(), "replaced, not added to: {text}");
+    assert!(out.status.success(), "{text}");
+    assert!(
+        text.contains(
+            "Weft sets up fab7's harness files and RingFrame's configuration when it starts."
+        ),
+        "{text}"
+    );
+    for (dir, file) in [
+        (".fab7/weft/harnesses", "newer.toml"),
+        (".fab7/weft/tools", "newer.toml"),
+        (".fab7/rf/config", ".revision"),
+    ] {
+        assert_eq!(
+            std::fs::read_to_string(home.join(dir).join(file)).unwrap(),
+            "v9.9.9\n",
+            "{dir}: {text}"
+        );
+    }
+    assert!(!home.join(".fab7/weft/harnesses/zed-agent.toml").exists(), "{text}");
 }
 
 #[test]

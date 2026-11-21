@@ -1,7 +1,8 @@
 # Weft harness file: Codex. What Weft needs to start this harness, pick a
 # session back up and set its plugin up, and nothing RingFrame reads: RingFrame's
-# own facts about it are in its profile. Shipped by fab7; `install.sh` and
-# `weft update` copy it into ~/.fab7/weft/harnesses/, replaced on every update.
+# own facts about it are in its profile. Shipped by fab7; `install.sh`, or
+# a new Weft's first start, copies it into ~/.fab7/weft/harnesses/, replaced on
+# every update.
 # Never edit the copy.
 title = "Codex"
 program = "codex"
@@ -39,7 +40,9 @@ default = ".codex"
 
 [plugin]   # the argv for each, as Weft's readiness and RingFrame views run them
 list = ["plugin", "list", "--json"]
-add_marketplace = ["plugin", "marketplace", "add", "fab7hq/fab7"]
+# The marketplace at the fab7 release Weft runs with (`{release}`, a tag), so the plugin is
+# that release's; moving to another release adds it again there.
+add_marketplace = ["plugin", "marketplace", "add", "fab7hq/fab7", "--ref", "{release}"]
 install = ["plugin", "add", "rf@fab7"]
 update_marketplace = ["plugin", "marketplace", "upgrade", "fab7"]
 # Adding again installs the version the refreshed marketplace holds.
@@ -57,10 +60,10 @@ available = ["available"]
 name = "pluginId"
 on = ["enabled", "installed"]
 
-# What each of its hooks means to Weft (ADR-0030 D4). RingFrame's plugin registers
+# What each of its hooks means to Weft. RingFrame's plugin registers
 # these hooks, every one running `weft-signal <id> <hook>`; fab7's check keeps the
 # two in step. Payload paths are dotted; `forward` passes a prompt or a tool to
-# `ringframe observe` (D9).
+# `ringframe observe`.
 # No SessionStart row: it runs only with the first prompt. Its server says a
 # new session began, ready, as the TUI starts ([listen], thread/started).
 # PostToolUse forwards nothing: a failed command also arrives there, so its
@@ -68,8 +71,8 @@ on = ["enabled", "installed"]
 # A typed prompt is in UserPromptSubmit's payload. A `/goal` fires no prompt
 # hook: Codex records it in its transcript as a thread_goal_updated line, the
 # prompt without the command, and a long paste as a file that line names; the
-# goal turn's first hook is its first tool use or its Stop (HostLab probe
-# goal-hooks, codex 0.162.0; Weft ADR-0033 D7).
+# goal turn's first hook is its first tool use or its Stop (codex
+# 0.162.0).
 [signal]
 session = "session_id"
 # A hook that ends a turn has the agent's last reply.
@@ -129,7 +132,7 @@ on = [
 # user messages. Each step is written once it completes, so it carries its own
 # outcome.
 [conversation]
-verified = "codex-cli 0.162.1"
+verified = "codex-cli 0.167.0"
 path = "transcript_path"
 find = "sessions/*/*/*/rollout-*-{session}.jsonl"
 time = "timestamp"

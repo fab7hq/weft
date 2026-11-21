@@ -4,6 +4,9 @@
 # harness and tool files.
 #
 #   bin/fab7-files <fab7-dir> <dest>
+#
+# `<dest>/.revision` names the fab7 release they are (FAB7_TAG, or the tag the
+# checkout is at), so a home set up from them records `bundled <tag>`.
 set -eu
 
 fab7=${1:?usage: bin/fab7-files <fab7-dir> <dest>}
@@ -17,3 +20,5 @@ cp "$products/ringframe/bundle.toml" "$dest/ringframe/"
 cp -R "$products/ringframe/config" "$dest/ringframe/config"
 cp -R "$products/weft/harnesses" "$dest/weft/harnesses"
 cp -R "$products/weft/tools" "$dest/weft/tools"
+tag=${FAB7_TAG:-$(git -C "$fab7" describe --tags --exact-match 2>/dev/null || true)}
+[ -z "$tag" ] || printf '%s\n' "$tag" > "$dest/.revision"

@@ -383,7 +383,7 @@ mod tests {
                 vec![
                     (
                         "bundle.toml",
-                        "5d0f73340532af8dbe0205ce6c0465b223219dd0cdc1fe05bc59139d78df128c",
+                        "cabad6f3c0dcc3661e86b8be125898f7ff2f4461d24793421d8373d7d52651df",
                     ),
                     (
                         "config/deltas/antigravity.toml",

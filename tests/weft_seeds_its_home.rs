@@ -1,15 +1,16 @@
 //! A Weft opened before any installer ran (the app from Homebrew, say) sets
-//! up its home from what came with it: fab7's harness and tool files and
-//! RingFrame's configuration, carried in the release. What is there already
-//! is left alone.
+//! up its home from the newest fab7 release it runs with. With no network and
+//! nothing installed it uses the copy that came with it, recorded as that; a
+//! home it runs with is left alone, and a home it cannot run with is never
+//! overwritten by that copy.
 
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-/// A release as it is installed: `weft` and `ringframe` side by side, with
-/// fab7's files in `fab7/` beside them (inside Weft.app, in its Resources).
-/// The `ringframe` here says what it was asked and makes the configuration.
+/// A release as it is installed: `weft`, with fab7's files in `fab7/` beside
+/// it (inside Weft.app, in its Resources), recording the fab7 release they
+/// came from.
 fn installed(dir: &Path) -> std::path::PathBuf {
     let (programs, fab7) = if cfg!(target_os = "macos") {
         let app = dir.join("Weft.app/Contents");
@@ -21,31 +22,43 @@ fn installed(dir: &Path) -> std::path::PathBuf {
     let weft = programs.join("weft");
     // A copy, not a link: Weft finds what came with it beside its own file.
     std::fs::copy(env!("CARGO_BIN_EXE_weft"), &weft).unwrap();
-    let ringframe = programs.join("ringframe");
-    std::fs::write(
-        &ringframe,
-        "#!/bin/sh\necho \"$*\" >> \"$0.asked\"\nmkdir -p \"$HOME/.fab7/rf/config\"\n",
-    )
-    .unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&ringframe, std::fs::Permissions::from_mode(0o755)).unwrap();
-    for (folder, file) in [
-        ("weft/harnesses", "claude-code.toml"),
-        ("weft/tools", "cloudflared.toml"),
-        ("ringframe/config/harnesses", "claude-code.toml"),
-    ] {
+    let config =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/ringframe/tests/fixtures/config");
+    copy(&config, &fab7.join("ringframe/config"));
+    for (folder, file) in
+        [("weft/harnesses", "claude-code.toml"), ("weft/tools", "cloudflared.toml")]
+    {
         std::fs::create_dir_all(fab7.join(folder)).unwrap();
         std::fs::write(fab7.join(folder).join(file), "# shipped\n").unwrap();
     }
+    std::fs::write(fab7.join(".revision"), format!("v{}\n", weftd::fab7::NEEDS)).unwrap();
     weft
 }
 
-/// `weft --serve` in this home, until it listens; then ended.
+fn copy(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap().flatten() {
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+/// `weft --serve` in this home, with fab7's releases out of reach, until it
+/// listens; then ended.
 fn serve(weft: &Path, home: &Path, run: &Path) {
+    let offline = home.parent().unwrap().join("offline.gitconfig");
+    std::fs::write(&offline, "[url \"file:///nowhere/\"]\n\tinsteadOf = https://github.com/\n")
+        .unwrap();
     let mut daemon = Command::new(weft)
         .arg("--serve")
         .env("HOME", home)
         .env("XDG_RUNTIME_DIR", run)
+        .env("GIT_CONFIG_GLOBAL", &offline)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -66,18 +79,25 @@ fn a_first_start_sets_up_its_home_from_what_came_with_it() {
     std::fs::create_dir_all(&home).unwrap();
     serve(&weft, &home, &run);
     let read = |p: &str| std::fs::read_to_string(home.join(p)).unwrap_or_default();
+    let bundled = format!("bundled v{}\n", weftd::fab7::NEEDS);
     assert_eq!(read(".fab7/weft/harnesses/claude-code.toml"), "# shipped\n");
     assert_eq!(read(".fab7/weft/tools/cloudflared.toml"), "# shipped\n");
-    assert!(home.join(".fab7/rf/config").is_dir(), "RingFrame's configuration");
-    let asked = std::fs::read_to_string(weft.with_file_name("ringframe.asked")).unwrap();
-    assert!(asked.starts_with("init --global --from "), "{asked}");
-    assert!(asked.trim_end().ends_with("fab7/ringframe/config"), "{asked}");
+    for dir in [".fab7/rf/config", ".fab7/weft/harnesses", ".fab7/weft/tools"] {
+        assert_eq!(read(&format!("{dir}/.revision")), bundled, "{dir}");
+    }
 
-    // Set up already: nothing is replaced, and RingFrame is not asked again.
+    // A home this Weft runs with: nothing is replaced.
     std::fs::write(home.join(".fab7/weft/harnesses/claude-code.toml"), "# edited\n").unwrap();
     serve(&weft, &home, &run);
     assert_eq!(read(".fab7/weft/harnesses/claude-code.toml"), "# edited\n");
-    let asked = std::fs::read_to_string(weft.with_file_name("ringframe.asked")).unwrap();
-    assert_eq!(asked.lines().count(), 1, "{asked}");
+
+    // A home of an older fab7, with the network out of reach: it waits for the
+    // network, and the copy that came with this Weft never overwrites it.
+    for dir in [".fab7/rf/config", ".fab7/weft/harnesses", ".fab7/weft/tools"] {
+        std::fs::write(home.join(dir).join(".revision"), "v0.7.1\n").unwrap();
+    }
+    serve(&weft, &home, &run);
+    assert_eq!(read(".fab7/weft/harnesses/claude-code.toml"), "# edited\n");
+    assert_eq!(read(".fab7/rf/config/.revision"), "v0.7.1\n");
     let _ = std::fs::remove_dir_all(&run);
 }

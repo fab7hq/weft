@@ -323,12 +323,6 @@ fn tags_listed(listing: &str) -> Vec<&str> {
         .collect()
 }
 
-/// The highest `vX.Y.Z`. A listing does not promise an order, so never take
-/// the first.
-pub fn latest_tag<'a>(names: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
-    names.into_iter().filter(|n| n.starts_with(BUNDLE_TAG_PREFIX)).max_by_key(|n| version_key(n))
-}
-
 /// The manifest the marketplace keeps beside `config/`, or inside it if
 /// someone puts it there. A `bundle.yaml` in its place is refused by name.
 fn bundle_manifest(source: &Path) -> Result<Option<String>, WorkspaceError> {
@@ -406,10 +400,30 @@ fn schema_refusal(name: &str, found: Option<&str>, want: &str) -> WorkspaceError
     )
 }
 
-/// Swap in the staged tree, putting the previous one back if the swap fails.
-fn replace(staged: &Path, target: &Path) -> std::io::Result<()> {
-    let previous =
-        target.exists().then(|| target.with_file_name(format!(".previous-{}", std::process::id())));
+/// One install at a time in a process: a long-running program can be asked twice at once,
+/// and two installs swapping the same folders would undo each other.
+static INSTALLING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Swap in the staged tree, putting the previous one back if the swap fails. The backup's
+/// name is this swap's own, and backups an earlier swap left beside `target` go first.
+/// A backup that cannot be removed afterwards is returned, to be said.
+fn replace(staged: &Path, target: &Path) -> std::io::Result<Option<PathBuf>> {
+    let name = target.file_name().unwrap_or_default().to_string_lossy().to_string();
+    let parent = target.parent().unwrap_or_else(|| Path::new("."));
+    let mine = format!(".{name}.previous-");
+    if let Ok(entries) = std::fs::read_dir(parent) {
+        for e in entries.flatten() {
+            let n = e.file_name().to_string_lossy().to_string();
+            // An earlier swap's backup of this folder; `.previous-<pid>` is the name RingFrame
+            // 0.8.0 used before, for the configuration only.
+            if n.starts_with(&mine) || (name == "config" && n.starts_with(".previous-")) {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+        }
+    }
+    let previous = target.exists().then(|| {
+        parent.join(format!("{mine}{}-{}", std::process::id(), crate::ids::random_hex(4)))
+    });
     if let Some(prev) = &previous {
         std::fs::rename(target, prev)?;
     }
@@ -419,10 +433,7 @@ fn replace(staged: &Path, target: &Path) -> std::io::Result<()> {
         }
         return Err(e);
     }
-    if let Some(prev) = &previous {
-        let _ = std::fs::remove_dir_all(prev);
-    }
-    Ok(())
+    Ok(previous.filter(|prev| std::fs::remove_dir_all(prev).is_err()))
 }
 
 pub(crate) fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
@@ -458,11 +469,10 @@ fn fetch(url: &str, timeout: &str) -> Result<Vec<u8>, WorkspaceError> {
     Ok(out.stdout)
 }
 
-/// The release tags, asked of the repository with `git ls-remote` rather than
-/// GitHub's REST API: the API allows sixty unauthenticated calls an hour to a
-/// machine, and a tool that checks often used them up ("could not
-/// reach the latest release" was that limit).
-fn newest_tag() -> Result<String, WorkspaceError> {
+/// The release tags, newest first, asked of the repository with `git ls-remote` rather than
+/// GitHub's REST API: the API allows sixty unauthenticated calls an hour to a machine, and a
+/// tool that checks often used them up ("could not reach the latest release" was that limit).
+fn release_tags() -> Result<Vec<String>, WorkspaceError> {
     let out = Command::new("git")
         .args(["ls-remote", "--tags", "--refs", &format!("https://github.com/{BUNDLE_REPO}.git")])
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -474,13 +484,48 @@ fn newest_tag() -> Result<String, WorkspaceError> {
             format!("git ls-remote {BUNDLE_REPO}: {}", String::from_utf8_lossy(&out.stderr).trim()),
         ));
     }
-    let listing = String::from_utf8_lossy(&out.stdout);
-    latest_tag(tags_listed(&listing)).map(str::to_string).ok_or_else(|| {
-        WorkspaceError::new(
-            "config.no_release",
-            format!("{BUNDLE_REPO} has no {BUNDLE_TAG_PREFIX}* release tag"),
-        )
-    })
+    Ok(newest_first(tags_listed(&String::from_utf8_lossy(&out.stdout))))
+}
+
+/// The `vX.Y.Z` tags, highest first. A listing does not promise an order.
+pub fn newest_first<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let mut tags: Vec<&str> =
+        names.into_iter().filter(|n| n.starts_with(BUNDLE_TAG_PREFIX)).collect();
+    tags.sort_by_key(|n| std::cmp::Reverse(version_key(n)));
+    tags.into_iter().map(str::to_string).collect()
+}
+
+/// This build's version, which a release's `[requires] ringframe` is read against.
+pub const THIS_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Whether `a` is a newer `X.Y.Z` than `b`, part by part.
+fn newer(a: &str, b: &str) -> bool {
+    let parts = |v: &str| -> Vec<u64> {
+        v.trim_start_matches(BUNDLE_TAG_PREFIX).split('.').map(|p| p.parse().unwrap_or(0)).collect()
+    };
+    parts(a) > parts(b)
+}
+
+/// The RingFrame a release's `bundle.toml` says it needs (`[requires] ringframe`), if any.
+fn needs_ringframe(bundle: &str) -> Result<Option<String>, WorkspaceError> {
+    let doc = crate::config::load_toml_text(bundle, "bundle.toml")
+        .map_err(|e| WorkspaceError::new("config.unreadable", e.to_string()))?;
+    let found = doc.get("schema").and_then(Value::as_str);
+    if found != Some(BUNDLE_SCHEMA) {
+        return Err(schema_refusal("bundle.toml", found, BUNDLE_SCHEMA));
+    }
+    Ok(doc.pointer("/requires/ringframe").and_then(Value::as_str).map(str::to_string))
+}
+
+/// A release this build runs with: one whose `bundle.toml` it reads, needing no newer RingFrame.
+fn runs_with(bundle: &str) -> Result<(), WorkspaceError> {
+    match needs_ringframe(bundle)? {
+        Some(need) if newer(&need, THIS_VERSION) => Err(WorkspaceError::new(
+            "config.needs_ringframe",
+            format!("it needs RingFrame {need}; this is {THIS_VERSION}"),
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// What installing the latest configuration is doing, in order.
@@ -494,41 +539,83 @@ pub enum SyncStep {
     Installing,
 }
 
-/// Where a release comes from: its newest tag, and the archive of a tag.
+/// Where releases come from: the tags newest first, a tag's `bundle.toml`, and its archive.
 struct Releases<'a> {
-    newest: &'a dyn Fn() -> Result<String, WorkspaceError>,
+    tags: &'a dyn Fn() -> Result<Vec<String>, WorkspaceError>,
+    bundle: &'a dyn Fn(&str) -> Result<Vec<u8>, WorkspaceError>,
     archive: &'a dyn Fn(&str) -> Result<Vec<u8>, WorkspaceError>,
 }
 
 /// The repository's own releases, on the network.
 fn github_releases<T>(then: impl FnOnce(&Releases<'_>) -> T) -> T {
+    let bundle = |tag: &str| {
+        fetch(
+            &format!(
+                "https://raw.githubusercontent.com/{BUNDLE_REPO}/{tag}/products/{BUNDLE_PRODUCT}/bundle.toml"
+            ),
+            "30",
+        )
+    };
     let archive = |tag: &str| {
         fetch(&format!("https://codeload.github.com/{BUNDLE_REPO}/tar.gz/refs/tags/{tag}"), "120")
     };
-    then(&Releases { newest: &newest_tag, archive: &archive })
+    then(&Releases { tags: &release_tags, bundle: &bundle, archive: &archive })
 }
 
-/// Extract `products/<product>/config` into `dest`. Returns the tag and the
-/// bundle manifest text.
-fn download(
+/// How many releases are read before giving up on finding one this build runs with.
+const TRIED: usize = 12;
+
+/// The releases this build runs with, newest first: each tag's `bundle.toml` is read before
+/// anything is downloaded, and one it cannot run with is passed over for the next older.
+fn compatible(from: &Releases<'_>) -> Result<Vec<String>, WorkspaceError> {
+    let tags = (from.tags)()?;
+    let mut ok = Vec::new();
+    let mut last = None;
+    for tag in tags.iter().take(TRIED) {
+        let checked = (from.bundle)(tag).and_then(|b| runs_with(&String::from_utf8_lossy(&b)));
+        match checked {
+            Ok(()) => ok.push(tag.clone()),
+            Err(e) if e.code == "config.fetch" && ok.is_empty() && last.is_none() => return Err(e),
+            Err(e) => last = Some(format!("{tag}: {}", e.detail)),
+        }
+    }
+    if ok.is_empty() {
+        return Err(WorkspaceError::new(
+            "config.no_release",
+            match last {
+                Some(why) => {
+                    format!("no release of {BUNDLE_REPO} this RingFrame runs with ({why})")
+                }
+                None => format!("{BUNDLE_REPO} has no {BUNDLE_TAG_PREFIX}* release tag"),
+            },
+        ));
+    }
+    Ok(ok)
+}
+
+/// A part of a fab7 release installed beside RingFrame's configuration: the folder under
+/// `products/` it comes from, and where it goes: what a program built on RingFrame keeps
+/// beside its configuration.
+pub struct Part {
+    pub from: String,
+    pub to: PathBuf,
+}
+
+/// Unpack `tag`'s archive into a work folder beside `near`, then copy its `products/` folders
+/// out: RingFrame's configuration into `dest`, and each part into its own staged folder.
+/// Returns the bundle manifest text.
+fn unpack(
+    tag: &str,
+    raw: &[u8],
+    near: &Path,
     dest: &Path,
-    from: &Releases<'_>,
-    progress: &dyn Fn(SyncStep),
-) -> Result<(String, Option<String>), WorkspaceError> {
-    progress(SyncStep::Finding);
-    let tag = (from.newest)()?;
-    progress(SyncStep::Downloading);
-    let raw = (from.archive)(&tag)?;
-    progress(SyncStep::Installing);
-    let work = dest.with_file_name(format!(
-        ".extract-{}-{}",
-        std::process::id(),
-        crate::ids::random_hex(4)
-    ));
+    parts: &[(PathBuf, &Part)],
+) -> Result<Option<String>, WorkspaceError> {
+    let work = near.join(format!(".extract-{}-{}", std::process::id(), crate::ids::random_hex(4)));
     let outcome = (|| {
         std::fs::create_dir_all(&work).map_err(io("config.bundle"))?;
         let archive = work.join("bundle.tar.gz");
-        std::fs::write(&archive, &raw).map_err(io("config.bundle"))?;
+        std::fs::write(&archive, raw).map_err(io("config.bundle"))?;
         let status = Command::new("tar")
             .arg("-xzf")
             .arg(&archive)
@@ -546,8 +633,8 @@ fn download(
             .map(|e| e.path())
             .find(|p| p.is_dir())
             .ok_or_else(|| WorkspaceError::new("config.bundle", format!("{tag} is empty")))?;
-        let product = top.join("products").join(BUNDLE_PRODUCT);
-        let config = product.join("config");
+        let products = top.join("products");
+        let config = products.join(BUNDLE_PRODUCT).join("config");
         if !config.is_dir() {
             return Err(WorkspaceError::new(
                 "config.bundle",
@@ -555,27 +642,49 @@ fn download(
             ));
         }
         copy_tree(&config, dest).map_err(io("config.bundle"))?;
+        stage_parts(&products, parts, tag)?;
         // The manifest sits beside config/, so it is read but never mirrored:
         // the installed tree stays exactly the config/ tree.
-        Ok((tag.clone(), bundle_manifest(&config)?))
+        bundle_manifest(&config)
     })();
     let _ = std::fs::remove_dir_all(&work);
     outcome
 }
 
+/// Copy each part out of `products` into its staged folder.
+fn stage_parts(
+    products: &Path,
+    parts: &[(PathBuf, &Part)],
+    from: &str,
+) -> Result<(), WorkspaceError> {
+    for (staged, part) in parts {
+        let src = products.join(&part.from);
+        if !src.is_dir() {
+            return Err(WorkspaceError::new(
+                "config.bundle",
+                format!("{from} contains no products/{}/", part.from),
+            ));
+        }
+        copy_tree(&src, staged).map_err(io("config.bundle"))?;
+    }
+    Ok(())
+}
+
 /// What `sync` would install, against what is installed. Reads, never writes.
 pub fn check_config() -> Result<Value, WorkspaceError> {
-    let latest = newest_tag()?;
-    let manifest = fetch(
-        &format!(
-            "https://raw.githubusercontent.com/{BUNDLE_REPO}/{latest}/.claude-plugin/marketplace.json"
-        ),
-        "30",
-    )?;
-    let revision = std::fs::read_to_string(crate::config::config_dir().join(".revision"))
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|_| "none".into());
-    Ok(freshness(&revision, &latest, &manifest))
+    github_releases(|from| {
+        let latest = compatible(from)?.remove(0);
+        let manifest = fetch(
+            &format!(
+                "https://raw.githubusercontent.com/{BUNDLE_REPO}/{latest}/.claude-plugin/marketplace.json"
+            ),
+            "30",
+        )?;
+        let revision = std::fs::read_to_string(crate::config::config_dir().join(".revision"))
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|_| "none".into());
+        Ok(freshness(&revision, &latest, &manifest))
+    })
 }
 
 /// Anything but the latest release is behind, `local` (a configuration
@@ -605,21 +714,52 @@ pub fn install_config_with(
     source: Option<&Path>,
     progress: &dyn Fn(SyncStep),
 ) -> Result<Value, WorkspaceError> {
-    github_releases(|from| install_from(source, from, progress))
+    install_release(source, &[], progress)
+}
+
+/// Install one fab7 release whole: RingFrame's configuration and every part beside it, from
+/// the newest release this build runs with (one refused once downloaded gives way to the next
+/// older), or from a folder (`.../ringframe/config`, its parts under the folder two up).
+/// Each installed folder records the release in `.revision`.
+pub fn install_release(
+    source: Option<&Path>,
+    parts: &[Part],
+    progress: &dyn Fn(SyncStep),
+) -> Result<Value, WorkspaceError> {
+    github_releases(|from| install_from(source, parts, from, progress))
 }
 
 fn install_from(
     source: Option<&Path>,
+    parts: &[Part],
     from: &Releases<'_>,
     progress: &dyn Fn(SyncStep),
 ) -> Result<Value, WorkspaceError> {
     use crate::config;
 
+    let _one = INSTALLING.lock().unwrap_or_else(|e| e.into_inner());
     let home_dir = config::home();
     std::fs::create_dir_all(&home_dir).map_err(io("config.source"))?;
     set_private(&home_dir).map_err(io("config.source"))?;
-    let staged =
-        home_dir.join(format!(".staging-{}-{}", std::process::id(), crate::ids::random_hex(4)));
+    let stage_of = |near: &Path| {
+        near.join(format!(".staging-{}-{}", std::process::id(), crate::ids::random_hex(4)))
+    };
+    let staged = stage_of(&home_dir);
+    let staged_parts: Vec<(PathBuf, &Part)> = parts
+        .iter()
+        .map(|p| (stage_of(p.to.parent().unwrap_or_else(|| Path::new("."))), p))
+        .collect();
+    let clear = || {
+        let _ = std::fs::remove_dir_all(&staged);
+        for (s, _) in &staged_parts {
+            let _ = std::fs::remove_dir_all(s);
+        }
+    };
+    for (_, p) in &staged_parts {
+        if let Some(parent) = p.to.parent() {
+            std::fs::create_dir_all(parent).map_err(io("config.source"))?;
+        }
+    }
     let outcome = (|| {
         let (revision, bundle) = match source {
             Some(src) => {
@@ -632,23 +772,93 @@ fn install_from(
                     ));
                 }
                 copy_tree(&src, &staged).map_err(io("config.source"))?;
-                ("local".to_string(), bundle_manifest(&src)?)
+                if !staged_parts.is_empty() {
+                    let products = src.parent().and_then(Path::parent).unwrap_or(&src);
+                    stage_parts(products, &staged_parts, &src.display().to_string())?;
+                }
+                let bundle = bundle_manifest(&src)?;
+                validate(&staged, bundle.as_deref())?;
+                (folder_revision(&src), bundle)
             }
-            None => download(&staged, from, progress)?,
+            None => {
+                progress(SyncStep::Finding);
+                let tags = compatible(from)?;
+                let mut tried = None;
+                let mut got = None;
+                for tag in tags.iter().take(3) {
+                    progress(SyncStep::Downloading);
+                    let raw = (from.archive)(tag)?;
+                    progress(SyncStep::Installing);
+                    let unpacked = unpack(tag, &raw, &home_dir, &staged, &staged_parts)
+                        .and_then(|b| validate(&staged, b.as_deref()).map(|()| b));
+                    match unpacked {
+                        Ok(b) => {
+                            got = Some((tag.clone(), b));
+                            break;
+                        }
+                        // Refused once read: the next older release may be one this build reads.
+                        Err(e)
+                            if e.code == "config.schema" || e.code == "config.needs_ringframe" =>
+                        {
+                            clear();
+                            tried = Some(e);
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+                match (got, tried) {
+                    (Some(found), _) => found,
+                    (None, Some(e)) => return Err(e),
+                    (None, None) => {
+                        return Err(WorkspaceError::new(
+                            "config.no_release",
+                            "no release to install",
+                        ));
+                    }
+                }
+            }
         };
-        validate(&staged, bundle.as_deref())?;
-        std::fs::write(staged.join(".revision"), format!("{revision}\n"))
-            .map_err(io("config.source"))?;
-        replace(&staged, &config::config_dir()).map_err(io("config.source"))?;
-        Ok(revision)
+        let requires = bundle.as_deref().map(needs_ringframe).transpose()?.flatten();
+        let mut leftovers = Vec::new();
+        let mut put = |staged: &Path, target: &Path| -> Result<(), WorkspaceError> {
+            std::fs::write(staged.join(".revision"), format!("{revision}\n"))
+                .map_err(io("config.source"))?;
+            if let Some(need) = &requires {
+                std::fs::write(staged.join(".requires"), format!("{need}\n"))
+                    .map_err(io("config.source"))?;
+            }
+            if let Some(left) = replace(staged, target).map_err(io("config.source"))? {
+                leftovers.push(left.to_string_lossy().to_string());
+            }
+            Ok(())
+        };
+        put(&staged, &config::config_dir())?;
+        for (s, p) in &staged_parts {
+            put(s, &p.to)?;
+        }
+        Ok((revision, leftovers))
     })();
-    let _ = std::fs::remove_dir_all(&staged);
-    let revision = outcome?;
+    clear();
+    let (revision, leftovers) = outcome?;
     Ok(json!({
         "rf_dir": home_dir.to_string_lossy(),
         "config": config::config_dir().to_string_lossy(),
         "revision": revision,
+        "parts": parts.iter().map(|p| p.to.to_string_lossy().to_string()).collect::<Vec<_>>(),
+        "leftovers": leftovers,
     }))
+}
+
+/// What a configuration installed from a folder is recorded as: `bundled <tag>` when the folder
+/// says the release it was copied from (in `.revision` two folders up), else `local`.
+fn folder_revision(config: &Path) -> String {
+    config
+        .parent()
+        .and_then(Path::parent)
+        .and_then(|root| std::fs::read_to_string(root.join(".revision")).ok())
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .map_or_else(|| "local".to_string(), |t| format!("bundled {t}"))
 }
 
 fn io(code: &'static str) -> impl Fn(std::io::Error) -> WorkspaceError {
@@ -724,15 +934,16 @@ mod tests {
                 .unwrap();
             assert!(packed.success());
             let bytes = std::fs::read(&archive).unwrap();
-            let newest = || Ok("ringframe-v9.0.0".to_string());
+            let tags = || Ok(vec!["v9.0.0".to_string()]);
+            let bundle = |_: &str| Ok(b"schema = \"ringframe.bundle/2\"\n".to_vec());
             let archive = |tag: &str| {
-                assert_eq!(tag, "ringframe-v9.0.0");
+                assert_eq!(tag, "v9.0.0");
                 Ok(bytes.clone())
             };
             let seen = std::cell::RefCell::new(Vec::new());
-            let releases = Releases { newest: &newest, archive: &archive };
-            let out = install_from(None, &releases, &|s| seen.borrow_mut().push(s)).unwrap();
-            assert_eq!(out["revision"], "ringframe-v9.0.0");
+            let releases = Releases { tags: &tags, bundle: &bundle, archive: &archive };
+            let out = install_from(None, &[], &releases, &|s| seen.borrow_mut().push(s)).unwrap();
+            assert_eq!(out["revision"], "v9.0.0");
             assert_eq!(
                 seen.into_inner(),
                 [SyncStep::Finding, SyncStep::Downloading, SyncStep::Installing]
@@ -740,10 +951,149 @@ mod tests {
 
             let gone = |_: &str| Err(WorkspaceError::new("config.fetch", "offline"));
             let seen = std::cell::RefCell::new(Vec::new());
-            let releases = Releases { newest: &newest, archive: &gone };
-            assert!(install_from(None, &releases, &|s| seen.borrow_mut().push(s)).is_err());
+            let releases = Releases { tags: &tags, bundle: &bundle, archive: &gone };
+            assert!(install_from(None, &[], &releases, &|s| seen.borrow_mut().push(s)).is_err());
             assert_eq!(seen.into_inner(), [SyncStep::Finding, SyncStep::Downloading]);
         });
+    }
+
+    /// A release archive as GitHub serves one, `fab7-<tag>/products/...`, with RingFrame's
+    /// configuration and a part beside it.
+    fn release_archive(home: &Path, tag: &str) -> Vec<u8> {
+        let tree = home.join(format!("release-{tag}"));
+        let products = tree.join(format!("fab7-{tag}/products"));
+        copy_tree(&crate::testing::fixture_config(), &products.join(BUNDLE_PRODUCT).join("config"))
+            .unwrap();
+        std::fs::create_dir_all(products.join("tool/files")).unwrap();
+        std::fs::write(products.join("tool/files/codex.toml"), format!("# {tag}\n")).unwrap();
+        let archive = home.join(format!("{tag}.tar.gz"));
+        let packed = Command::new("tar")
+            .arg("-czf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(&tree)
+            .arg(format!("fab7-{tag}"))
+            .status()
+            .unwrap();
+        assert!(packed.success());
+        std::fs::read(&archive).unwrap()
+    }
+
+    /// The newest release this build runs with, read from each tag's bundle.toml before any
+    /// download: a release needing a newer RingFrame, or one of another era, gives way to an older.
+    #[test]
+    fn the_newest_release_this_ringframe_runs_with_is_taken() {
+        let tags = || Ok(vec!["v99.0.0".into(), "v9.0.1".into(), "v9.0.0".into()]);
+        let bundle = |tag: &str| {
+            Ok(match tag {
+                "v99.0.0" => {
+                    b"schema = \"ringframe.bundle/2\"\n[requires]\nringframe = \"99.0.0\"\n"
+                        .to_vec()
+                }
+                "v9.0.1" => b"schema = \"ringframe.bundle/3\"\n".to_vec(),
+                _ => format!(
+                    "schema = \"ringframe.bundle/2\"\n[requires]\nringframe = \"{THIS_VERSION}\"\n"
+                )
+                .into_bytes(),
+            })
+        };
+        let none = |_: &str| -> Result<Vec<u8>, WorkspaceError> { unreachable!() };
+        let releases = Releases { tags: &tags, bundle: &bundle, archive: &none };
+        assert_eq!(compatible(&releases).unwrap(), ["v9.0.0"]);
+
+        let offline = || Err(WorkspaceError::new("config.fetch", "offline"));
+        let releases = Releases { tags: &offline, bundle: &bundle, archive: &none };
+        assert_eq!(compatible(&releases).unwrap_err().code, "config.fetch");
+        let only_newer = || Ok(vec!["v99.0.0".to_string()]);
+        let releases = Releases { tags: &only_newer, bundle: &bundle, archive: &none };
+        let refused = compatible(&releases).unwrap_err();
+        assert_eq!(refused.code, "config.no_release");
+        assert!(refused.detail.contains("needs RingFrame 99.0.0"), "{}", refused.detail);
+    }
+
+    /// One release is one unit: the configuration and each part beside it are installed from
+    /// the same tag, each recording it; a release refused once unpacked gives way to the older.
+    #[test]
+    fn a_release_installs_its_parts_together_and_a_refused_one_gives_way() {
+        crate::testing::with_config_home(|home| {
+            let good = release_archive(home, "v9.0.0");
+            let tags = || Ok(vec!["v9.0.1".into(), "v9.0.0".into()]);
+            let bundle = |_: &str| Ok(b"schema = \"ringframe.bundle/2\"\n".to_vec());
+            // v9.0.1 says it is readable, but its files are of another era once unpacked.
+            let bad = {
+                let tree = home.join("bad");
+                let cfg = tree.join("fab7-v9.0.1/products").join(BUNDLE_PRODUCT).join("config");
+                copy_tree(&crate::testing::fixture_config(), &cfg).unwrap();
+                for f in std::fs::read_dir(cfg.join("harnesses")).unwrap().flatten() {
+                    let text = std::fs::read_to_string(f.path()).unwrap();
+                    std::fs::write(f.path(), text.replace(PROFILE_SCHEMA, "ringframe.profile/9"))
+                        .unwrap();
+                }
+                std::fs::create_dir_all(tree.join("fab7-v9.0.1/products/tool/files")).unwrap();
+                let archive = home.join("bad.tar.gz");
+                assert!(
+                    Command::new("tar")
+                        .arg("-czf")
+                        .arg(&archive)
+                        .arg("-C")
+                        .arg(&tree)
+                        .arg("fab7-v9.0.1")
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+                std::fs::read(&archive).unwrap()
+            };
+            let archive = |tag: &str| Ok(if tag == "v9.0.1" { bad.clone() } else { good.clone() });
+            let releases = Releases { tags: &tags, bundle: &bundle, archive: &archive };
+            let files = home.join("tool-home/files");
+            let parts = [Part { from: "tool/files".into(), to: files.clone() }];
+            let out = install_from(None, &parts, &releases, &|_| {}).unwrap();
+            assert_eq!(out["revision"], "v9.0.0");
+            assert_eq!(std::fs::read_to_string(files.join("codex.toml")).unwrap(), "# v9.0.0\n");
+            for dir in [crate::config::config_dir(), files.clone()] {
+                assert_eq!(std::fs::read_to_string(dir.join(".revision")).unwrap(), "v9.0.0\n");
+            }
+            let beside: Vec<String> = std::fs::read_dir(files.parent().unwrap())
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect();
+            assert_eq!(beside, ["files"], "no staging left beside it");
+        });
+    }
+
+    /// A swap names its backup its own way and clears what an earlier one left, so a leftover
+    /// (as RingFrame 0.8.0's `.previous-<pid>` was) never blocks the next install.
+    #[test]
+    fn a_swap_clears_what_an_earlier_one_left() {
+        let dir = crate::testing::tmp_dir();
+        let target = dir.path().join("config");
+        std::fs::create_dir_all(target.join("harnesses")).unwrap();
+        for left in [".previous-74254", ".config.previous-1-ab"] {
+            std::fs::create_dir_all(dir.path().join(left).join("harnesses")).unwrap();
+        }
+        let staged = dir.path().join(".staging-1");
+        std::fs::create_dir_all(staged.join("deltas")).unwrap();
+        assert_eq!(replace(&staged, &target).unwrap(), None);
+        assert!(target.join("deltas").is_dir());
+        let names: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names, ["config"]);
+    }
+
+    /// A configuration from a folder a program's archive carries is recorded as `bundled <tag>`.
+    #[test]
+    fn a_bundled_copy_is_recorded_with_the_release_it_came_from() {
+        let dir = crate::testing::tmp_dir();
+        let config = dir.path().join("fab7/ringframe/config");
+        std::fs::create_dir_all(&config).unwrap();
+        assert_eq!(folder_revision(&config), "local");
+        std::fs::write(dir.path().join("fab7/.revision"), "v0.8.0\n").unwrap();
+        assert_eq!(folder_revision(&config), "bundled v0.8.0");
     }
 
     #[test]
@@ -893,7 +1243,7 @@ mod tests {
     fn release_tags_are_read_from_git_ls_remote() {
         let listing = "a153a72\trefs/tags/v0.1.0\nf08ca91\trefs/tags/v0.1.10\n71ca6fc\trefs/tags/v0.1.2\n0000000\trefs/tags/nightly\n";
         assert_eq!(tags_listed(listing), ["v0.1.0", "v0.1.10", "v0.1.2", "nightly"]);
-        assert_eq!(latest_tag(tags_listed(listing)), Some("v0.1.10"));
+        assert_eq!(newest_first(tags_listed(listing)).first().map(String::as_str), Some("v0.1.10"));
     }
 
     #[test]
@@ -911,10 +1261,16 @@ mod tests {
 
     #[test]
     fn the_latest_tag_is_the_highest_not_the_first() {
-        assert_eq!(latest_tag(["v0.0.9", "v0.1.0", "v0.0.10"]), Some("v0.1.0"));
-        assert_eq!(latest_tag(["v0.0.2", "v0.0.10"]), Some("v0.0.10"));
+        assert_eq!(
+            newest_first(["v0.0.9", "v0.1.0", "v0.0.10"]).first().map(String::as_str),
+            Some("v0.1.0")
+        );
+        assert_eq!(
+            newest_first(["v0.0.2", "v0.0.10"]).first().map(String::as_str),
+            Some("v0.0.10")
+        );
         // Unparseable tags sort lowest rather than raising.
-        assert_eq!(latest_tag(["vnope", "v0.0.1"]), Some("v0.0.1"));
-        assert_eq!(latest_tag(["nope", "0.0.1"]), None);
+        assert_eq!(newest_first(["vnope", "v0.0.1"]).first().map(String::as_str), Some("v0.0.1"));
+        assert_eq!(newest_first(["nope", "0.0.1"]).first().map(String::as_str), None);
     }
 }

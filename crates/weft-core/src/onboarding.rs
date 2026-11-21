@@ -262,30 +262,58 @@ impl View {
 /// The commands that bring this harness to RingFrame's plugin, as its file
 /// names them, for what its readiness says: the marketplace then the plugin
 /// when the plugin is missing; its marketplace refresh then its update when it
-/// is behind the latest release.
-pub fn steps(h: &Harness, state: Readiness, have: Option<&str>, latest: Option<&str>) -> Vec<Step> {
+/// is behind the latest release. A marketplace pinned to a release (`{release}`
+/// in its add command) is added at `release`, fab7's newest release this Weft
+/// runs with (`main` when unknown), and a pinned plugin behind it moves there:
+/// taken out with its marketplace, then added and installed at `release`.
+pub fn steps(
+    h: &Harness,
+    state: Readiness,
+    have: Option<&str>,
+    latest: Option<&str>,
+    release: Option<&str>,
+) -> Vec<Step> {
+    let release = release.unwrap_or("main");
+    let at = |cmd: &[String]| {
+        let words: Vec<String> =
+            h.argv(cmd).into_iter().map(|w| w.replace("{release}", release)).collect();
+        Step::new(&h.program, &words)
+    };
     let mut out = Vec::new();
     match state {
         Readiness::Missing(gap @ (Gap::Marketplace | Gap::Plugin)) => {
             if let (Gap::Marketplace, Some(add)) = (gap, &h.add_marketplace) {
                 // A harness that already has the marketplace refuses to add it
                 // again; its install is what says whether it is there.
-                let add = Step::new(&h.program, &h.argv(add));
+                let add = at(add);
                 out.push(if h.install_plugin.is_some() { add.may_fail() } else { add });
             }
-            out.extend(h.install_plugin.iter().map(|i| Step::new(&h.program, &h.argv(i))));
+            out.extend(h.install_plugin.iter().map(|i| at(i)));
+        }
+        Readiness::Ready if behind(have, latest) && pinned(h) => {
+            if let (Some(add), Some(install)) = (&h.add_marketplace, &h.install_plugin) {
+                out.extend(h.uninstall_plugin.iter().map(|u| at(u).may_fail()));
+                out.extend(h.remove_marketplace.iter().map(|r| at(r).may_fail()));
+                out.push(at(add));
+                out.push(at(install));
+            }
         }
         Readiness::Ready if behind(have, latest) => {
             if let Some(update) = &h.update_plugin {
                 if let Some(refresh) = &h.update_marketplace {
-                    out.push(Step::new(&h.program, &h.argv(refresh)));
+                    out.push(at(refresh));
                 }
-                out.push(Step::new(&h.program, &h.argv(update)));
+                out.push(at(update));
             }
         }
         _ => {}
     }
     out
+}
+
+/// Whether this harness's marketplace is pinned to a fab7 release.
+pub fn pinned(h: &Harness) -> bool {
+    h.add_marketplace.as_ref().is_some_and(|a| a.iter().any(|w| w.contains("{release}")))
 }
 
 fn behind(have: Option<&str>, latest: Option<&str>) -> bool {
@@ -310,7 +338,7 @@ pub fn row(h: &Harness, found: Option<(Readiness, Option<String>)>, latest: Opti
     let state = match found {
         None => State::NotFound,
         Some((Readiness::Ready, Some(have))) if behind(Some(&have), latest) => {
-            if h.update_plugin.is_some() {
+            if h.update_plugin.is_some() || (pinned(h) && h.install_plugin.is_some()) {
                 State::Behind { have, latest: latest.unwrap_or_default().to_string() }
             } else {
                 State::CannotInstall
@@ -318,7 +346,7 @@ pub fn row(h: &Harness, found: Option<(Readiness, Option<String>)>, latest: Opti
         }
         Some((Readiness::Ready, version)) => State::Ready { version },
         Some((Readiness::Unknown, _)) => State::Unknown,
-        Some((r @ Readiness::Missing(_), _)) if steps(h, r, None, None).is_empty() => {
+        Some((r @ Readiness::Missing(_), _)) if steps(h, r, None, None, None).is_empty() => {
             State::CannotInstall
         }
         Some((Readiness::Missing(_), _)) => State::NotSetUp,
@@ -370,24 +398,78 @@ mod tests {
         steps.iter().map(Step::line).collect()
     }
 
+    /// A harness is set up and updated by its own commands. One whose marketplace is pinned to
+    /// a fab7 release (Claude Code, Codex) is added at the release Weft runs with, and moves to
+    /// a newer one by being taken out and added again there; one that cannot pin (Grok,
+    /// Antigravity) refreshes from fab7's default branch.
     #[test]
     fn a_harness_is_set_up_or_updated_by_its_own_commands() {
         let claude = harness("claude-code");
+        assert!(pinned(&claude) && pinned(&harness("codex")));
+        assert!(!pinned(&harness("grok")) && !pinned(&harness("antigravity")));
         assert_eq!(
-            lines(&steps(&claude, Readiness::Missing(Gap::Marketplace), None, Some("0.1.3"))),
+            lines(&steps(
+                &claude,
+                Readiness::Missing(Gap::Marketplace),
+                None,
+                Some("0.1.3"),
+                Some("v0.8.0")
+            )),
             [
-                "claude plugin marketplace add fab7hq/fab7",
+                "claude plugin marketplace add fab7hq/fab7@v0.8.0",
                 "claude plugin install rf@fab7 --scope user"
             ]
         );
         assert_eq!(
-            lines(&steps(&claude, Readiness::Ready, Some("0.1.2"), Some("0.1.3"))),
-            ["claude plugin marketplace update fab7", "claude plugin update rf@fab7"],
-            "behind: its refresh, then its update"
+            lines(&steps(&claude, Readiness::Missing(Gap::Marketplace), None, None, None))[0],
+            "claude plugin marketplace add fab7hq/fab7@main",
+            "no release known: the default branch"
         );
-        assert!(steps(&claude, Readiness::Ready, Some("0.1.3"), Some("0.1.3")).is_empty());
+        let moved = steps(&claude, Readiness::Ready, Some("0.1.2"), Some("0.1.3"), Some("v0.8.0"));
         assert_eq!(
-            lines(&steps(&harness("antigravity"), Readiness::Missing(Gap::Plugin), None, None)),
+            lines(&moved),
+            [
+                "claude plugin uninstall rf@fab7",
+                "claude plugin marketplace remove fab7",
+                "claude plugin marketplace add fab7hq/fab7@v0.8.0",
+                "claude plugin install rf@fab7 --scope user"
+            ],
+            "behind: taken out, then added at the release"
+        );
+        assert!(moved[0].may_fail && moved[1].may_fail && !moved[2].may_fail);
+        assert_eq!(
+            lines(&steps(
+                &harness("codex"),
+                Readiness::Ready,
+                Some("0.1.2"),
+                Some("0.1.3"),
+                Some("v0.8.0")
+            ))[2],
+            "codex plugin marketplace add fab7hq/fab7 --ref v0.8.0"
+        );
+        assert_eq!(
+            lines(&steps(
+                &harness("grok"),
+                Readiness::Ready,
+                Some("0.1.2"),
+                Some("0.1.3"),
+                Some("v0.8.0")
+            )),
+            ["grok plugin marketplace update fab7", "grok plugin update rf"],
+            "not pinned: its refresh, then its update"
+        );
+        assert!(
+            steps(&claude, Readiness::Ready, Some("0.1.3"), Some("0.1.3"), Some("v0.8.0"))
+                .is_empty()
+        );
+        assert_eq!(
+            lines(&steps(
+                &harness("antigravity"),
+                Readiness::Missing(Gap::Plugin),
+                None,
+                None,
+                Some("v0.8.0")
+            )),
             [
                 "agy plugin install https://github.com/fab7hq/fab7/tree/main/products/ringframe/plugins/antigravity"
             ],
@@ -428,23 +510,23 @@ mod tests {
         let h = Harness::of("marketplace-only", &p).expect("a harness");
         let r = row(&h, Some((Readiness::Missing(Gap::Marketplace), None)), None);
         assert_eq!((r.state.clone(), r.state.next()), (State::NotSetUp, Some(Next::SetUp)));
-        assert_eq!(steps(&h, Readiness::Missing(Gap::Marketplace), None, None).len(), 1);
+        assert_eq!(steps(&h, Readiness::Missing(Gap::Marketplace), None, None, None).len(), 1);
         let r = row(&h, Some((Readiness::Missing(Gap::Plugin), None)), None);
         assert_eq!(r.state, State::CannotInstall, "no install, and the marketplace is there");
 
         p["args"] = serde_json::json!(["agent"]);
         let via = Harness::of("via", &p).expect("a harness");
         assert_eq!(
-            lines(&steps(&via, Readiness::Missing(Gap::Marketplace), None, None)),
-            [format!("{} agent plugin marketplace add fab7hq/fab7", via.program)],
+            lines(&steps(&via, Readiness::Missing(Gap::Marketplace), None, None, None)),
+            [format!("{} agent plugin marketplace add fab7hq/fab7 --ref main", via.program)],
             "each step runs with the harness's args first"
         );
         assert!(
-            !steps(&via, Readiness::Missing(Gap::Marketplace), None, None)[0].may_fail,
+            !steps(&via, Readiness::Missing(Gap::Marketplace), None, None, None)[0].may_fail,
             "nothing after it"
         );
         let claude = harness("claude-code");
-        let both = steps(&claude, Readiness::Missing(Gap::Marketplace), None, None);
+        let both = steps(&claude, Readiness::Missing(Gap::Marketplace), None, None, None);
         assert_eq!(
             both.iter().map(|s| s.may_fail).collect::<Vec<_>>(),
             [true, false],

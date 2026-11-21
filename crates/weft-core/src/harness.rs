@@ -46,6 +46,10 @@ pub struct Harness {
     pub update_marketplace: Option<Vec<String>>,
     /// Moves the installed plugin to the marketplace's version, when it can.
     pub update_plugin: Option<Vec<String>>,
+    /// Takes the plugin out, and the marketplace: a marketplace pinned to a release
+    /// (`{release}` in `add_marketplace`) moves to another release by being added again.
+    pub uninstall_plugin: Option<Vec<String>>,
+    pub remove_marketplace: Option<Vec<String>>,
     /// How what `list` answers reads, when the file says: without it, Weft
     /// cannot tell whether the plugin is there.
     pub listing: Option<Listing>,
@@ -193,6 +197,8 @@ impl Harness {
             install_plugin: argv(&plugin["install"]),
             update_marketplace: argv(&plugin["update_marketplace"]),
             update_plugin: argv(&plugin["update"]),
+            uninstall_plugin: argv(&plugin["uninstall"]),
+            remove_marketplace: argv(&plugin["remove_marketplace"]),
             listing: serde_json::from_value(plugin["listing"].clone()).ok(),
             manifest: text(&plugin["manifest"]),
             resume: argv(&p["resume"])?,

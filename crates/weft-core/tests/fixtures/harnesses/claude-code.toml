@@ -1,7 +1,8 @@
 # Weft harness file: Claude Code. What Weft needs to start this harness, pick a
 # session back up and set its plugin up, and nothing RingFrame reads: RingFrame's
-# own facts about it are in its profile. Shipped by fab7; `install.sh` and
-# `weft update` copy it into ~/.fab7/weft/harnesses/, replaced on every update.
+# own facts about it are in its profile. Shipped by fab7; `install.sh`, or
+# a new Weft's first start, copies it into ~/.fab7/weft/harnesses/, replaced on
+# every update.
 # Never edit the copy.
 title = "Claude Code"
 program = "claude"
@@ -28,7 +29,9 @@ default = ".claude"
 
 [plugin]   # the argv for each, as Weft's readiness and RingFrame views run them
 list = ["plugin", "list", "--available", "--json"]
-add_marketplace = ["plugin", "marketplace", "add", "fab7hq/fab7"]
+# The marketplace at the fab7 release Weft runs with (`{release}`, a tag), so the plugin is
+# that release's; moving to another release adds it again there.
+add_marketplace = ["plugin", "marketplace", "add", "fab7hq/fab7@{release}"]
 install = ["plugin", "install", "rf@fab7", "--scope", "user"]
 update_marketplace = ["plugin", "marketplace", "update", "fab7"]
 update = ["plugin", "update", "rf@fab7"]
@@ -45,10 +48,10 @@ available = ["available"]
 name = "id"
 on = ["enabled"]
 
-# What each of its hooks means to Weft (ADR-0030 D4). RingFrame's plugin registers
+# What each of its hooks means to Weft. RingFrame's plugin registers
 # these hooks, every one running `weft-signal <id> <hook>`; fab7's check keeps the
 # two in step. Payload paths are dotted; `forward` passes a prompt or a tool to
-# `ringframe observe` (D9).
+# `ringframe observe`.
 # A long `/goal` reaches the prompt hook as Claude Code's own `Goal set:
 # <objective>`; the transcript keeps the objective as sent in its newest
 # goal_status line, written again on every turn the goal is set
@@ -87,7 +90,7 @@ on = [
 # entries are tool results, interruptions and injected context. Thinking,
 # attachments and bookkeeping entries are not drawn.
 [conversation]
-verified = "2.1.296 (Claude Code)"
+verified = "2.1.322 (Claude Code)"
 path = "transcript_path"
 find = "projects/*/{session}.jsonl"
 time = "timestamp"

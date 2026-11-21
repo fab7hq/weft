@@ -192,7 +192,6 @@ main() {
         programs="$apps/Weft.app/Contents/MacOS"
         link "$programs/weft" "$BIN_DIR/weft"
         link "$programs/ringframe" "$BIN_DIR/ringframe"
-        bundled="$apps/Weft.app/Contents/Resources/fab7"
         # Finder, the Dock and Spotlight show its icon at once. One put in a
         # folder of the caller's choosing is theirs to register.
         lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
@@ -227,7 +226,6 @@ main() {
         link "$folder/weft" "$BIN_DIR/weft"
         link "$folder/ringframe" "$BIN_DIR/ringframe"
         link "$folder/weft-desktop" "$BIN_DIR/weft-desktop"
-        bundled="$folder/fab7"
         share="$HOME/.local/share"
         mkdir -p "$share/applications" "$share/icons/hicolor/scalable/apps"
         # Started by a desktop that may not have BIN_DIR on its PATH.
@@ -240,33 +238,11 @@ main() {
         printf 'Installed Weft %s to %s, linked from %s\n' "$tag" "$folder" "$BIN_DIR"
     fi
 
-    # RingFrame's configuration at fab7's latest release; offline, the one
-    # that came with this Weft. The binaries are in place whatever happens,
-    # so a configuration that cannot be installed is said, not aborted on.
-    if ! "$BIN_DIR/ringframe" init --global >/dev/null 2>&1 &&
-        ! { [ -d "$bundled/ringframe/config" ] &&
-            "$BIN_DIR/ringframe" init --global --from "$bundled/ringframe/config" >/dev/null; }; then
-        printf '\n%s\n' "The binaries are installed, but RingFrame's configuration could not be."
-        printf '%s\n' "Run \`$BIN_DIR/ringframe init --global\` again once that is sorted."
-    fi
-
-    # Weft's harness files say how to start, resume and set up each harness,
-    # and its tool files how to install a tunnel. They came with this Weft,
-    # and replace whatever was there: they are never edited.
-    for part in harnesses tools; do
-        if [ -d "$bundled/weft/$part" ]; then
-            mkdir -p "$HOME/.fab7/weft"
-            rm -rf "$HOME/.fab7/weft/$part.new"
-            cp -R "$bundled/weft/$part" "$HOME/.fab7/weft/$part.new"
-            rm -rf "$HOME/.fab7/weft/$part"
-            mv "$HOME/.fab7/weft/$part.new" "$HOME/.fab7/weft/$part"
-        fi
-    done
-    if [ -d "$HOME/.fab7/weft/harnesses" ]; then
-        printf 'Installed the harness files to %s\n' "$HOME/.fab7/weft/harnesses"
-    else
-        printf '\n%s\n' "This release carries no harness files, so Weft offers no harness yet."
-    fi
+    # fab7's release (RingFrame's configuration, Weft's harness and tool
+    # files) is Weft's to set up, when it starts: the newest release it runs
+    # with, or offline the copy that came with it. Installing Weft again never
+    # puts an older one back.
+    printf '%s\n' "Weft sets up fab7's harness files and RingFrame's configuration when it starts."
 
     case ":$PATH:" in
         *":$BIN_DIR:"*) ;;

@@ -14,74 +14,10 @@ fn write_config_if_absent(path: &std::path::Path) {
     }
 }
 
-/// fab7's files that came with the `weft` at `exe`, in its release: in the
-/// bundle's Resources on macOS, beside the programs elsewhere.
-fn bundled(exe: &std::path::Path) -> Option<std::path::PathBuf> {
-    let dir = exe.parent()?;
-    let fab7 = if dir.ends_with("Contents/MacOS") {
-        dir.parent()?.join("Resources/fab7")
-    } else {
-        dir.join("fab7")
-    };
-    fab7.is_dir().then_some(fab7)
-}
-
-/// Whether a home set up from this version's files (`seeded`, the version
-/// that last did) is set up again: an app replaced in place is, once per
-/// version; the versions Weft's installer keeps are refreshed by it.
-fn refresh(by: &Updater, seeded: Option<&str>, version: &str) -> bool {
-    *by == Updater::InPlace && seeded != Some(version)
-}
-
-/// A first start with nothing set up, as when the app came from a package
-/// manager and no installer ran: Weft's harness and tool files, and
-/// RingFrame's configuration (by the `ringframe` beside this `weft`), from
-/// what came with it. What is there already is left alone, unless a newer
-/// Homebrew Weft brought newer files.
+/// Before the daemon starts: a home this Weft cannot run with gets the newest fab7 release it
+/// runs with, or, with nothing installed and no network, the copy that came with it.
 fn seed(home: &std::path::Path, exe: &std::path::Path) {
-    let Some(fab7) = bundled(exe) else { return };
-    let version = env!("CARGO_PKG_VERSION");
-    let stamp = home.join(".fab7/weft/.seeded");
-    let seeded = std::fs::read_to_string(&stamp).ok();
-    let again = refresh(&updated_by(exe, home), seeded.as_deref().map(str::trim), version);
-    for name in ["harnesses", "tools"] {
-        let (from, to) = (fab7.join("weft").join(name), home.join(".fab7/weft").join(name));
-        if from.is_dir() && (again || !to.exists()) {
-            let new = to.with_extension("new");
-            let _ = std::fs::remove_dir_all(&new);
-            if copy_dir(&from, &new).is_ok() {
-                let _ = std::fs::remove_dir_all(&to);
-                let _ = std::fs::rename(&new, &to);
-            }
-        }
-    }
-    let ringframe = exe.with_file_name("ringframe");
-    if (again || !home.join(".fab7/rf/config").exists()) && ringframe.is_file() {
-        let _ = std::process::Command::new(ringframe)
-            .args(["init", "--global", "--from"])
-            .arg(fab7.join("ringframe/config"))
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-    }
-    if again {
-        let _ = std::fs::write(&stamp, format!("{version}\n"));
-    }
-}
-
-fn copy_dir(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(to)?;
-    for entry in std::fs::read_dir(from)? {
-        let entry = entry?;
-        let path = entry.path();
-        if entry.file_type()?.is_dir() {
-            copy_dir(&path, &to.join(entry.file_name()))?;
-        } else {
-            std::fs::copy(&path, to.join(entry.file_name()))?;
-        }
-    }
-    Ok(())
+    weftd::fab7::set_up(home, weftd::fab7::bundled_beside(exe).as_deref());
 }
 
 /// Before the daemon starts: the home set up from what came with this Weft.
@@ -304,26 +240,6 @@ fn start_program(
     Ok(())
 }
 
-/// What put the Weft at `exe` there.
-#[derive(Debug, PartialEq, Eq)]
-enum Updater {
-    /// Weft's installer on Linux, which keeps each version in
-    /// `~/.fab7/weft/versions`.
-    Installer,
-    /// Homebrew's cask, or Weft's installer on macOS: Weft.app replaced
-    /// where it is.
-    InPlace,
-}
-
-/// A Weft.app outside `~/.fab7/weft/versions` is replaced in place;
-/// anything else is laid out as Weft's installer puts it on Linux.
-fn updated_by(exe: &std::path::Path, home: &std::path::Path) -> Updater {
-    let in_app = exe.parent().is_some_and(|d| d.ends_with("Contents/MacOS"));
-    let versions = home.join(".fab7/weft/versions");
-    let versions = versions.canonicalize().unwrap_or(versions);
-    if in_app && !exe.starts_with(versions) { Updater::InPlace } else { Updater::Installer }
-}
-
 /// Weft is updated the way it was installed, never by itself.
 const UPDATE_WEFT: &str = "Weft updates the way you installed it: brew upgrade --cask weft, \
 or the install.sh line again. weft update --sense installs the Sense model.";
@@ -348,27 +264,6 @@ fn update_sense() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// An app replaced in place is set up again from each new version; the
-    /// versions Weft's installer keeps are refreshed by it.
-    #[test]
-    fn an_app_replaced_in_place_sets_its_home_up_again_for_each_version() {
-        assert!(refresh(&Updater::InPlace, None, "0.6.0"), "never set up by this route");
-        assert!(refresh(&Updater::InPlace, Some("0.5.0"), "0.6.0"));
-        assert!(!refresh(&Updater::InPlace, Some("0.6.0"), "0.6.0"));
-        assert!(!refresh(&Updater::Installer, Some("0.5.0"), "0.6.0"));
-    }
-
-    #[test]
-    fn a_weft_app_outside_the_versions_is_replaced_in_place() {
-        let home = std::path::Path::new("/Users/p");
-        let installed = home.join(".fab7/weft/versions/0.5.0/Weft.app/Contents/MacOS/weft");
-        assert_eq!(updated_by(&installed, home), Updater::Installer);
-        let linux = home.join(".fab7/weft/versions/0.5.0/weft");
-        assert_eq!(updated_by(&linux, home), Updater::Installer);
-        let cask = std::path::Path::new("/Applications/Weft.app/Contents/MacOS/weft");
-        assert_eq!(updated_by(cask, home), Updater::InPlace);
-    }
 
     /// Weft says how it is updated, and updates nothing itself.
     #[test]

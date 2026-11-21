@@ -83,24 +83,61 @@ pub fn sense_latest(fresh: bool) -> Option<String> {
     answer
 }
 
-/// The newest tag of Sense's model repository.
+/// The newest release of Sense's model repository this Weft reads: each tag's manifest is
+/// read, newest first, before anything is downloaded, and one of a schema this Weft does not
+/// read gives way to the next older.
 fn ask_sense_release() -> Option<String> {
-    let out = Command::new("curl")
-        .args(["-fsSL", "--max-time", "10"])
-        .arg(format!("https://huggingface.co/api/models/{}/refs", weft_core::sync::SENSE_REPO))
-        .output()
-        .ok()?;
-    let refs: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
-    let tags = refs["tags"].as_array()?.iter().filter_map(|t| t["name"].as_str());
-    weft_core::sync::newest_release(tags).map(str::to_string)
+    let curl = |url: String| {
+        let out =
+            Command::new("curl").args(["-fsSL", "--max-time", "10"]).arg(url).output().ok()?;
+        out.status.success().then_some(out.stdout)
+    };
+    let refs: serde_json::Value = serde_json::from_slice(&curl(format!(
+        "https://huggingface.co/api/models/{}/refs",
+        weft_core::sync::SENSE_REPO
+    ))?)
+    .ok()?;
+    let tags: Vec<&str> =
+        refs["tags"].as_array()?.iter().filter_map(|t| t["name"].as_str()).collect();
+    first_readable(weft_core::sync::releases_newest_first(tags), |v| {
+        let manifest = curl(format!(
+            "https://huggingface.co/{}/resolve/v{v}/manifest.json",
+            weft_core::sync::SENSE_REPO
+        ))?;
+        let manifest: serde_json::Value = serde_json::from_slice(&manifest).ok()?;
+        manifest["schema"].as_str().map(str::to_string)
+    })
+}
+
+/// How many Sense releases are read before giving up on one this Weft reads.
+const SENSE_TRIED: usize = 12;
+
+/// The first of `versions` (newest first) whose manifest schema, as `schema_of` reads it, is
+/// the one this Weft's Sense reads.
+fn first_readable(
+    versions: Vec<&str>,
+    schema_of: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
+    versions
+        .into_iter()
+        .take(SENSE_TRIED)
+        .find(|v| schema_of(v).as_deref() == Some(weft_sense::manifest::SCHEMA))
+        .map(str::to_string)
 }
 
 fn ask_check() -> Result<serde_json::Value, String> {
     // RingFrame says why, in its own words: the reason is the person's to read.
-    ringframe::api::config_check().map_err(|e| match e {
+    let mut check = ringframe::api::config_check().map_err(|e| match e {
         ringframe::api::Error::Refused { detail, .. } => detail,
         other => other.to_string(),
-    })
+    })?;
+    // Weft's files from another release than the configuration are behind too: Update
+    // installs the release whole.
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
+    if crate::fab7::apart(&home) {
+        check["behind"] = serde_json::Value::Bool(true);
+    }
+    Ok(check)
 }
 
 /// What the machine says of Weft's own releases: the latest, and whether a
@@ -265,17 +302,18 @@ pub fn save(config: &Path, name: &str, key: &str, value: serde_json::Value) -> R
     crate::routing::change(config, |text| weft_core::config::set_harness(text, name, key, &value))
 }
 
-/// Run this harness's setup commands in order, showing its row at every
-/// step, and stop at the first that fails. The row that comes back is the
+/// Run this harness's setup commands in order (`release`: fab7's release a pinned
+/// marketplace is added at), showing its row at every step, and stop at the first that fails. The row that comes back is the
 /// harness's own answer afterwards, or the failed step.
 pub fn run(
     out: &dyn Outside,
     h: &Harness,
     latest: Option<&str>,
+    release: Option<&str>,
     show: impl FnMut(State, (usize, usize)),
 ) -> Option<State> {
     let (state, have) = crate::readiness::look(out, h);
-    proceed(out, steps(h, state, have.as_deref(), latest), show)
+    proceed(out, steps(h, state, have.as_deref(), latest, release), show)
 }
 
 /// Run these steps in order, showing each as it starts with which it is (from
@@ -312,6 +350,25 @@ pub fn with(mut view: View, name: &str, state: State) -> View {
 
 #[cfg(test)]
 mod tests {
+    use super::first_readable;
+
+    /// Sense's newest release this Weft reads: one of another schema gives way to the older.
+    #[test]
+    fn the_newest_sense_this_weft_reads_is_taken() {
+        let schema = |v: &str| {
+            Some(
+                if v == "0.1.0" { "fab7.sense.xs/2" } else { weft_sense::manifest::SCHEMA }
+                    .to_string(),
+            )
+        };
+        assert_eq!(
+            first_readable(vec!["0.1.0", "0.0.2", "0.0.1"], schema).as_deref(),
+            Some("0.0.2")
+        );
+        assert_eq!(first_readable(vec!["0.1.0"], schema), None);
+        assert_eq!(first_readable(vec![], schema), None);
+    }
+
     use super::*;
     use crate::outside::Machine;
 
@@ -433,7 +490,11 @@ mod tests {
         let (v, _) = look(&Machine, &harnesses, &Err("offline".into()), &WeftCheck::default());
         assert_eq!(v.rows[0].state, State::NotSetUp);
         let mut seen = Vec::new();
-        assert_eq!(run(&Machine, &h, None, |s, of| seen.push((s, of))), None, "no step failed");
+        assert_eq!(
+            run(&Machine, &h, None, None, |s, of| seen.push((s, of))),
+            None,
+            "no step failed"
+        );
         assert_eq!(seen, [(State::Running(format!("{} install", h.program)), (1, 1))]);
         let (v, states) = look(&Machine, &harnesses, &Err("offline".into()), &WeftCheck::default());
         assert_eq!(v.rows[0].state, State::Ready { version: None });

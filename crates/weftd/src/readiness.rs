@@ -81,6 +81,8 @@ mod tests {
             install_plugin: Some(argv(&["y"])),
             update_marketplace: Some(argv(&["z"])),
             update_plugin: Some(argv(&["w"])),
+            uninstall_plugin: None,
+            remove_marketplace: None,
             listing: Some(weft_core::harness::Listing {
                 installed: argv(&["installed"]),
                 available: argv(&["available"]),

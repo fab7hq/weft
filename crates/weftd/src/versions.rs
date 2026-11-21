@@ -221,12 +221,16 @@ pub fn install_sense_bundle(
         .ok_or_else(|| anyhow::anyhow!("invalid or missing version in Sense manifest.json"))?
         .to_string();
 
+    // One install at a time: the daemon can be asked twice at once.
+    static INSTALLING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = INSTALLING.lock().unwrap_or_else(|e| e.into_inner());
     let sense_root = weft_dir.join("sense");
     let versions_dir = sense_root.join("versions");
     std::fs::create_dir_all(&versions_dir)?;
+    // This install's own names, so nothing another left behind is in its way.
+    let own = format!("{}-{}", std::process::id(), crate::turns::now_millis());
 
-    let tmp_dir = versions_dir.join(format!("{version}.tmp"));
-    let _ = std::fs::remove_dir_all(&tmp_dir);
+    let tmp_dir = versions_dir.join(format!("{version}.tmp-{own}"));
     std::fs::create_dir_all(&tmp_dir)?;
 
     let names = bundle_files(manifest_text.as_bytes())?;
@@ -253,13 +257,21 @@ pub fn install_sense_bundle(
     };
 
     let final_dir = versions_dir.join(&version);
-    if final_dir.exists() {
-        let _ = std::fs::remove_dir_all(&final_dir);
+    let aside = versions_dir.join(format!("{version}.old-{own}"));
+    let had = final_dir.exists() && std::fs::rename(&final_dir, &aside).is_ok();
+    if let Err(e) = std::fs::rename(&tmp_dir, &final_dir) {
+        if had {
+            let _ = std::fs::rename(&aside, &final_dir);
+        }
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return Err(e.into());
     }
-    std::fs::rename(&tmp_dir, &final_dir)?;
+    if had {
+        let _ = std::fs::remove_dir_all(&aside);
+    }
 
     let current = SenseCurrent { version, path: final_dir.clone() };
-    let current_tmp = sense_root.join("current.json.tmp");
+    let current_tmp = sense_root.join(format!("current.json.tmp-{own}"));
     let current_path = sense_root.join("current.json");
     let mut json = serde_json::to_string_pretty(&serde_json::json!({
         "version": current.version,

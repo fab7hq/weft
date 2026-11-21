@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 use std::os::unix::process::ExitStatusExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Output};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -163,7 +163,8 @@ impl Outside for Machine {
     }
 
     fn sync(&self, told: &dyn Fn(ringframe::api::SyncStep)) -> Result<(), String> {
-        ringframe::api::config_sync_with(told).map(|_| ()).map_err(|e| e.to_string())
+        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+        crate::fab7::sync(&home, told).map(|_| ()).map_err(|e| e.to_string())
     }
 
     fn weft_release(&self, fresh: bool) -> Option<String> {
