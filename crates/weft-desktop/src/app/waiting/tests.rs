@@ -92,7 +92,7 @@ fn an_eval_says_it_is_opening_until_its_readers_start_then_its_view_opens() {
     let bar = working_bar(&app).expect("the dialog stays as its working bar");
     for said in [
         words::word("wait.opening_eval"),
-        "fix login · 1 Ask · read by antigravity",
+        "fix login · 1 Ask · read by Antigravity",
         words::word("wait.opening_eval_line"),
     ] {
         assert!(bar.contains(said), "{said} in {bar}");
@@ -167,7 +167,7 @@ fn an_eval_opened_elsewhere_shows_opening_here_too() {
     pumped(&mut app, |a| !a.clients[0].jobs.is_empty());
     let bar = working_bar(&app).expect("opening, though not asked here");
     assert!(bar.contains(words::word("wait.opening_eval")), "{bar}");
-    assert!(bar.contains("health endpoint · 1 Ask · read by codex"), "{bar}");
+    assert!(bar.contains("health endpoint · 1 Ask · read by Codex"), "{bar}");
     let row = app.render().find_layer("row unit health endpoint").unwrap().all_text();
     assert!(row.contains(words::word("wait.row_opening_eval")), "{row}");
     let done = weft_proto::JobEnd { ok: true, why: None };

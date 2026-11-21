@@ -45,7 +45,7 @@ fn opening(call: Option<u64>, work: &str) -> Job {
     reading["unit"] = json!("files");
     reading["args"] = json!({"new": "9"});
     let mut starting = step("step.starting_readers", "next");
-    starting["args"] = json!({"harness": "antigravity"});
+    starting["args"] = json!({"harness": "Antigravity"});
     job(json!({
         "id": "job_1", "kind": "eval_open", "on": {"work": work}, "call": call,
         "steps": [reading, step("step.dividing", "next"),
@@ -79,7 +79,7 @@ fn a_yes_shows_the_steps_of_the_job_its_call_began() {
     assert_eq!(app.working().unwrap().progress.unwrap().job.id, "job_1");
     let bar = app.render().find_layer("working bar").unwrap().clone();
     let text = bar.all_text();
-    for said in [words::word("wait.opening_eval"), "fix login · 1 Ask · read by antigravity"] {
+    for said in [words::word("wait.opening_eval"), "fix login · 1 Ask · read by Antigravity"] {
         assert!(text.contains(said), "{said} in {text}");
     }
     assert!(!text.contains(words::word("wait.opening_eval_line")), "its steps say it now");
@@ -97,7 +97,7 @@ fn a_yes_shows_the_steps_of_the_job_its_call_began() {
         .map(Element::all_text)
         .collect();
     assert_eq!(next.len(), 3, "{next:?}");
-    assert!(next[2].contains("Starting antigravity to read it"), "{next:?}");
+    assert!(next[2].contains("Starting Antigravity to read it"), "{next:?}");
     let filled = bar.find_layer("filled").expect("the bar fills by the share done");
     assert!(filled.attrs.contains(&("data-share".into(), "0.20".into())), "{:?}", filled.attrs);
     assert!(bar.find_layer("moving bar").is_none());

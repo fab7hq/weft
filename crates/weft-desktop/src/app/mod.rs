@@ -1063,6 +1063,8 @@ impl WeftDesktopApp {
             .map(str::to_string)
             .or_else(|| self.eval_reader(root, &w.root).map(|(h, _)| h))
             .unwrap_or_default();
+        let harness =
+            c.harnesses.0.iter().find(|h| h.name == harness).map_or(harness, |h| h.title.clone());
         words::fill(
             "wait.opening_eval_about",
             &[("title", &title.unwrap_or_default()), ("asks", &asks), ("harness", &harness)],

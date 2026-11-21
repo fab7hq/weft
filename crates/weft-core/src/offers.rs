@@ -63,28 +63,6 @@ pub fn sending(unit: &crate::ledger::Unit, how: &Handoff) -> Asking {
     Asking { what: "Ready to send".into(), why }
 }
 
-/// Running Check or Decide, in whichever harness this project routes it to.
-pub fn running(skill: &str, command: &str, into: &str, worked_in: &str) -> Asking {
-    let mut why =
-        vec![crate::words::fill("bar.will_type", &[("command", command), ("harness", into)])];
-    if skill == "eval" {
-        why.push("Weft has gathered the change. The agent will run RingFrame's".into());
-        why.push("judging tasks on it; none of the judges did the work.".into());
-    } else {
-        why.push("The agent will ask what you decided, and write a receipt.".into());
-    }
-    // Both acts read the ledger rather than a conversation, so a harness that
-    // did none of the work can still do them. When one is, say so: the person
-    // should see that the judge is not the worker.
-    if into != worked_in {
-        why.push(format!("{into} did not do this work. Both acts read the record."));
-    }
-    Asking {
-        what: if skill == "eval" { "Eval this work?".into() } else { "Seal this work?".into() },
-        why,
-    }
-}
-
 /// Asking for something new: the dialog that shows the exact prompt, and
 /// the practice rules left out to fit the harness's limit.
 pub fn asking(harness: &str, how: &Handoff, trimmed: &[String]) -> Asking {
@@ -932,7 +910,7 @@ mod tests {
                     eval: "evl_3".into(),
                     n: 3,
                     report: Some(crate::ledger::Report::default()),
-                    aside: "judged 11:07 · 1 thing to look at · 1 settled".into(),
+                    aside: "read 11:07 · 1 thing to look at · 1 settled".into(),
                 },
                 Step::Ask {
                     unit: "ask_g".into(),

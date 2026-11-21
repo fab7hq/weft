@@ -416,6 +416,12 @@ impl Session {
         self.cannot_prove_in(at, &name)
     }
 
+    /// A harness's title as people read it, or its name when no harness file
+    /// has it.
+    pub(super) fn harness_title(&self, at: usize, name: &str) -> String {
+        self.projects[at].harnesses.find(name).map_or(name, |h| h.title.as_str()).to_string()
+    }
+
     /// The same, for a harness by name, before any agent of it is started.
     pub(super) fn cannot_prove_in(&self, at: usize, name: &str) -> Option<String> {
         let harness = self.projects[at].harnesses.find(name);
@@ -457,10 +463,16 @@ impl Session {
             harness: Some(agent.clone()),
             ..Default::default()
         };
-        let agent = [("agent", agent.as_str())];
+        let (title, started) =
+            (self.harness_title(at, &agent), start.as_deref().map(|h| self.harness_title(at, h)));
+        let agent = [("agent", title.as_str())];
         let steps = vec![
             jobs::step("step.recording_ask", &[], None),
-            jobs::step("step.starting", &[("harness", start.as_deref().unwrap_or_default())], None),
+            jobs::step(
+                "step.starting",
+                &[("harness", started.as_deref().unwrap_or_default())],
+                None,
+            ),
             jobs::step("step.waiting_ready", &agent, None),
             jobs::step("step.typing_prompt", &[], None),
             jobs::step("step.waiting_received", &agent, None),

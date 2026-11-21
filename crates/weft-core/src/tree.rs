@@ -714,7 +714,7 @@ mod tests {
             [
                 (Some(no.clone()), Some("No Eval of this work yet: Eval starts one.".into())),
                 (None, None),
-                (Some(no), Some("telemetry is not judged yet: Eval goes on with it.".into())),
+                (Some(no), Some("telemetry is not read yet: Eval goes on with it.".into())),
                 (
                     Some("build number is closed. Follow up asks again.".into()),
                     Some("build number is closed. Follow up asks again.".into())

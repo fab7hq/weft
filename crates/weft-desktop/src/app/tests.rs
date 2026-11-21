@@ -3609,7 +3609,7 @@ fn workflow_sets_every_project_s_routing_and_debate() {
         format!("{} ▾", words::word("desktop.settings.agent_you_are_in"))
     );
     assert_eq!(value("setting Eval"), "Claude Code ▾");
-    assert_eq!(value("setting Judges run in"), "Codex ▾");
+    assert_eq!(value("setting Readers run in"), "Codex ▾");
     assert_eq!(value("setting Read effort"), "low ▾");
 
     let key = |k: &[&str]| k.iter().map(|s| s.to_string()).collect::<Vec<_>>();
@@ -3681,7 +3681,7 @@ fn eval_s_judges_look_as_hard_as_chosen_and_show_their_defaults() {
     let dom = app.render();
     let hard = dom.find_layer("setting How hard").expect("how hard");
     assert_eq!(hard.find_layer("how hard on").unwrap().all_text(), "Quick");
-    assert!(hard.all_text().contains("In Codex, this sets each judge's reasoning"));
+    assert!(hard.all_text().contains("In Codex, this sets each reader's reasoning"));
     assert!(dom.find_layer("setting Read effort").is_none(), "each reader is closed until opened");
 
     app.dispatch(SheetAct::HowHard("thorough".into()));

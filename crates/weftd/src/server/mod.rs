@@ -1805,12 +1805,13 @@ impl Session {
             harness: Some(reader.clone()),
             ..Default::default()
         };
+        let title = self.harness_title(at, &reader);
         let steps = vec![
             jobs::step("step.reading_change", &[], Some("files")),
             jobs::step("step.dividing", &[], None),
             jobs::step("step.preparing_readers", &[], None),
-            jobs::step("step.starting_readers", &[("harness", &reader)], Some("readers")),
-            jobs::step("step.waiting_ready", &[("agent", &reader)], Some("readers")),
+            jobs::step("step.starting_readers", &[("harness", &title)], Some("readers")),
+            jobs::step("step.waiting_ready", &[("agent", &title)], Some("readers")),
         ];
         let job = self.jobs.begin("eval_open", on, Some(at), Some((client, call_id)), steps);
         job.now(0);
