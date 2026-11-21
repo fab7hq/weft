@@ -199,19 +199,6 @@ impl Client {
         })
     }
 
-    /// The next `injected` within `within`, if one comes.
-    fn injected_within(&mut self, within: Duration) -> Option<Option<String>> {
-        let deadline = Instant::now() + within;
-        while Instant::now() < deadline {
-            if let Some(Event::Injected { refusal, .. }) =
-                self.next_event(Duration::from_millis(250))
-            {
-                return Some(refusal);
-            }
-        }
-        None
-    }
-
     /// Whether nothing that would type or add a pane arrives.
     fn quiet_for(&mut self, how_long: Duration) -> bool {
         !matches!(self.next_event(how_long), Some(Event::Added { .. } | Event::Output { .. }))
@@ -856,12 +843,12 @@ fn a_device_never_resizes_the_agent_it_started() {
     std::fs::remove_dir_all(&root).ok();
 }
 
-/// turn-state.md §6 tests 3 and 4, at the daemon: with no receipt, a Send
-/// waits for the agent to say it is ready, then types; while it works, a Send
-/// is refused at once with why; after `turn_ended` it types; told to type
-/// anyway, it types whatever the state.
+/// At the daemon: a Send the person says yes to is typed into their agent at
+/// once, whatever state it reads as: before it has said anything, while it
+/// works (for the harness to queue), and after its turn ended. Nothing is held
+/// or refused.
 #[test]
-fn the_daemon_types_on_its_own_only_into_an_agent_that_said_it_is_ready() {
+fn a_persons_send_is_typed_at_once_whatever_the_agents_state() {
     let (root, socket) = session("ready");
     let mut c = Client::attach(&socket, &root);
     c.hello();
@@ -881,13 +868,11 @@ fn the_daemon_types_on_its_own_only_into_an_agent_that_said_it_is_ready() {
             .to_string()
     };
 
-    // A fresh agent that has said nothing yet: the Send waits for it to say
-    // it is ready, and types then.
+    // A fresh agent that has said nothing yet: typed at once all the same.
     let id = stage(&mut c, "first-typed");
     c.send(Call::Resolve { pending: id, yes: true, to: None, start: None });
-    assert_eq!(c.injected_within(Duration::from_millis(800)), None, "it waits");
+    assert_eq!(c.wait_for_refusal(), None, "typed before the agent said anything");
     agent_says(&socket, &root, "codex", 0, "c1", "ready");
-    assert_eq!(c.wait_for_refusal(), None, "typed once the agent said it is ready");
 
     // The person types in it and presses Enter, and its hook says it is
     // working: a Send is typed all the same, for the harness to queue.

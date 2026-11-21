@@ -408,8 +408,10 @@ impl Session {
     }
 
     /// How many of the judges an Eval's opening started have been handed
-    /// their task: told while it opens, and it has opened once they all have,
-    /// or once it started none.
+    /// their task: once they are started, the opening waits for each to be
+    /// ready (its screen drawn and still, at most the start wait) and counts
+    /// them as their task is typed. It has opened once they all have, or once
+    /// it started none.
     fn tell_judges_started(&mut self, at: usize) {
         for bench in &mut self.projects[at].benches {
             let Some((job, told)) = &mut bench.opening else { continue };
@@ -417,6 +419,10 @@ impl Session {
             // Its first step has not said yet what it starts.
             if total == 0 && bench.stepping {
                 continue;
+            }
+            if total > 0 && told.1 == 0 {
+                job.count(total as u64, Some(total as u64));
+                job.to("step.waiting_ready");
             }
             let started = bench
                 .seats

@@ -1,11 +1,10 @@
-//! Typing into an agent on the person's yes: staged, waited for until the
-//! agent is ready, refused with the reason when it is not, and proven by what
+//! Typing into an agent on the person's yes: at once into the person's own
+//! agent, once it has drawn into one Weft starts for it, and proven by what
 //! the agent reports it received.
 
 use super::*;
 
-/// How long an agent must be still before it is typed into, and how long
-/// Weft waits for an agent to be ready.
+/// How long an agent Weft started must be still before it is typed into.
 pub(super) const STARTED_QUIET: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// A fresh agent can take this long to say it is ready: the slowest harness
@@ -13,11 +12,12 @@ pub(super) const STARTED_QUIET: std::time::Duration = std::time::Duration::from_
 /// still.
 pub(super) const STARTED_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Whether a prompt may be typed into an agent now: at once when it says it
-/// is ready and its screen has settled (an agent whose hooks say it is ready
-/// may have drawn nothing); otherwise once its screen has drawn something and
-/// held still, or once the start wait is over. A state read wrong never holds
-/// a prompt, and a harness at work queues what is typed into it.
+/// Whether a prompt may be typed into an agent Weft started: at once when it
+/// says it is ready and its screen has settled (an agent whose hooks say it is
+/// ready may have drawn nothing); otherwise once its screen has drawn
+/// something and held still, or once the start wait is over. Keys typed
+/// before a harness has drawn its input are lost; a state read wrong never
+/// holds a prompt.
 pub(super) fn may_send(
     ready: bool,
     settled: bool,
@@ -27,8 +27,8 @@ pub(super) fn may_send(
     (ready && settled) || still || waited >= STARTED_TIMEOUT
 }
 
-/// A send waiting for its agent to be ready, until it may be typed or its
-/// deadline passes.
+/// A send waiting for the agent Weft started for it, until it may be typed or
+/// the start wait is over.
 pub(super) struct Starting {
     w: Waiting,
     since: std::time::Instant,
@@ -150,12 +150,16 @@ impl Session {
         }
     }
 
-    /// Type a prompt that was said yes to, once its agent is ready: its turn
-    /// is not running, by its hooks, and its screen has not changed
-    /// for [`STARTED_QUIET`]. A busy agent, or one still
-    /// starting, is waited for on the tick, never here, and typed into
-    /// anyway: see [`may_send`].
-    pub(super) fn type_it(&mut self, project: usize, w: Waiting) {
+    /// Type a prompt that was said yes to. Into the person's own agent it
+    /// goes at once, whatever state the agent reads as: when to send is the
+    /// person's, and a harness at work queues what is typed into it. Into an
+    /// agent Weft has just `started` for it, it waits on the tick until that
+    /// agent has drawn: see [`may_send`].
+    pub(super) fn type_it(&mut self, project: usize, w: Waiting, started: bool) {
+        if !started {
+            self.type_now(project, w);
+            return;
+        }
         if let Some(job) = &w.job {
             job.to("step.waiting_ready");
         }
@@ -466,12 +470,18 @@ impl Session {
             job.skip(0);
         }
         if start.is_none() {
+            // The person's own agent is typed into at once.
             job.skip(1);
+            job.skip(2);
         }
         if !ask {
             job.skip(4);
         }
-        job.now(if w.compile.is_some() { 0 } else { 2 });
+        job.now(match (w.compile.is_some(), start.is_some()) {
+            (true, _) => 0,
+            (false, true) => 1,
+            (false, false) => 3,
+        });
         job
     }
 
@@ -509,6 +519,7 @@ impl Session {
                 return fail(self, "not_recorded", why);
             }
         }
+        let mut started = false;
         if let Some(into) = into {
             let pane = match into.to {
                 Into::Pane(pane) => pane,
@@ -516,6 +527,7 @@ impl Session {
                     if let Some(job) = &job {
                         job.to("step.starting");
                     }
+                    started = true;
                     match self.start_for(client, at, &harness) {
                         Some(pane) => pane,
                         None => {
@@ -536,7 +548,7 @@ impl Session {
             let ask = w.sends.clone();
             job.on(weft_proto::JobOn { ask, pane: Some(w.pane), harness, ..Default::default() });
         }
-        self.type_it(at, w);
+        self.type_it(at, w, started);
         Answer::nothing()
     }
 

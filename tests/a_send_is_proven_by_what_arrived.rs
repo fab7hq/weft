@@ -600,12 +600,17 @@ fn a_busy_agent_is_sent_to() {
     assert_eq!(b.took(), format!("{WORDING}\n"), "typed once");
 }
 
-/// A send said yes to before a fresh agent has said anything waits until it
-/// says it is ready, then types: a fresh pane is never refused for starting.
+/// A send the person says yes to before their agent has said anything is
+/// typed at once, never held or refused: when to send is the person's. The
+/// agent takes it once it reads its input.
 #[test]
-fn a_send_to_a_fresh_agent_waits_until_it_says_it_is_ready() {
+fn a_send_to_an_agent_still_starting_is_typed_at_once() {
     let mut b = Bench::new("weft-proven-late", "loom", "late");
-    assert_eq!(b.send(), Ok(None), "typed once ready, not refused");
+    assert_eq!(b.send(), Ok(None), "typed, not refused");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while b.took().is_empty() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
     assert_eq!(b.took(), format!("{WORDING}\n"), "typed once");
 }
 

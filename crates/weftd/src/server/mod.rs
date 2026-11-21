@@ -1810,6 +1810,7 @@ impl Session {
             jobs::step("step.dividing", &[], None),
             jobs::step("step.preparing_readers", &[], None),
             jobs::step("step.starting_readers", &[("harness", &reader)], Some("readers")),
+            jobs::step("step.waiting_ready", &[("agent", &reader)], Some("readers")),
         ];
         let job = self.jobs.begin("eval_open", on, Some(at), Some((client, call_id)), steps);
         job.now(0);
@@ -3090,8 +3091,8 @@ impl Session {
                     }
                     _ => None,
                 };
-                // A Send is typed whatever the agent's state: `type_it` waits
-                // a little for one not ready, then types anyway.
+                // A Send is typed at once, whatever the agent's state; only
+                // an agent Weft starts for it is waited for (`type_it`).
                 let typed_into = typed_into(into.as_ref(), &self.projects[at].waiting[i]);
                 let mut w = self.projects[at].waiting.remove(i);
                 self.clients.broadcast(at, &Out::Resolved { id: pending, yes });

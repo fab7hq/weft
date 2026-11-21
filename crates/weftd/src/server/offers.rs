@@ -74,10 +74,7 @@ impl Session {
             harness: Some(agent.clone()),
             ..Default::default()
         };
-        let steps = vec![
-            jobs::step("step.waiting_ready", &[("agent", &agent)], None),
-            jobs::step("step.typing_request", &[], None),
-        ];
+        let steps = vec![jobs::step("step.typing_request", &[], None)];
         let job = self.jobs.begin("undo", on, Some(at), Some(asked), steps);
         let typing = Waiting {
             id: String::new(),
@@ -95,7 +92,7 @@ impl Session {
             job: Some(job),
             reads: None,
         };
-        self.type_it(at, typing);
+        self.type_it(at, typing, false);
         Answer::nothing()
     }
 
