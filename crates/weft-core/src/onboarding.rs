@@ -262,10 +262,10 @@ impl View {
 /// The commands that bring this harness to RingFrame's plugin, as its file
 /// names them, for what its readiness says: the marketplace then the plugin
 /// when the plugin is missing; its marketplace refresh then its update when it
-/// is behind the latest release. A marketplace pinned to a release (`{release}`
-/// in its add command) is added at `release`, fab7's newest release this Weft
-/// runs with (`main` when unknown), and a pinned plugin behind it moves there:
-/// taken out with its marketplace, then added and installed at `release`.
+/// is behind the latest release. A harness pinned to a release (`{release}` in
+/// its marketplace or install command) installs at `release`, fab7's newest
+/// release this Weft runs with (`main` when unknown), and a pinned plugin behind
+/// it moves there: taken out with any marketplace, then installed at `release`.
 pub fn steps(
     h: &Harness,
     state: Readiness,
@@ -291,10 +291,10 @@ pub fn steps(
             out.extend(h.install_plugin.iter().map(|i| at(i)));
         }
         Readiness::Ready if behind(have, latest) && pinned(h) => {
-            if let (Some(add), Some(install)) = (&h.add_marketplace, &h.install_plugin) {
+            if let Some(install) = &h.install_plugin {
                 out.extend(h.uninstall_plugin.iter().map(|u| at(u).may_fail()));
                 out.extend(h.remove_marketplace.iter().map(|r| at(r).may_fail()));
-                out.push(at(add));
+                out.extend(h.add_marketplace.iter().map(|a| at(a)));
                 out.push(at(install));
             }
         }
@@ -311,9 +311,12 @@ pub fn steps(
     out
 }
 
-/// Whether this harness's marketplace is pinned to a fab7 release.
+/// Whether this harness installs RingFrame's plugin from a fab7 release (`{release}` in its
+/// marketplace or its install command).
 pub fn pinned(h: &Harness) -> bool {
-    h.add_marketplace.as_ref().is_some_and(|a| a.iter().any(|w| w.contains("{release}")))
+    [&h.add_marketplace, &h.install_plugin]
+        .into_iter()
+        .any(|c| c.as_ref().is_some_and(|a| a.iter().any(|w| w.contains("{release}"))))
 }
 
 fn behind(have: Option<&str>, latest: Option<&str>) -> bool {
@@ -398,15 +401,16 @@ mod tests {
         steps.iter().map(Step::line).collect()
     }
 
-    /// A harness is set up and updated by its own commands. One whose marketplace is pinned to
-    /// a fab7 release (Claude Code, Codex) is added at the release Weft runs with, and moves to
-    /// a newer one by being taken out and added again there; one that cannot pin (Grok,
-    /// Antigravity) refreshes from fab7's default branch.
+    /// A harness is set up and updated by its own commands, each at the fab7 release Weft runs
+    /// with: Claude Code and Codex through a marketplace pinned to it, Grok and Antigravity by
+    /// installing straight from it. A plugin behind moves to the release by being taken out and
+    /// installed again there.
     #[test]
     fn a_harness_is_set_up_or_updated_by_its_own_commands() {
         let claude = harness("claude-code");
-        assert!(pinned(&claude) && pinned(&harness("codex")));
-        assert!(!pinned(&harness("grok")) && !pinned(&harness("antigravity")));
+        for name in ["claude-code", "codex", "grok", "antigravity"] {
+            assert!(pinned(&harness(name)), "{name}");
+        }
         assert_eq!(
             lines(&steps(
                 &claude,
@@ -455,8 +459,12 @@ mod tests {
                 Some("0.1.3"),
                 Some("v0.8.0")
             )),
-            ["grok plugin marketplace update fab7", "grok plugin update rf"],
-            "not pinned: its refresh, then its update"
+            [
+                "grok plugin uninstall rf",
+                "grok plugin marketplace remove fab7",
+                "grok plugin install fab7hq/fab7@v0.8.0#products/ringframe/plugins/grok --trust"
+            ],
+            "no marketplace to add: installed again at the release"
         );
         assert!(
             steps(&claude, Readiness::Ready, Some("0.1.3"), Some("0.1.3"), Some("v0.8.0"))
@@ -471,7 +479,7 @@ mod tests {
                 Some("v0.8.0")
             )),
             [
-                "agy plugin install https://github.com/fab7hq/fab7/tree/main/products/ringframe/plugins/antigravity"
+                "agy plugin install https://github.com/fab7hq/fab7/tree/v0.8.0/products/ringframe/plugins/antigravity"
             ],
             "no marketplace to add: the repository, at the plugin's path"
         );

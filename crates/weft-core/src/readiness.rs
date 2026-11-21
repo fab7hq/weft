@@ -294,12 +294,12 @@ mod tests {
         assert_eq!(read(&grok, &listed), Readiness::Ready);
         assert_eq!(
             read(&grok, &json!([])),
-            Readiness::Missing(Gap::Marketplace),
-            "nothing: its marketplace first"
+            Readiness::Missing(Gap::Plugin),
+            "nothing: the plugin, installed straight from the release"
         );
         assert_eq!(
             read(&grok, &json!([{"status": "installed", "name": "other"}])),
-            Readiness::Missing(Gap::Marketplace)
+            Readiness::Missing(Gap::Plugin)
         );
     }
 

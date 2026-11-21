@@ -18,12 +18,10 @@ default = ".grok"
 
 [plugin]   # the argv for each, as Weft's readiness and RingFrame views run them
 list = ["plugin", "list", "--json"]
-add_marketplace = ["plugin", "marketplace", "add", "fab7hq/fab7"]
-# An install asks for trust; Weft's step is the person's request for it.
-install = ["plugin", "install", "rf@fab7", "--trust"]
-update_marketplace = ["plugin", "marketplace", "update", "fab7"]
-update = ["plugin", "update", "rf"]
-# Taking it out again, for a local reinstall.
+# Installed straight from fab7's release (`{release}`, a tag) at the plugin's own
+# folder, with no marketplace: `plugin install` takes `@ref` and `#subdir`
+# (grok 1.0.77's help). Moving to another release installs it again there.
+install = ["plugin", "install", "fab7hq/fab7@{release}#products/ringframe/plugins/grok", "--trust"]
 uninstall = ["plugin", "uninstall", "rf"]
 remove_marketplace = ["plugin", "marketplace", "remove", "fab7"]
 
