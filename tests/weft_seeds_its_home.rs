@@ -5,8 +5,12 @@
 //! overwritten by that copy.
 
 use std::io::{BufRead, BufReader};
+use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::time::Duration;
+
+use weft::protocol::{self, Call, Line, PROTOCOL};
 
 /// A release as it is installed: `weft`, with fab7's files in `fab7/` beside
 /// it (inside Weft.app, in its Resources), recording the fab7 release they
@@ -48,7 +52,7 @@ fn copy(from: &Path, to: &Path) {
 }
 
 /// `weft --serve` in this home, with fab7's releases out of reach, until it
-/// listens; then ended.
+/// answers a first call, which it does once its home is prepared; then ended.
 fn serve(weft: &Path, home: &Path, run: &Path) {
     let offline = home.parent().unwrap().join("offline.gitconfig");
     std::fs::write(&offline, "[url \"file:///nowhere/\"]\n\tinsteadOf = https://github.com/\n")
@@ -66,6 +70,14 @@ fn serve(weft: &Path, home: &Path, run: &Path) {
     let mut line = String::new();
     BufReader::new(daemon.stdout.take().unwrap()).read_line(&mut line).unwrap();
     assert!(line.contains("listening"), "{line}");
+    let mut stream = UnixStream::connect(run.join("weft").join("weft.sock")).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
+    let hello =
+        Line::Call { id: 1, call: Call::Hello { client: "test".into(), protocol: PROTOCOL } };
+    protocol::send(&mut stream, &hello.encode()).unwrap();
+    let mut answer = String::new();
+    BufReader::new(stream).read_line(&mut answer).unwrap();
+    assert!(!answer.is_empty(), "it answers once prepared");
     let _ = daemon.kill();
     let _ = daemon.wait();
 }

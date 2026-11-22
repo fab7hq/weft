@@ -20,7 +20,15 @@ fn seed(home: &std::path::Path, exe: &std::path::Path) {
     weftd::fab7::set_up(home, weftd::fab7::bundled_beside(exe).as_deref());
 }
 
-/// Before the daemon starts: the home set up from what came with this Weft.
+/// Once the daemon holds its socket, before it serves: the person's PATH, the
+/// home set up, and a configuration to read.
+fn prepare(config: &std::path::Path) {
+    weftd::login_path::adopt();
+    set_up_home();
+    write_config_if_absent(config);
+}
+
+/// The home set up from what came with this Weft.
 fn set_up_home() {
     if let (Some(home), Ok(exe)) =
         (std::env::var_os("HOME"), std::env::current_exe().and_then(|e| e.canonicalize()))
@@ -54,10 +62,10 @@ fn main() -> Result<()> {
     // Started by the app to own the panes. One per machine, headless, and it
     // outlives whatever asked for it.
     if first.as_deref() == Some("--serve") {
-        weftd::login_path::adopt();
-        set_up_home();
-        write_config_if_absent(&weft::routing::file());
-        return server::Session::serve(&protocol::socket_path(), &weft::routing::file());
+        let config = weft::routing::file();
+        return server::Session::serve_preparing(&protocol::socket_path(), &config, || {
+            prepare(&config)
+        });
     }
     // The app's way to a daemon: through Weft's service when "Start at login"
     // installed it, so one owner keeps it running; else this process serves.
@@ -70,10 +78,8 @@ fn main() -> Result<()> {
             println!("weft: listening on {}", socket.display());
             return Ok(());
         }
-        weftd::login_path::adopt();
-        set_up_home();
-        write_config_if_absent(&weft::routing::file());
-        return server::Session::serve(&socket, &weft::routing::file());
+        let config = weft::routing::file();
+        return server::Session::serve_preparing(&socket, &config, || prepare(&config));
     }
 
     if first.as_deref() == Some("stop") {

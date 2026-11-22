@@ -1015,6 +1015,14 @@ impl Session {
         Self::serve_with(socket, config, None)
     }
 
+    /// Serve, preparing the home (`prepare`) once the socket is this
+    /// daemon's and before anything is read from it. Whoever started the
+    /// daemon sees it listening at once, however long preparing takes (a
+    /// fab7 release from the network); a client's first call waits for it.
+    pub fn serve_preparing(socket: &Path, config: &Path, prepare: impl FnOnce()) -> Result<()> {
+        Self::serve_on(socket, config, None, crate::outside::machine(), false, prepare)
+    }
+
     /// Serve with these harnesses rather than the harness files beside
     /// `config`. For tests; `weft --serve` reads the files.
     pub fn serve_with(
@@ -1023,7 +1031,7 @@ impl Session {
         harnesses: Option<weft_core::harness::Harnesses>,
     ) -> Result<()> {
         let assume_ready = harnesses.is_some();
-        Self::serve_on(socket, config, harnesses, crate::outside::machine(), assume_ready)
+        Self::serve_on(socket, config, harnesses, crate::outside::machine(), assume_ready, || {})
     }
 
     /// Serve in this world rather than the machine's: a UI test says which
@@ -1034,7 +1042,7 @@ impl Session {
         harnesses: Option<weft_core::harness::Harnesses>,
         outside: crate::outside::Shared,
     ) -> Result<()> {
-        Self::serve_on(socket, config, harnesses, outside, false)
+        Self::serve_on(socket, config, harnesses, outside, false, || {})
     }
 
     fn serve_on(
@@ -1043,6 +1051,7 @@ impl Session {
         harnesses: Option<weft_core::harness::Harnesses>,
         outside: crate::outside::Shared,
         assume_ready: bool,
+        prepare: impl FnOnce(),
     ) -> Result<()> {
         // Only this user may reach the daemon: its folder is 0700 and theirs,
         // and the socket 0600.
@@ -1079,6 +1088,9 @@ impl Session {
             let _ = writeln!(out, "weft: listening on {}", socket.display());
             let _ = out.flush();
         }
+        // The socket is this daemon's: no other starts beside it. Its home is
+        // made ready before any thread runs and anything is read from it.
+        prepare();
 
         let (tx, rx) = channel();
         // The record changes on disk without telling anyone, so it is polled.

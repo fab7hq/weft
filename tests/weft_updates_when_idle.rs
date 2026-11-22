@@ -27,6 +27,7 @@ impl Machine {
         let m =
             Machine { _home: dir, socket: home.join("run/weft/weft.sock"), home, bin, versions };
         m.install("a");
+        with_a_release(&m.home);
         m
     }
 
@@ -66,6 +67,21 @@ impl Machine {
             assert!(Instant::now() < deadline, "the daemon never listened");
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+}
+
+/// A home already holding a fab7 release this Weft runs with (`local`, as a
+/// checkout installs), so its daemon starts without reaching the network.
+fn with_a_release(home: &Path) {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("crates");
+    let config = home.join(".fab7/rf/config");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join(".revision"), "local\n").unwrap();
+    let harnesses = home.join(".fab7/weft/harnesses");
+    std::fs::create_dir_all(&harnesses).unwrap();
+    for entry in std::fs::read_dir(fixtures.join("weft-core/tests/fixtures/harnesses")).unwrap() {
+        let entry = entry.unwrap();
+        std::fs::copy(entry.path(), harnesses.join(entry.file_name())).unwrap();
     }
 }
 

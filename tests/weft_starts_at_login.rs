@@ -217,6 +217,41 @@ fn a_service_that_starts_nothing_is_said_so() {
     assert!(w.calls().contains(&"systemctl --user start weft.service".to_string()));
 }
 
+/// A daemon holds its socket before it prepares its home, however long that
+/// takes (a fab7 release from the network): whoever started it sees it
+/// listening at once, and a second one started meanwhile prepares nothing
+/// and ends.
+#[test]
+fn a_daemon_listens_before_it_prepares_its_home() {
+    let socket = protocol::private_socket("weft-prepare");
+    let config = socket.with_extension("no-config.toml");
+    let (listening, read) = (socket.clone(), config.clone());
+    let (prepared, done) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        weft::server::Session::serve_preparing(&listening, &read, || {
+            std::thread::sleep(Duration::from_secs(3));
+            let _ = prepared.send(());
+        })
+    });
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while !protocol::is_live(&socket) {
+        assert!(Instant::now() < deadline, "not listening while it prepares");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let (said, ended) = std::sync::mpsc::channel();
+    let (again, read) = (socket.clone(), config.clone());
+    std::thread::spawn(move || {
+        let second = weft::server::Session::serve_preparing(&again, &read, || {
+            panic!("a second daemon prepares nothing")
+        });
+        said.send(second.is_ok())
+    });
+    assert_eq!(ended.recv_timeout(Duration::from_secs(2)), Ok(true), "the second ends at once");
+    assert!(done.try_recv().is_err(), "the first is still preparing");
+    done.recv_timeout(Duration::from_secs(5)).expect("prepared");
+    protocol::stop(&socket).unwrap();
+}
+
 /// A second `weft --serve` beside a live daemon leaves it alone and ends
 /// cleanly, so a service started beside one is not restarted over it.
 #[test]

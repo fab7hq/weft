@@ -1132,6 +1132,7 @@ fn a_seal_names_its_units_eval_and_an_eval_acts_on_the_unit() {
 /// `weft --serve`, the real program, in a home and a runtime folder of its
 /// own: its socket, and the process to kill.
 fn real_daemon(home: &Path) -> (std::process::Child, PathBuf) {
+    with_a_release(home);
     let runtime = home.join("run");
     std::fs::create_dir_all(&runtime).unwrap();
     let child = std::process::Command::new(env!("CARGO_BIN_EXE_weft"))
@@ -1152,6 +1153,21 @@ fn real_daemon(home: &Path) -> (std::process::Child, PathBuf) {
         std::thread::sleep(Duration::from_millis(20));
     }
     (child, socket)
+}
+
+/// A home already holding a fab7 release this Weft runs with (`local`, as a
+/// checkout installs), so its daemon starts without reaching the network.
+fn with_a_release(home: &Path) {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("crates");
+    let config = home.join(".fab7/rf/config");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join(".revision"), "local\n").unwrap();
+    let harnesses = home.join(".fab7/weft/harnesses");
+    std::fs::create_dir_all(&harnesses).unwrap();
+    for entry in std::fs::read_dir(fixtures.join("weft-core/tests/fixtures/harnesses")).unwrap() {
+        let entry = entry.unwrap();
+        std::fs::copy(entry.path(), harnesses.join(entry.file_name())).unwrap();
+    }
 }
 
 fn listed(home: &Path) -> Vec<PathBuf> {
