@@ -494,7 +494,7 @@ fn the_conversation_is_read_through_the_daemon_and_drawn_with_its_waiting_line()
     assert!(!first.all_text().contains("11:20"), "no time where none was given");
     assert!(dom.find_layer("tool steps folded").is_some());
     let waiting = dom.find_layer("waiting line").expect("waiting line");
-    assert!(waiting.all_text().contains("antigravity is waiting for you —"));
+    assert_eq!(waiting.all_text(), "Waiting for you");
 
     app.dispatch(PaneAct::ToggleSteps { project: weft(), pane, block: 0 });
     assert!(app.render().find_layer("step Read").is_some());

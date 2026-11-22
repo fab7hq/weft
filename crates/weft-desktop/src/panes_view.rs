@@ -610,9 +610,7 @@ fn render_pane_group(
     let body = if let Some(tab) = active_tab {
         match tab.view {
             PaneViewMode::Terminal => render_terminal_viewport(props, g_idx, tab, split),
-            PaneViewMode::Conversation => {
-                render_conversation_viewport(props, g_idx, active_idx, tab)
-            }
+            PaneViewMode::Conversation => render_conversation_viewport(props, tab),
         }
     } else {
         div().flex_1().self_stretch()
@@ -779,12 +777,7 @@ fn to_end(project: &std::path::Path, pane: u32) -> Element {
         .text("↓")
 }
 
-fn render_conversation_viewport(
-    props: &PanesProps,
-    g_idx: usize,
-    t_idx: usize,
-    tab: &SavedPaneTab,
-) -> Element {
+fn render_conversation_viewport(props: &PanesProps, tab: &SavedPaneTab) -> Element {
     let info = resolve_tab_info(props.clients, tab);
     let harness = info.as_ref().map(|i| i.harness.clone()).unwrap_or_default();
     let needs_you = info.as_ref().is_some_and(|i| turns::needs_you(i.turn, i.asked));
@@ -838,27 +831,16 @@ fn render_conversation_viewport(
     }
 
     if needs_you {
-        let waiting_prefix = words::say("web.waiting.for_you", &harness);
-        let waiting_cta = words::word("web.waiting.answer");
         chat_col.push(
             div()
                 .layer("waiting line")
-                .on_click(PaneAct::SetView {
-                    group: g_idx,
-                    tab: t_idx,
-                    view: PaneViewMode::Terminal,
-                })
                 .self_stretch()
-                .flex_row()
                 .pad(8, 14)
-                .items_center()
-                .justify_between()
                 .bg(palette::AMBER_BG)
                 .border(palette::AMBER_BORDER)
                 .font_size(12)
                 .color(palette::AMBER)
-                .child(span(waiting_prefix))
-                .child(span(waiting_cta).font_weight(600)),
+                .text(words::word("web.waiting.for_you")),
         );
     }
 

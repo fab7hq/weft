@@ -507,12 +507,11 @@ pub const WORDS: &[(&str, &str)] = &[
     ("web.steps.one", "1 tool step"),
     ("web.steps.many", "{n} tool steps"),
     ("web.step.running", "running"),
-    ("web.waiting.for_you", "{harness} is waiting for you — "),
-    ("web.waiting.answer", "answer in Terminal ›"),
     (
         "web.conversation.unreadable",
         "{harness}'s conversation cannot be shown here — Terminal shows everything.",
     ),
+    ("web.waiting.for_you", "Waiting for you"),
     ("why.nothing_needs_you", "Nothing needs your input."),
     // The web app's own wording of the same things: a screen, not keys, the
     // same on a phone and a desktop.
