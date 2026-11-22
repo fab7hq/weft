@@ -143,9 +143,6 @@ steps = [
   { when = { type = "event_msg", "payload.type" = "item_completed", "payload.item.type" = "FileChange" }, name = "Edited", input = "payload.item.changes.@key", failed = { "payload.item.status" = "failed" } },
   { when = { type = "event_msg", "payload.type" = "item_completed", "payload.item.type" = "McpToolCall" }, tool = "payload.item.tool", input = "payload.item.arguments", failed = { "payload.item.status" = "failed" } },
 ]
-# The files a step wrote, for the Conversation's file chips: each path a change names.
-writes = { Edited = "payload.item.changes.@keys" }
-
 # What Settings offers an Eval judge that runs here, and how one starts. A
 # judge is a session Weft starts with `-m` and `-c model_reasoning_effort=…`
 # (Codex CLI reference), so its effort reaches the model. Any model Codex

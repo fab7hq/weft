@@ -962,8 +962,7 @@ fn conversation_blocks(
                         )
                         .child(
                             div().font_size(14).style("line-height", "21px").text(text.to_string()),
-                        )
-                        .children(files_named(&items[i], project, pane, harness)),
+                        ),
                 );
                 i += 1;
             }
@@ -1028,20 +1027,7 @@ fn conversation_blocks(
                 let last = steps_group.last().map(|s| s.id.clone()).unwrap_or_default();
                 let block =
                     render_step_block(&steps_group, &outcomes, project, pane, block_idx, is_open);
-                // The files the steps wrote, under them.
-                let written = crate::files::written(&steps_group);
-                chat_col.push(if written.is_empty() {
-                    block.id(last)
-                } else {
-                    div()
-                        .layer("tool steps with files")
-                        .id(last)
-                        .self_stretch()
-                        .flex_col()
-                        .gap(8)
-                        .child(block)
-                        .child(crate::files::chips(&written, project, pane, harness))
-                });
+                chat_col.push(block.id(last));
                 block_idx += 1;
             }
             Kind::Outcome => {
@@ -1053,7 +1039,7 @@ fn conversation_blocks(
     chat_col
 }
 
-/// The chips for the files a message named, under its words.
+/// The chips for the files an agent's message named, under its words.
 fn files_named(
     item: &Item,
     project: &std::path::Path,

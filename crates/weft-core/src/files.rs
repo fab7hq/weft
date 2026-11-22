@@ -30,22 +30,6 @@ pub enum FileKind {
     Other,
 }
 
-impl FileKind {
-    /// Made for a person to read: shown when a step wrote it. A text file
-    /// (code, configuration) shows only when a message names it.
-    pub fn artifact(self) -> bool {
-        self != FileKind::Text
-    }
-}
-
-/// A path a conversation item points at, before weftd finds whether it is a
-/// file. `named`: a message names it; otherwise a step wrote it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Mention {
-    pub path: String,
-    pub named: bool,
-}
-
 /// A file an item points at, as a device receives it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ref {

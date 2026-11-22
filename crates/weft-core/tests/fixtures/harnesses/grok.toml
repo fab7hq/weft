@@ -92,9 +92,6 @@ agent = { when = { "params.update.sessionUpdate" = "agent_message_chunk" }, text
 steps = { when = { "params.update.sessionUpdate" = "tool_call" }, tool = "params.update.title", input = "params.update.rawInput", call = "params.update.toolCallId" }
 outcomes = { when = { "params.update.sessionUpdate" = "tool_call_update", "params.update.status" = ["completed", "failed"] }, call = "params.update.toolCallId", failed = { "params.update.status" = "failed" } }
 
-# The files a step wrote, for the Conversation's file chips.
-writes = { write = "params.update.rawInput.file_path" }
-
 [conversation.argument]
 run_terminal_command = "command"
 ask_user_question = "questions.0.question"

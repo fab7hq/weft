@@ -56,17 +56,17 @@ fn millis(meta: &std::fs::Metadata) -> i64 {
         .map_or(0, |d| d.as_millis() as i64)
 }
 
-/// Each item's mentions found on the disk, as its refs: a file a step wrote
-/// only when it is made to be read, a named one of any kind, each once per
-/// item. Every file found joins `seen`, the files the pane's devices may read.
+/// The paths each agent message names, found on the disk, as its refs, each
+/// once per item; a path that is no regular file gives none. Every file found
+/// joins `seen`, the files the pane's devices may open.
 pub fn refs(items: &mut [Item], base: &Base, seen: &mut HashSet<PathBuf>) {
     let mut looked: HashMap<String, Option<(PathBuf, Ref)>> = HashMap::new();
     for item in items {
-        for mention in std::mem::take(&mut item.mentions) {
+        for named in std::mem::take(&mut item.mentions) {
             let found = looked
-                .entry(mention.path.clone())
+                .entry(named.clone())
                 .or_insert_with(|| {
-                    let file = base.locate(&mention.path)?;
+                    let file = base.locate(&named)?;
                     let kind = kind_on_disk(&file)?;
                     let meta = std::fs::metadata(&file).ok()?;
                     let shown = base.shown(&file);
@@ -75,7 +75,7 @@ pub fn refs(items: &mut [Item], base: &Base, seen: &mut HashSet<PathBuf>) {
                 })
                 .clone();
             let Some((file, r)) = found else { continue };
-            if !(mention.named || r.kind.artifact()) || item.refs.iter().any(|h| h.path == r.path) {
+            if item.refs.iter().any(|h| h.path == r.path) {
                 continue;
             }
             seen.insert(file);
@@ -100,9 +100,8 @@ pub fn located(base: &Base, seen: &HashSet<PathBuf>, named: &str) -> Option<Valu
 mod tests {
     use super::*;
     use weft_core::conversation::Kind;
-    use weft_core::files::Mention;
 
-    fn item(mentions: &[(&str, bool)]) -> Item {
+    fn item(mentions: &[&str]) -> Item {
         Item {
             id: "0.0".into(),
             kind: Kind::Agent,
@@ -113,10 +112,7 @@ mod tests {
             call: None,
             failed: None,
             refs: Vec::new(),
-            mentions: mentions
-                .iter()
-                .map(|(p, named)| Mention { path: p.to_string(), named: *named })
-                .collect(),
+            mentions: mentions.iter().map(|p| p.to_string()).collect(),
         }
     }
 
@@ -142,7 +138,7 @@ mod tests {
     }
 
     #[test]
-    fn named_files_show_wherever_they_are_and_written_code_does_not() {
+    fn named_files_show_wherever_they_are_and_nothing_else_does() {
         let (_t, root, outside, home) = places();
         let base = Base { root: &root, home: Some(&home) };
         let board = outside.join("board.pdf").to_string_lossy().into_owned();
@@ -150,15 +146,15 @@ mod tests {
         std::os::unix::fs::symlink(outside.join("board.pdf"), &link).unwrap();
         let mut items = [
             item(&[
-                ("out/report.md", true),
-                ("src/q3.py", true),
-                (&board, true),
-                ("~/Downloads/q2.xlsx", true),
-                ("out/report.md", true),
-                ("out/gone.md", true),
-                ("out", true),
+                "out/report.md",
+                "src/q3.py",
+                &board,
+                "~/Downloads/q2.xlsx",
+                "out/report.md",
+                "out/gone.md",
+                "out",
             ]),
-            item(&[("src/q3.py", false), ("out/report.md", false), ("out/link.pdf", false)]),
+            item(&["out/link.pdf"]),
         ];
         let mut seen = HashSet::new();
         refs(&mut items, &base, &mut seen);
@@ -168,7 +164,7 @@ mod tests {
             paths(&items[0]),
             ["out/report.md", "src/q3.py", board_canon.to_str().unwrap(), q2.to_str().unwrap()]
         );
-        assert_eq!(paths(&items[1]), ["out/report.md", board_canon.to_str().unwrap()]);
+        assert_eq!(paths(&items[1]), [board_canon.to_str().unwrap()], "a link is its target");
         assert!(items.iter().all(|i| i.mentions.is_empty()), "mentions are used up");
         assert_eq!(items[0].refs[0].kind, FileKind::Markdown);
         assert_eq!(seen.len(), 4);
@@ -178,7 +174,7 @@ mod tests {
     fn a_text_file_holding_binary_is_other() {
         let (_t, root, _, _) = places();
         let base = Base { root: &root, home: None };
-        let mut items = [item(&[("out/blob.txt", true)])];
+        let mut items = [item(&["out/blob.txt"])];
         refs(&mut items, &base, &mut HashSet::new());
         assert_eq!(items[0].refs[0].kind, FileKind::Other);
     }
@@ -190,7 +186,7 @@ mod tests {
         let f = std::fs::File::create(root.join("out/huge.pdf")).unwrap();
         f.set_len(3 << 30).unwrap();
         assert_eq!(located(&base, &HashSet::new(), "out/huge.pdf"), None, "not pointed at");
-        let mut items = [item(&[("out/huge.pdf", true)])];
+        let mut items = [item(&["out/huge.pdf"])];
         let mut seen = HashSet::new();
         refs(&mut items, &base, &mut seen);
         let v = located(&base, &seen, "out/huge.pdf").unwrap();

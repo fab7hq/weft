@@ -4,24 +4,11 @@
 
 use std::path::{Path, PathBuf};
 
-use weft_core::conversation::Item;
 use weft_core::files::{FileKind, Ref};
 
 use crate::action::FileAct;
 use crate::app::WeftDesktopApp;
 use crate::gpui::{Element, div, palette};
-
-/// The files a run of steps wrote, each once, in the order they were first
-/// written.
-pub fn written<'a>(steps: &[&'a Item]) -> Vec<&'a Ref> {
-    let mut out: Vec<&Ref> = Vec::new();
-    for r in steps.iter().flat_map(|s| &s.refs) {
-        if !out.iter().any(|o| o.path == r.path) {
-            out.push(r);
-        }
-    }
-    out
-}
 
 /// A file's name: the last part of its path.
 pub fn name(path: &str) -> &str {

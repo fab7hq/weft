@@ -51,20 +51,17 @@ fn chip_names(el: &Element) -> Vec<String> {
     out
 }
 
-/// Each message shows the files it named; a run of steps shows the files
-/// its steps wrote, each once, in the order they were first written.
+/// Only an agent's message shows chips: the files it named that are on the
+/// machine. A person's message and the steps show none.
 #[test]
-fn messages_and_steps_show_a_chip_for_each_file() {
+fn an_agents_message_shows_a_chip_for_each_file_it_named() {
     let (_tmp, mut app, mut wire) = wired_app();
     app.state.panes.groups.clear();
     let pane = start(&mut app, &mut wire, "codex");
     app.dispatch(PaneAct::SetView { group: 0, tab: 0, view: PaneViewMode::Conversation });
     let (id, _) = wire.call();
-    let wrote = |id: &str, path: &str, kind| {
-        let mut s = said(id, Kind::Step, None, vec![a_ref(path, kind)]);
-        s.tool = Some("Write".into());
-        s
-    };
+    let mut wrote = said("2.0", Kind::Step, None, vec![a_ref("out/revenue.png", FileKind::Image)]);
+    wrote.tool = Some("Write".into());
     let items = vec![
         said(
             "0.0",
@@ -81,11 +78,7 @@ fn messages_and_steps_show_a_chip_for_each_file() {
                 a_ref("scripts/q3.py", FileKind::Text),
             ],
         ),
-        wrote("2.0", "out/revenue.png", FileKind::Image),
-        wrote("3.0", "out/report.md", FileKind::Markdown),
-        said("3.1", Kind::Step, None, Vec::new()),
-        wrote("4.0", "out/revenue.png", FileKind::Image),
-        wrote("5.0", "out/report.html", FileKind::Html),
+        wrote,
         said("6.0", Kind::Agent, Some("Done."), Vec::new()),
     ];
     wire.answer(id, json!({"conversation": {"items": items}}));
@@ -94,12 +87,10 @@ fn messages_and_steps_show_a_chip_for_each_file() {
     let dom = app.render();
     drawable(&dom);
     let you = dom.find_layer("msg you").expect("the person's message");
-    assert_eq!(chip_names(you), ["/home/q2.xlsx"]);
+    assert!(chip_names(you).is_empty(), "a person's message shows no chips");
     let reply = dom.find_layer("msg codex").expect("the agent's first message");
     assert_eq!(chip_names(reply), ["out/report.md", "scripts/q3.py"]);
-    let steps = dom.find_layer("tool steps with files").expect("the steps and their files");
-    assert!(steps.find_layer("tool steps folded").is_some(), "the steps as before");
-    assert_eq!(chip_names(steps), ["out/revenue.png", "out/report.md", "out/report.html"]);
+    assert!(dom.find_layer("tool steps folded").is_some_and(|s| chip_names(s).is_empty()));
     let done = dom.find_layer("msg codex 2").expect("the last message");
     assert!(chip_names(done).is_empty(), "no file, no chips");
     // A chip shows the file's name, not its folder.
