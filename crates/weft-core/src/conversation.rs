@@ -792,6 +792,12 @@ mod tests {
             found.iter().flatten().any(|m| !m.named && m.path.ends_with("/plan.md")),
             "grok's write step names its file: {found:?}"
         );
+
+        let agy = concat!(
+            r##"{"step_index":3,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-22T01:00:00Z","tool_calls":[{"name":"write_to_file","args":{"TargetFile":"\"/w/out/report.md\"","CodeContent":"\"# Q3\""}}]}"##,
+            "\n",
+        );
+        assert_eq!(mentions("antigravity", agy), [vec![wrote("/w/out/report.md")]]);
     }
 
     /// The paths are for weftd alone: a device never receives them.
