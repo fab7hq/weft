@@ -226,7 +226,8 @@ pub fn task_lines(typed: &str) -> Vec<(String, PathBuf, PathBuf)> {
         .filter_map(|(i, _)| {
             let rest = &typed[i + "Eval task ".len()..];
             let (task, rest) = rest.split_once(": read ")?;
-            let (brief, rest) = rest.split_once("; answer with ringframe eval submit --task ")?;
+            let (brief, rest) = rest.split_once("; answer with ringframe ")?;
+            let (_, rest) = rest.split_once("eval submit --task ")?;
             let (_, rest) = rest.split_once(" --file ")?;
             let end = rest.find(".json")? + ".json".len();
             Some((task.to_string(), brief.into(), rest[..end].into()))

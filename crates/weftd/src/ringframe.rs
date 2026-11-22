@@ -563,6 +563,24 @@ fn refused(e: api::Error) -> Error {
     Error::Refused { code: REFUSED_BY_A_RULE, message }
 }
 
+/// Who acts through Weft, beyond the person: the worktree it was done in and
+/// its branch, when it is on one.
+fn actor_detail(project: &Path) -> Vec<(String, String)> {
+    let mut detail = vec![("worktree".to_string(), project.to_string_lossy().into_owned())];
+    let branch = std::process::Command::new("git")
+        .arg("-C")
+        .arg(project)
+        .args(["symbolic-ref", "--short", "-q", "HEAD"])
+        .output();
+    if let Some(out) = branch.ok().filter(|o| o.status.success()) {
+        let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !name.is_empty() {
+            detail.push(("branch".to_string(), name));
+        }
+    }
+    detail
+}
+
 /// Open and gather the Eval of the open Asks of the unit of work `ask` is in,
 /// and say which it is: RingFrame
 /// reads the change with Git and records it as gathered, so no harness has to
@@ -584,6 +602,7 @@ pub fn eval_open(
         agents: agents.cloned(),
         overrides: &overrides,
         statements,
+        actor_detail: actor_detail(project),
     };
     match api::eval_open_with(&ws, open, progress) {
         Ok(opened) => Ok(opened.eval_id),
@@ -713,7 +732,8 @@ pub fn seal(
     progress: &dyn Fn(api::SealProgress),
 ) -> Result<Value, Error> {
     let answers = answers.map(|a| serde_json::json!({ "answers": a }));
-    let req = api::SealCreate { disposition, eval_id, reason, note: None, answers };
+    let actor_detail = actor_detail(project);
+    let req = api::SealCreate { disposition, eval_id, reason, note: None, answers, actor_detail };
     let sealed =
         api::seal_create_with(&workspace(project)?, req, progress).map_err(|e| match e {
             api::Error::SealRefused(codes) => {
@@ -736,6 +756,21 @@ pub fn seal_checked(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// Weft names the worktree an Eval or Seal is made in, and its branch
+    /// when it is on one.
+    #[test]
+    fn the_actor_detail_names_the_worktree_and_its_branch() {
+        let dir = folder("actor-detail", true);
+        let detail = actor_detail(&dir);
+        assert_eq!(detail[0], ("worktree".to_string(), dir.to_string_lossy().into_owned()));
+        assert_eq!(detail.len(), 2, "{detail:?}");
+        assert_eq!(detail[1].0, "branch");
+        let bare = folder("actor-detail-bare", false);
+        assert_eq!(actor_detail(&bare).len(), 1, "no branch outside Git");
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(bare);
+    }
 
     /// A scratch folder, with Git and one commit when `git` says so.
     pub(crate) fn folder(name: &str, git: bool) -> std::path::PathBuf {

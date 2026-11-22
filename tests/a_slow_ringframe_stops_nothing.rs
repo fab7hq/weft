@@ -355,6 +355,7 @@ fn a_slow_ringframe_holds_up_only_what_waits_on_it() {
             reason: None,
             note: None,
             answers: None,
+            actor_detail: Vec::new(),
         },
     )
     .expect("sealed");

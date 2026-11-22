@@ -81,6 +81,8 @@ fn fetch_view(cmd: &str, sub: Option<&str>, d: &Value) -> Option<Value> {
         ("seal", Some("check")) => pick(d, &["seal_id", "fresh", "subject_matches", "codes"]),
         ("eval", Some("grep")) => pick(d, &["lines"]),
         ("ledger", Some("verify")) => pick(d, &["clean", "findings"]),
+        ("knowledge", Some("show")) => pick(d, &["refreshed", "rules", "decisions"]),
+        ("knowledge", Some("rebuild")) => pick(d, &["refreshed", "rules", "decisions"]),
         _ => return None,
     })
 }

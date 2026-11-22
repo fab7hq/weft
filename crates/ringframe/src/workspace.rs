@@ -206,7 +206,9 @@ fn git(root: &Path, args: &[&str]) -> std::io::Result<std::process::Output> {
 
 /// A path a caller named, confined to the opened directory.
 ///
-/// Everything RingFrame itself reads and writes stays inside the workspace. A
+/// Everything RingFrame itself reads and writes stays inside the workspace, but
+/// for its own cache of read-only snapshots (`snapshots.rs`), which no caller
+/// names. A
 /// staged directory is read and then deleted, so one that escaped would have
 /// RingFrame remove something nobody opened; a subject outside it would have
 /// the record describe a tree this workspace does not hold. Symlinks are

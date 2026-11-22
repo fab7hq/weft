@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
+use crate::api::ACTOR_DETAILS;
 use crate::ask::{AskError, NeedsInput};
 use crate::seal::SealError;
 use crate::workspace::Workspace;
@@ -95,6 +96,8 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
         ),
         ("seal", Some("check")) => s(&["--seal"], NONE, &["--seal"], true, NONE),
         ("ledger", Some("verify")) => s(NONE, NONE, NONE, true, NONE),
+        ("knowledge", Some("rebuild")) => s(NONE, NONE, NONE, true, NONE),
+        ("knowledge", Some("show")) => s(&["--at"], NONE, NONE, true, NONE),
         ("deltas", Some("domains")) => s(&["--override"], NONE, NONE, true, NONE),
         ("deltas", Some("list")) => s(&["--override"], NONE, NONE, true, NONE),
         ("observe", Some("prompt")) => s(
@@ -117,7 +120,7 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
 
 /// Every (command, subcommand) pair, for the help and for the tests that hold
 /// the surface. The order is the order the help prints them in.
-const SURFACE: [(&str, Option<&str>); 22] = [
+const SURFACE: [(&str, Option<&str>); 24] = [
     ("init", None),
     ("sync", None),
     ("ask", Some("list")),
@@ -134,6 +137,8 @@ const SURFACE: [(&str, Option<&str>); 22] = [
     ("seal", Some("create")),
     ("seal", Some("check")),
     ("ledger", Some("verify")),
+    ("knowledge", Some("rebuild")),
+    ("knowledge", Some("show")),
     ("deltas", Some("domains")),
     ("deltas", Some("list")),
     ("observe", Some("prompt")),
@@ -181,6 +186,12 @@ fn purpose(cmd: &str, sub: Option<&str>) -> &'static str {
         ("seal", Some("create")) => "record the decision that closes the open Asks",
         ("seal", Some("check")) => "re-verify a receipt and say whether the subject still matches",
         ("ledger", _) => "re-check every event and every published artifact",
+        ("knowledge", Some("rebuild")) => {
+            "write the product's knowledge again from the ledger and the repositories"
+        }
+        ("knowledge", Some("show")) => {
+            "the rule files in force, and each decision with whether a file it rests on changed (--at a commit)"
+        }
         ("deltas", Some("domains")) => {
             "installed practice domains and whether a layer switches each on"
         }
@@ -208,7 +219,7 @@ fn help() -> String {
         "ringframe \u{2014} record what was asked, judge what was done, seal the decision.\n",
     );
     out.push_str(
-        "\nusage: ringframe [--workspace DIR] [--actor KIND:ID] [--authority A] <command> [...]\n",
+        "\nusage: ringframe [--workspace DIR] [--actor KIND:ID] [--actor-detail KEY=VALUE] [--authority A] <command> [...]\n",
     );
     let mut last = "";
     for (cmd, sub) in SURFACE {
@@ -250,11 +261,21 @@ fn command_help(cmd: &str, sub: Option<&str>, spec: &Spec) -> String {
 
 /// Which commands take a subcommand at all.
 fn takes_sub(cmd: &str) -> bool {
-    matches!(cmd, "ask" | "eval" | "seal" | "ledger" | "deltas" | "observe")
+    matches!(cmd, "ask" | "eval" | "seal" | "ledger" | "knowledge" | "deltas" | "observe")
 }
 
-const COMMANDS: [&str; 9] =
-    ["init", "sync", "ask", "eval", "seal", "ledger", "deltas", "observe", "--version"];
+const COMMANDS: [&str; 10] = [
+    "init",
+    "sync",
+    "ask",
+    "eval",
+    "seal",
+    "ledger",
+    "knowledge",
+    "deltas",
+    "observe",
+    "--version",
+];
 
 struct Parsed {
     cmd: String,
@@ -265,6 +286,7 @@ struct Parsed {
     minimal: bool,
     workspace: Option<PathBuf>,
     actor: Option<String>,
+    actor_detail: Vec<(String, String)>,
     authority: String,
     overrides: crate::config::Overrides,
 }
@@ -284,7 +306,7 @@ impl Parsed {
 }
 
 /// Global options are accepted anywhere in the command line.
-const GLOBALS: [&str; 3] = ["--workspace", "--actor", "--authority"];
+const GLOBALS: [&str; 4] = ["--workspace", "--actor", "--actor-detail", "--authority"];
 
 fn parse(argv: &[String]) -> Result<Parsed, Usage> {
     let mut rest: Vec<String> = Vec::new();
@@ -297,6 +319,7 @@ fn parse(argv: &[String]) -> Result<Parsed, Usage> {
         minimal: false,
         workspace: None,
         actor: None,
+        actor_detail: Vec::new(),
         authority: "interactive".into(),
         overrides: crate::config::Overrides::default(),
     };
@@ -310,6 +333,17 @@ fn parse(argv: &[String]) -> Result<Parsed, Usage> {
             match a.as_str() {
                 "--workspace" => out.workspace = Some(PathBuf::from(value)),
                 "--actor" => out.actor = Some(value.clone()),
+                "--actor-detail" => match value.split_once('=') {
+                    Some((k, v)) if ACTOR_DETAILS.contains(&k) && !v.is_empty() => {
+                        out.actor_detail.push((k.to_string(), v.to_string()));
+                    }
+                    _ => {
+                        return Err(Usage::new(format!(
+                            "argument --actor-detail: '{value}' is not KEY=VALUE with KEY one of {}",
+                            ACTOR_DETAILS.join(", ")
+                        )));
+                    }
+                },
                 _ => {
                     if !["interactive", "preauthorized"].contains(&value.as_str()) {
                         return Err(Usage::new(format!(
@@ -427,11 +461,15 @@ fn agents_arg(ns: &Parsed) -> Result<Option<Value>, String> {
     ns.one("--agents").map(json_arg).transpose()
 }
 
-fn actor_of(text: Option<&str>, authority: &str) -> Value {
+fn actor_of(text: Option<&str>, authority: &str, detail: &[(String, String)]) -> Value {
     let text = text.unwrap_or("human:local-user");
     let (kind, id) = text.split_once(':').unwrap_or((text, ""));
-    json!({"kind": kind, "id": if id.is_empty() { "local-user" } else { id },
-           "authority": authority})
+    let mut actor = json!({"kind": kind, "id": if id.is_empty() { "local-user" } else { id },
+           "authority": authority});
+    for (k, v) in detail {
+        actor[k] = json!(v);
+    }
+    actor
 }
 
 /// What `observe` answers in a repository with no workspace: nothing
@@ -567,7 +605,7 @@ fn dispatch(
     ws: Workspace,
     read_stdin: &mut dyn FnMut() -> String,
 ) -> (Workspace, Outcome) {
-    let actor = actor_of(ns.actor.as_deref(), &ns.authority);
+    let actor = actor_of(ns.actor.as_deref(), &ns.authority, &ns.actor_detail);
     let sub = ns.sub.as_deref();
     macro_rules! bail {
         ($e:expr) => {
@@ -750,6 +788,14 @@ fn dispatch(
                 (ws, Outcome::Ok(code, v))
             }
             Err(e) => (ws, from_seal_error(e)),
+        },
+        ("knowledge", Some("rebuild")) => match crate::knowledge::rebuild(&ws) {
+            Ok(v) => (ws, Outcome::Ok(0, v)),
+            Err(e) => (ws, Outcome::Error(e.code, e.detail)),
+        },
+        ("knowledge", Some("show")) => match crate::knowledge::show(&ws, ns.one("--at")) {
+            Ok(v) => (ws, Outcome::Ok(0, v)),
+            Err(e) => (ws, Outcome::Error(e.code, e.detail)),
         },
         ("ledger", Some("verify")) => match store::verify(&ws) {
             Ok(findings) => {
@@ -1033,6 +1079,37 @@ mod tests {
             let (_, listed, _) = c.go(&["eval", "list", "--minimal"]);
             assert_eq!(listed["evals"][0]["state"], "voided");
             assert_eq!(listed["evals"][0]["voided"]["reason"], "opened by mistake");
+        });
+    }
+
+    #[test]
+    fn the_products_knowledge_is_shown_and_rebuilt_over_the_cli() {
+        cli(|c| {
+            crate::testing::commit(&c.root, &[("AGENTS.md", Some("be careful\n"))], "rules");
+            let (code, out, _) = c.go(&["knowledge", "rebuild", "--json"]);
+            assert_eq!(code, 0);
+            assert!(out["refreshed"]["."].is_string(), "{out}");
+            let (code, out, _) = c.go(&["knowledge", "show", "--json"]);
+            assert_eq!((code, out["decisions"].clone()), (0, json!([])));
+        });
+    }
+
+    #[test]
+    fn an_actor_detail_is_a_known_key_and_a_value() {
+        cli(|c| {
+            let (code, _, err) = c.go(&["--actor-detail", "colour=blue", "ledger", "verify"]);
+            assert_eq!(code, 1);
+            assert!(err.contains("--actor-detail"), "{err}");
+            let actor = actor_of(
+                Some("agent:judge"),
+                "interactive",
+                &[("harness".into(), "codex".into()), ("branch".into(), "main".into())],
+            );
+            assert_eq!(
+                actor,
+                json!({"kind": "agent", "id": "judge", "authority": "interactive",
+                       "harness": "codex", "branch": "main"})
+            );
         });
     }
 

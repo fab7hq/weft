@@ -715,6 +715,11 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
         "eval.no_open_ask",
         "nothing to evaluate: every Ask is sealed or cancelled",
     )?;
+    // The product's knowledge is brought up to date first; a view that cannot
+    // be written is rebuilt the next time it is read.
+    if let Err(e) = crate::knowledge::refresh(ws) {
+        eprintln!("ringframe: the knowledge view was not refreshed: {e}");
+    }
     need(
         args.subject_kind.is_some() == args.subject_ref.is_some(),
         "subject.kind",
@@ -905,6 +910,33 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
             .map(|n| json!({"kind": n.kind, "folder": n.folder, "files": n.files}))
             .collect()
     };
+    // The product the work lands in: read-only copies before and after it and
+    // the rules in force; and the person's decisions, those whose files have
+    // changed set apart.
+    let (product, decisions, stale_again, stale_left) = {
+        let changes: Value =
+            std::fs::read(ws.rf_dir().join(format!("evals/{eval_id}/changes.json")))
+                .ok()
+                .and_then(|b| serde_json::from_slice(&b).ok())
+                .unwrap_or(Value::Null);
+        let ids: BTreeSet<String> = asks.iter().map(|a| str_of(a, "ask_id")).collect();
+        let plans: Vec<String> = store::events(ws)
+            .unwrap_or_default()
+            .iter()
+            .filter(|e| e["type"] == "ask.compiled" && ids.contains(&str_of(e, "id")))
+            .filter_map(|e| e["data"]["compiler"]["plan"].as_str().map(str::to_string))
+            .collect();
+        let product = crate::knowledge::product_for(ws, &eval_id, &changes, &plans);
+        for p in array_of(&product, "problems") {
+            limitations
+                .push(format!("a copy of the product could not be made: {}", str_of_value(p)));
+        }
+        let (fresh, again, left) =
+            crate::knowledge::split_decisions(ws, crate::decisions::standing(ws), &changes);
+        (product, fresh, again, left)
+    };
+    let mut carried = crate::decisions::carried(ws, &unit_asks);
+    carried.extend(stale_again);
     let brief = json!({
         "schema": BRIEF_SCHEMA, "eval_id": eval_id, "time": sessions::now(),
         "checks": checks,
@@ -929,8 +961,11 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
         "judges": crate::tasks::judges(args.deny.as_ref()),
         // The person's decisions as they stand now, and the questions they
         // left not sure about in this unit: read by every task of this Eval.
-        "decisions": crate::decisions::standing(ws),
-        "carried": crate::decisions::carried(ws, &unit_asks),
+        "decisions": decisions,
+        "carried": carried,
+        // Decisions whose files changed outside this work: not shown, not asked.
+        "stale_decisions": stale_left.iter().map(|d| d["id"].clone()).collect::<Vec<_>>(),
+        "product": product,
         "statements": args.statements.iter().map(|s| json!({
             "session": s["session"], "text": s["text"],
         })).collect::<Vec<_>>(),

@@ -327,7 +327,7 @@ fn step_or_refused(look: &Look) -> Result<Vec<Did>, crate::ringframe::Error> {
             }
             match eval_task(root, &look.eval_id, Some(role), &s.launch.0, &s.read)? {
                 api::EvalStep::Task(task) => {
-                    did.push(Did::Give { pane: s.pane, task });
+                    did.push(Did::Give { pane: s.pane, task: *task });
                     continue 'seats;
                 }
                 api::EvalStep::Waiting { .. } => {}
@@ -343,7 +343,7 @@ fn step_or_refused(look: &Look) -> Result<Vec<Did>, crate::ringframe::Error> {
         for (role, host) in takes(&look.hosts) {
             match eval_task(root, &look.eval_id, role, host, &[])? {
                 api::EvalStep::Task(task) => {
-                    taken = Some(task);
+                    taken = Some(*task);
                     break;
                 }
                 api::EvalStep::Waiting { .. } => {}
@@ -557,7 +557,11 @@ impl Session {
             .harnesses
             .find(&harness)
             .map(|h| h.judge_spec(model.as_deref(), effort.as_deref()));
-        let pane = spec.and_then(|spec| self.spawn(client, at, &harness, &spec, None));
+        // It starts in the task's own empty folder, outside every repository,
+        // and reads the product from the copies its brief lists.
+        let dir = task.dir.clone().filter(|d| d.is_dir());
+        let pane =
+            spec.and_then(|spec| self.spawn_in(client, at, &harness, &spec, None, dir.as_deref()));
         let seat = match pane {
             Some(pane) => {
                 if let Some(slot) = self.projects[at].slot(pane) {

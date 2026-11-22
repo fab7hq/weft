@@ -360,15 +360,15 @@ mod tests {
                 ),
                 (
                     "harnesses/antigravity.toml",
-                    "27d95326f645ad9dc5035808129457d78f64609627d48b8d8f384119759c780d",
+                    "19f55a6045e320423294b05dc61a792f143b4726d781e6d62517c041d63f2b31",
                 ),
                 (
                     "harnesses/claude-code.toml",
-                    "45fa20f3c7f7a9281e8bae7b7e4049b2071237dca250e9c2b355175ce55ddef9",
+                    "2e3b259c93f52d31ed934d893f28ae077edde3f093c2ae41f041d3f9bbd19fb3",
                 ),
                 (
                     "harnesses/codex.toml",
-                    "e16b9db308fafb07bc0f932b953d7c6222bf2c5185aa9c648ccf8703aef37f1a",
+                    "ce9043d2c4a76771ffbac5bf65f1f88268504be14b89cdd30d154a9dcf73de27",
                 ),
                 (
                     "harnesses/unknown.toml",
@@ -407,15 +407,15 @@ mod tests {
                     ),
                     (
                         "config/harnesses/antigravity.toml",
-                        "215fa820d8373a25bc122535521088a48e570e752edf312b58098c291cc9fc90",
+                        "55154b014d7ee56e1006621c96099f365b3a1341750af17b789143907bcd1e54",
                     ),
                     (
                         "config/harnesses/claude-code.toml",
-                        "2b4611f843ed3d4f80bb90278ae2a7bf2d27f2e3255fb358bb7ae33d30860ef5",
+                        "bfde1bd6817a309cfa71e27931780d46a125c29d0acc3b10d6400414a722cb62",
                     ),
                     (
                         "config/harnesses/codex.toml",
-                        "01219fd0be30fad11cf03368b3981fdca01361dca0a373fd03ef617989950367",
+                        "8406a98e63e77b8525857751bd20f5d65d21dc08e633fd025a559ecaf5b8d286",
                     ),
                     (
                         "config/harnesses/unknown.toml",

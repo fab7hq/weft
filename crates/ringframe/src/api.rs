@@ -71,8 +71,19 @@ impl From<SealError> for Error {
 }
 
 /// The person acting, as the CLI records one who names no actor.
-fn person() -> Value {
-    json!({"kind": "human", "id": "local-user", "authority": "interactive"})
+/// What an event's actor may add to its kind and id, as `KEY=VALUE`.
+pub const ACTOR_DETAILS: [&str; 5] = ["harness", "session", "model", "worktree", "branch"];
+
+/// The person, with what the caller adds of [`ACTOR_DETAILS`]; any other key
+/// or an empty value is left out.
+fn person(detail: &[(String, String)]) -> Value {
+    let mut actor = json!({"kind": "human", "id": "local-user", "authority": "interactive"});
+    for (k, v) in detail {
+        if ACTOR_DETAILS.contains(&k.as_str()) && !v.is_empty() {
+            actor[k] = json!(v);
+        }
+    }
+    actor
 }
 
 fn str_of(v: &Value, key: &str) -> String {
@@ -433,6 +444,8 @@ pub struct EvalOpen<'a> {
     /// What the agent said last in each of the unit's sessions,
     /// `[{session, text}]`, as its harness recorded it.
     pub statements: Vec<Value>,
+    /// What the opener adds to its actor ([`ACTOR_DETAILS`]).
+    pub actor_detail: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -458,7 +471,7 @@ pub fn eval_open_with(
     let out = evaluate::open_eval(
         ws,
         evaluate::Open {
-            actor: Some(person()),
+            actor: Some(person(&req.actor_detail)),
             agents: req.agents,
             host: Some(req.host),
             ask: req.ask,
@@ -516,12 +529,14 @@ pub struct Task {
     pub effort: Option<String>,
     /// What its judge reads: a map's windows, a reduce's requirements.
     pub reads: Vec<String>,
+    /// Where its judge starts: an empty folder outside every repository.
+    pub dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum EvalStep {
     /// A task handed out now.
-    Task(Task),
+    Task(Box<Task>),
     /// Every ready task of the role is out, or none is ready yet; `checks`
     /// still running, which the report waits for.
     Waiting { remaining: usize, checks: Vec<String> },
@@ -574,7 +589,7 @@ fn eval_step(ws: &Workspace, eval_id: &str, out: Value) -> Result<EvalStep, Erro
     }
     let t = &out["task"];
     let text = |key: &str| t[key].as_str().map(str::to_string);
-    Ok(EvalStep::Task(Task {
+    Ok(EvalStep::Task(Box::new(Task {
         task_id: str_of(t, "task_id"),
         kind: str_of(t, "kind"),
         role: str_of(t, "role"),
@@ -590,7 +605,8 @@ fn eval_step(ws: &Workspace, eval_id: &str, out: Value) -> Result<EvalStep, Erro
             .filter_map(Value::as_str)
             .map(str::to_string)
             .collect(),
-    }))
+        dir: text("dir").map(PathBuf::from),
+    })))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -665,7 +681,7 @@ pub fn eval_submit(ws: &Workspace, task_id: &str, answer: &Path) -> Result<Submi
 
 /// Only a person voids an Eval, and says why.
 pub fn eval_void(ws: &Workspace, eval_id: &str, reason: &str) -> Result<(), Error> {
-    evaluate::void_eval(ws, eval_id, reason, Some(&person()))?;
+    evaluate::void_eval(ws, eval_id, reason, Some(&person(&[])))?;
     Ok(())
 }
 
@@ -693,6 +709,8 @@ pub struct SealCreate<'a> {
     /// The person's answers to the Eval's questions,
     /// `{"answers": [{question, answer, words, ms}]}`; None answers none.
     pub answers: Option<Value>,
+    /// What the person's client adds to their actor ([`ACTOR_DETAILS`]).
+    pub actor_detail: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -719,7 +737,7 @@ pub fn seal_create_with(
     let receipt = seal::create_told(
         ws,
         (req.disposition, req.eval_id, req.reason, req.note),
-        Some(&person()),
+        Some(&person(&req.actor_detail)),
         req.answers.as_ref(),
         progress,
     )?;
@@ -777,6 +795,16 @@ pub fn last_plan(ws: &Workspace, host: &str) -> Result<Option<String>, Error> {
 }
 
 /// Every Eval, as `eval list` lists them.
+/// Write the product's knowledge again from the ledger and the repositories.
+pub fn knowledge_rebuild(ws: &Workspace) -> Result<Value, Error> {
+    crate::knowledge::rebuild(ws).map_err(|l| Error::Refused { code: l.code, detail: l.detail })
+}
+
+/// The rule files in force and each pinned decision, stale or not at `at`.
+pub fn knowledge_view(ws: &Workspace, at: Option<&str>) -> Result<Value, Error> {
+    crate::knowledge::show(ws, at).map_err(|l| Error::Refused { code: l.code, detail: l.detail })
+}
+
 pub fn evals(ws: &Workspace) -> Result<Vec<Value>, Error> {
     Ok(evaluate::list_records(ws)?)
 }
@@ -792,6 +820,41 @@ mod tests {
 
     /// Opening an Eval tells its steps in order, and the files read reach
     /// all the change's files, the untracked ones counted.
+    /// The opener's detail joins the person on the Eval's event, and a task
+    /// handed out names its judge's empty folder outside the repository and
+    /// submits by the workspace, so the judge can start there.
+    #[test]
+    fn an_eval_opened_with_actor_detail_hands_out_tasks_with_their_folder() {
+        eval_bench(|ws| {
+            crate::testing::two_asks_and_work(ws);
+            let detail = vec![
+                ("branch".to_string(), "feature".to_string()),
+                ("colour".to_string(), "blue".to_string()),
+            ];
+            let req = EvalOpen {
+                ask: None,
+                host: "weft",
+                agents: None,
+                overrides: &Overrides::default(),
+                statements: Vec::new(),
+                actor_detail: detail,
+            };
+            let opened = eval_open(ws, req).unwrap();
+            let all = events(ws).unwrap();
+            let open = all.iter().rfind(|e| e["type"] == "eval.opened").expect("opened");
+            assert_eq!(open["actor"]["branch"], "feature", "{open}");
+            assert!(open["actor"].get("colour").is_none(), "an unknown key is left out");
+            let EvalStep::Task(task) = eval_task(ws, &opened.eval_id, None).unwrap() else {
+                panic!("a task is ready");
+            };
+            let dir = task.dir.expect("a folder");
+            assert!(dir.is_dir() && !dir.starts_with(&ws.root), "{}", dir.display());
+            assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "empty");
+            let workspace = format!("--workspace {}", ws.root.display());
+            assert!(task.prompt.contains(&workspace), "{}", task.prompt);
+        });
+    }
+
     #[test]
     fn opening_an_eval_tells_each_step_in_order() {
         eval_bench(|ws| {
@@ -808,6 +871,7 @@ mod tests {
                 agents: None,
                 overrides: &Overrides::default(),
                 statements: Vec::new(),
+                actor_detail: Vec::new(),
             };
             eval_open_with(ws, req, &|p| seen.borrow_mut().push(p)).unwrap();
             let seen = seen.into_inner();
@@ -847,6 +911,7 @@ mod tests {
                 reason: None,
                 note: None,
                 answers: None,
+                actor_detail: Vec::new(),
             };
             let sealed = seal_create_with(ws, req, &|p| seen.borrow_mut().push(p)).unwrap();
             let seen = seen.into_inner();
@@ -951,6 +1016,7 @@ mod tests {
                     agents: None,
                     overrides: &Overrides::default(),
                     statements: Vec::new(),
+                    actor_detail: Vec::new(),
                 };
                 eval_open(ws, req).unwrap().eval_id
             }
@@ -1017,6 +1083,7 @@ mod tests {
                     reason: None,
                     note: Some("ship it"),
                     answers: None,
+                    actor_detail: Vec::new(),
                 };
                 seal_create(ws, req).unwrap().seal_id
             }
@@ -1218,6 +1285,7 @@ mod tests {
                 reason: None,
                 note: None,
                 answers: None,
+                actor_detail: Vec::new(),
             };
             assert_eq!(code(seal_create(&ws, bad).unwrap_err()), "seal.disposition");
             let none = SealCreate {
@@ -1226,6 +1294,7 @@ mod tests {
                 reason: None,
                 note: None,
                 answers: None,
+                actor_detail: Vec::new(),
             };
             assert_eq!(
                 seal_create(&ws, none).unwrap_err(),
@@ -1383,6 +1452,7 @@ mod tests {
                 reason: Some("not_what_i_asked"),
                 note: None,
                 answers: None,
+                actor_detail: Vec::new(),
             };
             let sealed = seal_create(ws, req).unwrap();
             assert_eq!(sealed.receipt["disposition"], "rejected");

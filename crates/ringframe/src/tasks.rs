@@ -378,7 +378,7 @@ fn said(item: &str, r: &Reading) -> Option<&'static str> {
     let a = r.answer.as_ref()?;
     Some(if item.starts_with("w|") {
         match a["answer"].as_str() {
-            Some("unexplained") => "unexplained",
+            Some("unexplained" | "conflicts") => "unexplained",
             Some("elsewhere") => "elsewhere",
             _ => "explained",
         }
@@ -537,9 +537,12 @@ fn question_items(ctx: &Ctx, s: &Settled) -> Vec<Value> {
     for u in &s.units {
         let id = str_of(u, "id");
         if u["result"] == "unexplained" && !declared.contains(&id) {
-            let a = deciding(array_of(u, "readings"), &|a| a["answer"] == "unexplained");
+            let a = deciding(array_of(u, "readings"), &|a| {
+                a["answer"] == "unexplained" || a["answer"] == "conflicts"
+            });
+            let rule = if a["answer"] == "conflicts" { a["context"].clone() } else { Value::Null };
             out.push(json!({"key": format!("w|{id}"), "kinds": ["did_you_want"],
-                            "unit": id, "path": u["path"], "sentence": a["reason"]}));
+                            "unit": id, "path": u["path"], "sentence": a["reason"], "rule": rule}));
         }
     }
     for r in &s.requirements {
@@ -573,7 +576,8 @@ fn question_items(ctx: &Ctx, s: &Settled) -> Vec<Value> {
     // A question left not sure at the unit's last Seal is asked again.
     for d in array_of(&ctx.brief, "carried") {
         out.push(json!({"key": format!("c|{}", str_of(d, "id")), "kinds": [d["ask"]],
-                        "asked_before": d["behaviour"], "sentence": d["behaviour"]}));
+                        "asked_before": d["behaviour"], "sentence": d["behaviour"],
+                        "stale": d["stale"].as_bool().unwrap_or(false)}));
     }
     out
 }
@@ -606,7 +610,7 @@ Do your task yourself: never hand it, or a part of it, to another agent. Write \
 your answer file yourself, not with a script: RingFrame checks every quote \
 against its source and refuses text repeated across items.
 
-When your answer is written, run `ringframe eval submit --task <task id> --file \
+When your answer is written, run the submit line above, `ringframe --workspace <root> eval submit --task <task id> --file \
 <your answer file>`. If it refuses, fix exactly what it names and submit again. \
 Send no message before then: your only message, and your last, is one line: \
 `<task id> accepted` or `<task id> failed: <reason>`. Nothing else.
@@ -616,9 +620,11 @@ const READ_MD: &str = "\
 # RingFrame Eval task: read
 
 You are reviewing a code change against the requests that asked for it, as one \
-whole reading. Everything you need is in this file, however long it is: the \
-requests, the requirements, what the agent said, and every unit of the change. \
-Judge from this file alone, and run nothing but the submit.
+whole reading. Everything you need is in this file, however long it is, and in \
+the product it names: the requests, the requirements, what the agent said, every \
+unit of the change, and read-only copies of the product before and after it with \
+the rules in force. Judge from this file and those copies: read only under the \
+folders \"The product\" lists, change nothing, and run nothing else but the submit.
 
 Work in this order:
 1. Read the requirements.
@@ -641,6 +647,12 @@ variant, a renamed use); name that unit's id in `source`.
 - `unexplained` when some of its change is neither asked for nor needed by an \
 asked change; quote in `quote` the lines no request explains, and say in \
 `reason`, in one plain sentence without file names, what that change does.
+- `conflicts` when some of its change breaks a rule in force, or contradicts an \
+unchanged part of the product, and the requests do not ask for that; give in \
+`context` the file as \"The product\" names it (`<repo>/<path>@<commit>`) and a \
+quote copied exactly from it; quote in `quote` the unit's lines that do it, and \
+say in `reason`, in one plain sentence without file names, what the change does \
+against it.
 - `elsewhere`, only where this file lists other work: a unit that is only that \
 work; name its Ask in `ask`.
 
@@ -665,8 +677,9 @@ Write your answer as one JSON object:
 ```json
 {\"requirements\": [{\"id\": \"<requirement id>\", \"vote\": \"met | not_met | unknown\", \"reason\": \"<one sentence>\",
                    \"citations\": [{\"window\": \"<unit id>\", \"quote\": \"<exact text>\"}], \"missing\": null}],
- \"windows\": [{\"id\": \"<unit id>\", \"answer\": \"serves | follows_from | unexplained\", \"serves\": [\"<requirement id>\"],
-              \"source\": null, \"quote\": null, \"reason\": null}],
+ \"windows\": [{\"id\": \"<unit id>\", \"answer\": \"serves | follows_from | unexplained | conflicts\", \"serves\": [\"<requirement id>\"],
+              \"source\": null, \"quote\": null, \"reason\": null,
+              \"context\": {\"source\": \"<repo>/<path>@<commit>\", \"quote\": \"<exact text>\"}}],
  \"declared\": [{\"items\": [\"<unit or requirement id>\"], \"quote\": \"<the agent's exact words>\"}],
  \"decisions\": [{\"id\": \"D1\", \"brought_back\": \"yes | no | unsure\", \"windows\": [\"<unit id>\"], \"reason\": \"<one sentence>\"}]}
 ```
@@ -788,7 +801,8 @@ fn brief(ctx: &Ctx, t: &Task, file: &Value, deny: &[String]) -> String {
     let _ = writeln!(b, "- Your answer file: `{}`", str_of(file, "output"));
     let _ = writeln!(
         b,
-        "- Submit: `ringframe eval submit --task {} --file {}`\n",
+        "- Submit: `ringframe --workspace {} eval submit --task {} --file {}`\n",
+        ctx.ws.root.display(),
         t.id,
         str_of(file, "output")
     );
@@ -891,6 +905,7 @@ fn brief(ctx: &Ctx, t: &Task, file: &Value, deny: &[String]) -> String {
         let _ =
             writeln!(b, "- `{}` {} ({})", str_of(w, "id"), str_of(w, "path"), str_of(w, "class"));
     }
+    product_block(ctx, &mut b);
     b.push_str("\n## The change\n\n");
     for w in ctx.judged_windows() {
         let id = str_of(w, "id");
@@ -899,6 +914,44 @@ fn brief(ctx: &Ctx, t: &Task, file: &Value, deny: &[String]) -> String {
     }
     b.push_str("=== end of brief ===\n");
     b
+}
+
+/// The product the work lands in: where its read-only copies are, before and
+/// after the change, and the rules in force for the changed files.
+fn product_block(ctx: &Ctx, b: &mut String) {
+    use std::fmt::Write as _;
+    let product = &ctx.brief["product"];
+    let snaps = array_of(product, "snapshots");
+    if snaps.is_empty() {
+        return;
+    }
+    b.push_str("## The product\n\nRead-only copies of every repository the change is in, before and after it:\n\n");
+    for s in snaps {
+        let _ = writeln!(
+            b,
+            "- `{}` before (`{}`): {}\n  after: {}",
+            str_of(s, "repo"),
+            str_of(s, "anchor"),
+            str_of(s, "before"),
+            str_of(s, "after")
+        );
+    }
+    let rules = array_of(product, "rules");
+    if !rules.is_empty() {
+        b.push_str(
+            "\nThe rules in force for the changed files, as they stood before the change:\n\n",
+        );
+        for r in rules {
+            let _ = writeln!(
+                b,
+                "- `{}/{}@{}`",
+                str_of(r, "repo"),
+                str_of(r, "path"),
+                str_of(r, "commit")
+            );
+        }
+    }
+    b.push_str("\nA file there is cited as `<repo>/<path>@<commit>`, the commit the copy before the change was taken at.\n\n");
 }
 
 /// The question reader's brief after the requests: the plan each Ask named,
@@ -941,13 +994,21 @@ fn question_brief(ctx: &Ctx, t: &Task, b: &mut String) {
         }
         b.push('\n');
     }
+    product_block(ctx, b);
     b.push_str(
         "## The items\n\nEach item's key, the kinds of question it allows, and what it is.\n\n",
     );
     for i in task_items(ctx, t) {
         let kinds: Vec<String> = array_of(&i, "kinds").iter().map(str_of_value).collect();
         let _ = writeln!(b, "### `{}` (allows {})\n", str_of(&i, "key"), kinds.join(", "));
-        if let Some(before) = i["asked_before"].as_str() {
+        if let Some(before) = i["asked_before"].as_str()
+            && i["stale"] == json!(true)
+        {
+            let _ = writeln!(
+                b,
+                "Decided before, and a file it rests on has changed since; ask it again: {before}\n"
+            );
+        } else if let Some(before) = i["asked_before"].as_str() {
             let _ = writeln!(b, "Asked before, and the person was not sure: {before}\n");
         } else if let Some(unit) = i["unit"].as_str() {
             match i["against"].as_object() {
@@ -958,6 +1019,15 @@ fn question_brief(ctx: &Ctx, t: &Task, b: &mut String) {
                          want: {}",
                         a["date"].as_str().unwrap_or_default(),
                         a["behaviour"].as_str().unwrap_or_default()
+                    );
+                }
+                None if i["rule"].is_object() => {
+                    let _ = writeln!(
+                        b,
+                        "A change that goes against a rule in force, which no request asks to \
+                         change: {} says \"{}\". Name the rule in plain words in the question.",
+                        str_of(&i["rule"], "source"),
+                        str_of(&i["rule"], "quote")
                     );
                 }
                 None => {
@@ -1061,6 +1131,11 @@ fn task_file(ctx: &Ctx, t: &Task) -> Value {
         "items": t.items,
         "output": dir.join("out").join(format!("{}.json", t.id)).to_string_lossy(),
     });
+    // Where the reader starts: an empty folder outside every repository, so
+    // its harness loads no instruction file of the project by itself.
+    if let Ok(d) = crate::snapshots::reader_dir(&ctx.ws, &format!("{}.{}", ctx.eval_id, t.id)) {
+        v["dir"] = json!(d.to_string_lossy());
+    }
     if let Some(effort) = agent(&ctx.brief, t.role)["effort"].as_str() {
         v["effort"] = json!(effort);
     }
@@ -1182,12 +1257,16 @@ fn hand_out(
     let answer = dir.join("out").join(format!("{}.json", t.id));
     let mut task = json!({
         "task_id": t.id, "kind": t.kind, "role": t.role,
-        "prompt": format!("Eval task {}: read {}; answer with ringframe eval submit --task {} \
-                           --file {}.", t.id, brief_path.display(), t.id, answer.display()),
+        "prompt": format!("Eval task {}: read {}; answer with ringframe --workspace {} eval submit \
+                           --task {} --file {}.", t.id, brief_path.display(),
+                          ctx.ws.root.display(), t.id, answer.display()),
         "brief": brief_path.to_string_lossy(),
         "answer": answer.to_string_lossy(),
         "reads": t.reads(),
     });
+    if let Some(d) = file.get("dir") {
+        task["dir"] = d.clone();
+    }
     for k in ["harness", "model", "effort"] {
         if let Some(v) = agent(&ctx.brief, t.role).get(k) {
             task[k] = v.clone();
@@ -1656,6 +1735,21 @@ fn check_read(ch: &mut Checker, out: &Value) {
                     );
                 }
             }
+            "conflicts" => {
+                flagged.insert(id.clone());
+                let quote = json!({"window": id, "quote": w["quote"]});
+                ch.citation(&format!("{at}.quote"), w, &quote);
+                let reason = str_of(w, "reason");
+                if reason.trim().is_empty() || reason.chars().count() > 200 {
+                    ch.error(&format!("{at}.reason"), "a conflicts unit says in reason, in one plain sentence, what its change does against the rule");
+                }
+                if w["context"].is_null() {
+                    ch.error(
+                        &format!("{at}.context"),
+                        "conflicts names the rule's file and quotes it in context",
+                    );
+                }
+            }
             "elsewhere" => {
                 let ask = str_of(w, "ask");
                 if !elsewhere.contains(&ask) {
@@ -1664,8 +1758,17 @@ fn check_read(ch: &mut Checker, out: &Value) {
             }
             other => ch.error(
                 &at,
-                format!("answer is serves, follows_from or unexplained, not {other:?}"),
+                format!("answer is serves, follows_from, unexplained or conflicts, not {other:?}"),
             ),
+        }
+        if let Some(c) = w["context"].as_object() {
+            let source = c.get("source").and_then(Value::as_str).unwrap_or_default();
+            let quote = c.get("quote").and_then(Value::as_str).unwrap_or_default();
+            if let Err(e) =
+                crate::knowledge::check_context(&ch.ctx.ws, &ch.ctx.brief["product"], source, quote)
+            {
+                ch.error(&format!("{at}.context"), e);
+            }
         }
     }
     for item in asked.iter().filter(|i| !seen.contains(**i)) {
@@ -2085,7 +2188,13 @@ fn questions_of(ctx: &Ctx, st: &Status, tasks: &[Task]) -> Vec<Value> {
     // Where a question comes from before this Eval, for the person to see:
     // one left not sure at an earlier Seal, or one about a behaviour that
     // goes against a decision they made.
-    let report = settled(ctx, st, tasks).report;
+    let settled_now = settled(ctx, st, tasks);
+    let rules_of: BTreeMap<String, Value> = question_items(ctx, &settled_now)
+        .into_iter()
+        .filter(|i| i["rule"].is_object())
+        .map(|i| (str_of(&i, "key"), i["rule"].clone()))
+        .collect();
+    let report = settled_now.report;
     let carried = array_of(&ctx.brief, "carried");
     for (n, q) in out.iter_mut().enumerate() {
         q["id"] = json!(format!("q{}", n + 1));
@@ -2105,6 +2214,7 @@ fn questions_of(ctx: &Ctx, st: &Status, tasks: &[Task]) -> Vec<Value> {
             Some(a) => json!({"decision": a["decision"], "seal": a["seal"], "date": a["date"]}),
             None => Value::Null,
         };
+        q["rules"] = json!(items.iter().filter_map(|i| rules_of.get(i)).collect::<Vec<_>>());
     }
     out
 }
@@ -2188,11 +2298,14 @@ fn settled(ctx: &Ctx, st: &Status, tasks: &[Task]) -> Settled {
         let rs = array_of(u, "readings");
         match result.as_str() {
             "unexplained" if !is_declared(&id) => {
-                let a = deciding(rs, &|a| a["answer"] == "unexplained");
+                let a =
+                    deciding(rs, &|a| a["answer"] == "unexplained" || a["answer"] == "conflicts");
+                let rule =
+                    if a["answer"] == "conflicts" { a["context"].clone() } else { Value::Null };
                 faults.push(json!({"item": format!("w|{id}"), "agreed": u["agreed"],
                                    "readings": rs.len(),
                                    "evidence": [{"window": id, "quote": a["quote"]}],
-                                   "reason": a["reason"]}));
+                                   "reason": a["reason"], "rule": rule}));
             }
             "unsettled" => {
                 cannot_settle.push(json!({"item": format!("w|{id}"), "check": null}));
@@ -2399,6 +2512,19 @@ pub fn render(r: &Value) -> String {
         for d in declared {
             let items: Vec<String> = array_of(d, "items").iter().map(str_of_value).collect();
             out.push_str(&format!("- {}: \"{}\"\n", items.join(", "), str_of(d, "quote")));
+        }
+    }
+    let broken: Vec<&Value> =
+        array_of(rep, "faults").iter().filter(|f| f["rule"].is_object()).collect();
+    if !broken.is_empty() {
+        out.push_str("\n## Rules broken\n\n");
+        for f in broken {
+            out.push_str(&format!(
+                "- {}: {} (\"{}\")\n",
+                str_of(&f["rule"], "source"),
+                str_of(f, "reason"),
+                str_of(&f["rule"], "quote")
+            ));
         }
     }
     let against = array_of(rep, "against_decisions");
@@ -3590,6 +3716,138 @@ mod tests {
             )
             .unwrap_err();
             assert!(err.to_string().contains("seal.answers"), "{err}");
+        });
+    }
+
+    /// The reader is shown the product: read-only copies and the rules in
+    /// force; it starts outside the project and submits by the workspace. A
+    /// unit that breaks a rule is cited to it, a made-up quote is refused, and
+    /// the rule goes on to the question, the report and the Seal's pins.
+    #[test]
+    fn a_unit_that_breaks_a_rule_is_cited_asked_reported_and_pinned_to_it() {
+        eval_bench(|ws| {
+            commit(
+                &ws.root,
+                &[("AGENTS.md", Some("Never send usage data to an outside server.\n"))],
+                "rules",
+            );
+            let e = bench(ws);
+            let i = ids(ws, &e);
+            let t = next(ws, &e).unwrap();
+            let md = brief_md(ws, &t);
+            assert!(md.contains("## The product") && md.contains("./AGENTS.md@"), "{md}");
+            assert!(md.contains("--workspace"), "submits by the workspace");
+            let dir = str_of(&task_of(ws, &t), "dir");
+            assert!(!dir.is_empty() && !Path::new(&dir).starts_with(&ws.root), "{dir}");
+            let ctx = Ctx::load(ws, &e).unwrap();
+            let anchor = str_of(&ctx.brief["product"]["snapshots"][0], "anchor");
+            let breaks = |quote: &str| {
+                let source = format!("./AGENTS.md@{anchor}");
+                let quote = quote.to_string();
+                let tele = i.tele.clone();
+                move |id: &str| {
+                    if id == tele {
+                        json!({"id": id, "answer": "conflicts",
+                               "quote": "fetch('https://example.com/collect')",
+                               "reason": "It sends usage data to an outside server.",
+                               "context": {"source": source, "quote": quote}})
+                    } else {
+                        serves(id)
+                    }
+                }
+            };
+            let made_up = breaks("Always send usage data home.");
+            put(ws, &t, answer(ws, &t, &made_up, &met_in(&i.up), json!([])));
+            let (code, out) = submit(ws, &t).unwrap();
+            assert_ne!(code, 0, "a made-up rule quote is refused: {out}");
+            let real = breaks("Never send usage data to an outside server.");
+            submit_ok(ws, &t, answer(ws, &t, &real, &met_in(&i.up), json!([])));
+            let qs = read_to_questions(ws, &e, &real, &met_in(&i.up)).expect("a question");
+            assert!(brief_md(ws, &qs).contains("goes against a rule in force"));
+            submit_ok(ws, &qs, answer(ws, &qs, &serves, &serves, json!([])));
+            let _ = next(ws, &e);
+            let rec = crate::evaluate::load_record(ws, &e).unwrap().unwrap();
+            let md = render(&rec);
+            assert!(md.contains("## Rules broken") && md.contains("./AGENTS.md@"), "{md}");
+            assert_eq!(
+                rec["questions"][0]["rules"][0]["source"],
+                json!(format!("./AGENTS.md@{anchor}"))
+            );
+            let seal = crate::seal::create_with(
+                ws,
+                "accepted",
+                Some(&e),
+                None,
+                None,
+                None,
+                Some(&json!({"answers": [{"question": "q1", "answer": "wanted"}]})),
+            )
+            .unwrap();
+            let paths: Vec<Value> = created(ws, &seal)["data"]["decisions"][0]["pins"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| p["path"].clone())
+                .collect();
+            assert!(
+                paths.contains(&json!("AGENTS.md")) && paths.contains(&json!("src/telemetry.js")),
+                "{paths:?}"
+            );
+        });
+    }
+
+    /// A decision whose file this change touches again is not given as
+    /// standing: it is asked again, and its answer supersedes it.
+    #[test]
+    fn a_decision_on_a_file_this_change_touches_again_is_asked_again() {
+        eval_bench(|ws| {
+            let (_, ask, seal) =
+                sealed_with(ws, json!({"answers": [{"question": "q1", "answer": "wanted"}]}));
+            let d = str_of(&created(ws, &seal)["data"]["decisions"][0], "id");
+            let next_ask =
+                crate::testing::confirm_ask_linked(ws, vec![json!({"rel": "follows", "id": ask})]);
+            commit(
+                &ws.root,
+                &[("src/telemetry.js", Some("export const off = true;\n"))],
+                "change it",
+            );
+            let out =
+                open_eval(ws, Open { ask: Some(&str_of(&next_ask, "ask_id")), ..Open::default() })
+                    .unwrap();
+            let e = str_of(&out, "eval_id");
+            let brief = Ctx::load(ws, &e).unwrap().brief;
+            assert!(
+                !array_of(&brief, "decisions").iter().any(|x| x["id"] == json!(d)),
+                "not standing"
+            );
+            let again = array_of(&brief, "carried").iter().find(|x| x["id"] == json!(d)).cloned();
+            assert_eq!(again.map(|x| x["stale"].clone()), Some(json!(true)), "{brief}");
+        });
+    }
+
+    /// A decision is pinned to the files of its windows; once one of them
+    /// changes, the product's knowledge shows it stale.
+    #[test]
+    fn a_decisions_pins_are_its_windows_files_and_go_stale_when_one_changes() {
+        eval_bench(|ws| {
+            let (_, _, seal) =
+                sealed_with(ws, json!({"answers": [{"question": "q1", "answer": "not_wanted"}]}));
+            let d = &created(ws, &seal)["data"]["decisions"][0];
+            let pins = d["pins"].as_array().expect("pins");
+            assert_eq!(pins.len(), 1, "{d}");
+            assert_eq!(
+                (pins[0]["repo"].clone(), pins[0]["path"].clone()),
+                (json!("."), json!("src/telemetry.js"))
+            );
+            let shown = crate::knowledge::show(ws, None).unwrap();
+            assert_eq!(shown["decisions"][0]["stale"], json!(false), "{shown}");
+            crate::testing::commit(
+                &ws.root,
+                &[("src/telemetry.js", Some("export const off = true;\n"))],
+                "change",
+            );
+            let shown = crate::knowledge::show(ws, None).unwrap();
+            assert_eq!(shown["decisions"][0]["stale"], json!(true), "{shown}");
         });
     }
 

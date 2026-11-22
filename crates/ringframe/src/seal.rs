@@ -229,6 +229,7 @@ pub fn create_told(
         &seal_id,
     )
     .map_err(|e| ledger("seal.answers", e))?;
+    let decisions = pinned(ws, record.as_ref(), decisions);
     // Not a Git repository: the receipt still records the decision.
     let subject = match evaluate::default_subject(ws) {
         Ok((kind, reference)) => {
@@ -312,7 +313,55 @@ pub fn create_told(
     });
     schema::validate_event(&ev)?;
     store::append(ws, &ev)?;
+    // The knowledge moves to what was sealed; a view that cannot be written
+    // is rebuilt the next time it is read, so the Seal stands either way.
+    if let Err(e) = crate::knowledge::refresh(ws) {
+        eprintln!("ringframe: the knowledge view was not refreshed: {e}");
+    }
     Ok(receipt)
+}
+
+/// The `key` of each object in a list.
+fn strings_of(list: &Value, key: &str) -> Vec<String> {
+    list.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v[key].as_str().map(str::to_string))
+        .collect()
+}
+
+/// Each decision with `pins`: the files of its windows as the Eval's change
+/// had them. A decision about requirements alone has none. With no Eval, or
+/// its change view gone, nothing is pinned.
+fn pinned(ws: &Workspace, record: Option<&Value>, decisions: Vec<Value>) -> Vec<Value> {
+    let changes = record.and_then(|r| {
+        let id = r["eval_id"].as_str()?;
+        let bytes = std::fs::read(ws.rf_dir().join(format!("evals/{id}/changes.json"))).ok()?;
+        serde_json::from_slice::<Value>(&bytes).ok()
+    });
+    let questions = record.map(|r| r["questions"].clone()).unwrap_or(Value::Null);
+    decisions
+        .into_iter()
+        .map(|mut d| {
+            let windows = strings(&d, "windows");
+            let mut pins = match &changes {
+                Some(c) if !windows.is_empty() => crate::knowledge::pins_for(ws, c, &windows),
+                _ => Vec::new(),
+            };
+            // A decision about a change against a rule rests on the rule too.
+            let q = questions.as_array().into_iter().flatten().find(|q| q["id"] == d["question"]);
+            for rule in q.map(|q| strings_of(&q["rules"], "source")).unwrap_or_default() {
+                if let Some(c) = &changes
+                    && let Some(p) = crate::knowledge::pin_source(ws, c, &rule)
+                    && !pins.contains(&p)
+                {
+                    pins.push(p);
+                }
+            }
+            d["pins"] = json!(pins);
+            d
+        })
+        .collect()
 }
 
 /// Re-verify the receipt and its Eval record now, and say whether the subject

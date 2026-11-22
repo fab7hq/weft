@@ -18,6 +18,9 @@ title = "Codex"
 # The folder names this harness's files go by in a repository (its plugin
 # folder): how an Eval links a step that names the harness to its files.
 path_names = ["codex"]
+# The files this harness loads as standing instructions, in a folder or a parent: an
+# Eval lists them as rules in force for the files the work changed.
+instructions = ["AGENTS.md", "AGENTS.override.md"]
 
 [routing]
 precedence = ["native_goal", "native_plan", "native_direct"]

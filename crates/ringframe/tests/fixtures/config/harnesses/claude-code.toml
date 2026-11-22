@@ -18,6 +18,9 @@ title = "Claude Code"
 # The folder names this harness's files go by in a repository (its plugin
 # folder): how an Eval links a step that names the harness to its files.
 path_names = ["claude"]
+# The files this harness loads as standing instructions, in a folder or a parent: an
+# Eval lists them as rules in force for the files the work changed.
+instructions = ["CLAUDE.md", "CLAUDE.local.md"]
 
 # Which tools `ringframe observe tool` makes something of (ADR-0022).
 [observe]
