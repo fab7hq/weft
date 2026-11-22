@@ -9,6 +9,9 @@ pub(crate) mod seal_tests;
 pub(crate) mod tests;
 // Named `tests.rs`, as every test file is, so it is read as tests.
 #[cfg(test)]
+#[path = "files/tests.rs"]
+mod files_tests;
+#[cfg(test)]
 #[path = "progress/tests.rs"]
 mod progress_tests;
 #[cfg(test)]
@@ -316,6 +319,8 @@ pub struct WeftDesktopApp {
     before_allow: Option<BottomBarState>,
     /// SEND TO is open.
     pub send_to_open: bool,
+    /// The files open in the viewer, and what the windows are to do for them.
+    pub files: crate::files::Files,
     /// Where each staged send goes, when the person picked other than where
     /// it was staged.
     staged_to: HashMap<String, String>,
@@ -403,6 +408,7 @@ impl WeftDesktopApp {
             remote_pick: None,
             updates_offered: false,
             send_to_open: false,
+            files: Default::default(),
             staged_to: HashMap::new(),
             eval_pick: None,
             before_allow: None,

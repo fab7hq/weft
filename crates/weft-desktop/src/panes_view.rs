@@ -962,7 +962,8 @@ fn conversation_blocks(
                         )
                         .child(
                             div().font_size(14).style("line-height", "21px").text(text.to_string()),
-                        ),
+                        )
+                        .children(files_named(&items[i], project, pane, harness)),
                 );
                 i += 1;
             }
@@ -1005,7 +1006,8 @@ fn conversation_blocks(
                                 )
                                 .child(span(clock).color(palette::DIM)),
                         )
-                        .child(crate::markdown_view::message(text)),
+                        .child(crate::markdown_view::message(text))
+                        .children(files_named(&items[i], project, pane, harness)),
                 );
                 i += 1;
             }
@@ -1024,10 +1026,22 @@ fn conversation_blocks(
                 let is_open = unfolded_steps.contains(&(project.to_path_buf(), pane, block_idx));
                 // Named by its last step: steps an older page adds go in before it.
                 let last = steps_group.last().map(|s| s.id.clone()).unwrap_or_default();
-                chat_col.push(
-                    render_step_block(&steps_group, &outcomes, project, pane, block_idx, is_open)
-                        .id(last),
-                );
+                let block =
+                    render_step_block(&steps_group, &outcomes, project, pane, block_idx, is_open);
+                // The files the steps wrote, under them.
+                let written = crate::files::written(&steps_group);
+                chat_col.push(if written.is_empty() {
+                    block.id(last)
+                } else {
+                    div()
+                        .layer("tool steps with files")
+                        .id(last)
+                        .self_stretch()
+                        .flex_col()
+                        .gap(8)
+                        .child(block)
+                        .child(crate::files::chips(&written, project, pane, harness))
+                });
                 block_idx += 1;
             }
             Kind::Outcome => {
@@ -1037,6 +1051,18 @@ fn conversation_blocks(
     }
 
     chat_col
+}
+
+/// The chips for the files a message named, under its words.
+fn files_named(
+    item: &Item,
+    project: &std::path::Path,
+    pane: u32,
+    harness: &str,
+) -> Option<Element> {
+    let refs: Vec<_> = item.refs.iter().collect();
+    (!refs.is_empty())
+        .then(|| crate::files::chips(&refs, project, pane, harness).style("padding-top", "6px"))
 }
 
 fn render_step_block(

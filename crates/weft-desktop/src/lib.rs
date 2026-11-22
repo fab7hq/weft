@@ -5,6 +5,7 @@ pub mod app;
 pub mod bottom_bar;
 pub mod daemon;
 pub mod earlier;
+pub mod files;
 pub mod fonts;
 pub mod gpui;
 pub mod header;
@@ -22,5 +23,7 @@ pub mod text_input;
 pub mod tree_view;
 pub mod ui;
 pub mod version;
+#[cfg(target_os = "macos")]
+pub mod viewer;
 pub mod waiting;
 pub mod window;

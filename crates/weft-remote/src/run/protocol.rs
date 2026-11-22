@@ -151,6 +151,16 @@ impl Remote {
                         ok["sessions"] = open.agents.sessions(&v, now_millis());
                     }
                     Carries::Sealed(what) => ok[what.as_str()] = v,
+                    Carries::File => {
+                        let f = &v["file"];
+                        let device = self.conns.get(&asked.conn).and_then(|c| c.device.clone());
+                        let (Some(abs), Some(device)) = (f["abs"].as_str(), device) else {
+                            return self.error(asked.conn, &asked.req, "no_file", "not located");
+                        };
+                        let url = self.links.make(std::path::Path::new(abs), &device);
+                        ok["file"] = json!({"path": f["path"], "kind": f["kind"], "size": f["size"],
+                            "modified": f["modified"], "url": url});
+                    }
                     Carries::Receipt(id) => {
                         let Some(open) = self.projects.get(at).and_then(Option::as_ref) else {
                             return;
@@ -622,6 +632,22 @@ impl Remote {
                 q: m["q"].as_str().map(str::to_string),
             };
             return self.ask(at, call, conn, req, Carries::Sessions);
+        }
+        // A file an agent's conversation pointed at: weftd locates only
+        // those, and the answer carries a private link to it.
+        if what == Some("file") {
+            let (at, pane) = self.agent(m)?;
+            let path = m["path"].as_str().ok_or(("bad_request", "no path".to_string()))?;
+            let call = Call::Read {
+                what: "file".into(),
+                unit: path.into(),
+                pane: Some(pane),
+                lines: None,
+                before: None,
+                after: None,
+                q: None,
+            };
+            return self.ask(at, call, conn, req, Carries::File);
         }
         // What the device reads of a project it names, answered at once from
         // what this process holds: no read reaches weftd for a page. A Seal's

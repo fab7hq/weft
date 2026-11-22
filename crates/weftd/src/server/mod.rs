@@ -103,6 +103,8 @@ struct Slot {
     /// The harness's own transcript, as its hooks last named it: kept here
     /// and nowhere else, for its Conversation.
     transcript: Option<std::path::PathBuf>,
+    /// The files its conversation pointed at: the only ones its devices may read.
+    files: std::collections::HashSet<std::path::PathBuf>,
     /// When the pane last printed output, and the PTY sequence and reading
     /// from `weft-sense` Head 1 once output settles for 150 ms or a hook arrives.
     last_output_at: std::time::Instant,
@@ -2980,6 +2982,9 @@ impl Session {
                 }
                 if what == "conversation" {
                     return Ok(self.conversation(at, pane, before, after));
+                }
+                if what == "file" {
+                    return Ok(self.file_located(at, pane, &unit));
                 }
                 if what == "sessions" {
                     return Ok(self.earlier_sessions(at, after.as_deref(), q.as_deref()));

@@ -280,3 +280,84 @@ fn a_device_asking_for_a_suggestion_is_told_there_is_no_such_message() {
         "{refused}"
     );
 }
+
+/// The files an agent names come with its conversation, wherever they are,
+/// and a device reads one a page at a time; a path the agent never named is
+/// refused.
+#[test]
+fn a_device_reads_the_files_an_agent_named() {
+    let mut h = Harness::with("conversation", grok_beside);
+    let (shell, token, transcript) = grok_pane(&h);
+    let (mut d, _) = h.allowed("d_1");
+    let agent = d.agents(1)[0]["agent"].as_str().unwrap().to_string();
+
+    std::fs::create_dir_all(shell.project.join("out")).unwrap();
+    std::fs::write(shell.project.join("out/report.md"), "# Q3\n").unwrap();
+    std::fs::write(shell.project.join("out/secret.md"), "not named\n").unwrap();
+    let outside = h.dir.join("tmp/board.pdf");
+    std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
+    let pdf: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
+    std::fs::write(&outside, &pdf).unwrap();
+    let said = format!("Wrote `out/report.md` and `{}`.", outside.display());
+    std::fs::write(&transcript, format!("{}\n", line("agent_message_chunk", &said))).unwrap();
+    hook(&h, &shell, &token, &transcript);
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let refs = loop {
+        d.send(json!({"type": "read", "what": "conversation", "agent": agent, "req": 1}));
+        let page = d.answer(1)["conversation"].clone();
+        if page["readable"] == true {
+            break page["items"][0]["refs"].clone();
+        }
+        assert!(Instant::now() < deadline, "the hook's path never reached weftd");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let board = outside.canonicalize().unwrap().to_string_lossy().into_owned();
+    assert_eq!(refs[0]["path"], "out/report.md");
+    assert_eq!(refs[0]["kind"], "markdown");
+    assert_eq!(refs[1]["path"], board.as_str());
+    assert_eq!(refs[1]["kind"], "pdf");
+    assert_eq!(refs[1]["size"], 100_000);
+
+    d.send(json!({"type": "read", "what": "file", "agent": agent, "path": board, "req": 10}));
+    let file = d.answer(10)["file"].clone();
+    assert_eq!((file["kind"].as_str(), file["size"].as_u64()), (Some("pdf"), Some(100_000)));
+    assert!(file.get("abs").is_none(), "the machine's own path stays on it");
+    let url = file["url"].as_str().unwrap();
+    assert!(url.starts_with("/f/") && url.ends_with("/board.pdf"), "{url}");
+
+    let (head, body) = fetch(h.port, url, None);
+    assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+    assert!(head.contains("Content-Type: application/pdf"), "{head}");
+    assert_eq!(body, pdf);
+    let (head, body) = fetch(h.port, url, Some("bytes=99990-"));
+    assert!(
+        head.starts_with("HTTP/1.1 206")
+            && head.contains("Content-Range: bytes 99990-99999/100000")
+    );
+    assert_eq!(body, &pdf[99_990..]);
+    let forged = url.replace("/f/", "/f/x");
+    assert!(fetch(h.port, &forged, None).0.starts_with("HTTP/1.1 404"));
+
+    d.send(
+        json!({"type": "read", "what": "file", "agent": agent, "path": "out/secret.md", "req": 99}),
+    );
+    let refused = d.answer(99);
+    assert_eq!(
+        (refused["type"].as_str(), refused["code"].as_str()),
+        (Some("error"), Some("no_file"))
+    );
+}
+
+/// A GET on the tunnel's port, as the tunnel would pass it: the head and the
+/// body, read to the end.
+fn fetch(port: u16, path: &str, range: Option<&str>) -> (String, Vec<u8>) {
+    use std::io::{Read, Write};
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let range = range.map(|r| format!("Range: {r}\r\n")).unwrap_or_default();
+    write!(s, "GET {path} HTTP/1.1\r\nHost: x\r\n{range}Connection: close\r\n\r\n").unwrap();
+    let mut all = Vec::new();
+    s.read_to_end(&mut all).unwrap();
+    let split = all.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+    (String::from_utf8_lossy(&all[..split]).into_owned(), all[split + 4..].to_vec())
+}

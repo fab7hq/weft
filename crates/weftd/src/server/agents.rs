@@ -671,6 +671,7 @@ impl Session {
                     turbo,
                     token,
                     transcript: None,
+                    files: Default::default(),
                     last_output_at: std::time::Instant::now(),
                     // Read once settled, even a pane that never draws.
                     sense_settled_seq: u64::MAX,
@@ -1059,7 +1060,7 @@ impl Session {
     /// or what was added after one. A harness without `[conversation]`, or no
     /// file known, found or allowed, reads as unreadable, never refused.
     pub(super) fn conversation(
-        &self,
+        &mut self,
         at: usize,
         pane: Option<u32>,
         before: Option<String>,
@@ -1087,13 +1088,38 @@ impl Session {
             session.and_then(|s| c::file(mapping, &h.config_home(), s, slot.transcript.as_deref()));
         let sense_guard = self.sense.read().ok();
         let sense = sense_guard.as_ref().and_then(|g| g.as_ref());
-        let read = match after {
+        let mut read = match after {
             Some(after) => {
                 c::after_with_sense(mapping, &slot.map.harness, path.as_deref(), after, sense)
             }
             None => c::page_with_sense(mapping, &slot.map.harness, path.as_deref(), before, sense),
         };
+        drop(sense_guard);
+        // The files its items point at, found on the disk now: a device may
+        // read only these.
+        if let c::Answer::Page { items, .. } | c::Answer::Grown { items, .. } = &mut read {
+            let (root, home) = (p.root.clone(), std::env::var_os("HOME").map(PathBuf::from));
+            let base = crate::files::Base { root: &root, home: home.as_deref() };
+            let pane = slot.map.pane;
+            if let Some(slot) = self.projects[at].panes.iter_mut().find(|s| s.map.pane == pane) {
+                crate::files::refs(items, &base, &mut slot.files);
+            }
+        }
         Answer::Ok(read.json())
+    }
+
+    /// Where a file the pane's conversation pointed at (`unit`) is.
+    pub(super) fn file_located(&self, at: usize, pane: Option<u32>, unit: &str) -> Answer {
+        let p = &self.projects[at];
+        let Some(slot) = pane.and_then(|n| p.panes.iter().find(|s| s.map.pane == n)) else {
+            return Answer::No("no_pane", "there is no such pane here".into());
+        };
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let base = crate::files::Base { root: &p.root, home: home.as_deref() };
+        match crate::files::located(&base, &slot.files, unit) {
+            Some(v) => Answer::Ok(v),
+            None => Answer::No("no_file", "that file is not one this agent pointed at".into()),
+        }
     }
 }
 

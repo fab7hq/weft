@@ -18,6 +18,7 @@ pub mod done;
 pub mod eval_stages;
 pub mod eval_view;
 pub mod export;
+pub mod files;
 pub mod harness;
 pub mod inject;
 pub mod ledger;

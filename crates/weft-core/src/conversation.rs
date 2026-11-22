@@ -36,6 +36,10 @@ pub struct Conversation {
     /// Per tool, the name drawn in its place.
     #[serde(default)]
     pub names: BTreeMap<String, String>,
+    /// Per tool, the path in its step (the entry, or the block in it) of the
+    /// file it wrote; a path ending in `@keys` gives each key of a table.
+    #[serde(default)]
+    pub writes: BTreeMap<String, String>,
 }
 
 /// One rule, or a list of them.
@@ -141,6 +145,12 @@ pub struct Item {
     /// whether the step it settles failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failed: Option<bool>,
+    /// The files it points at, as weftd found them on the disk.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refs: Vec<crate::files::Ref>,
+    /// The paths it names or wrote, for weftd to look for: never sent.
+    #[serde(skip)]
+    pub mentions: Vec<crate::files::Mention>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -258,6 +268,8 @@ impl Conversation {
             arg: None,
             call: None,
             failed: None,
+            refs: Vec::new(),
+            mentions: Vec::new(),
         };
         for (kind, rules) in [(Kind::Person, &self.person), (Kind::Agent, &self.agent)] {
             let said = rules.list().iter().find(|r| fields(entry, &r.when)).and_then(|r| {
@@ -280,7 +292,11 @@ impl Conversation {
                 }
             });
             if let Some(said) = said.filter(|s| !s.is_empty()) {
-                items.push(Item { text: Some(said), ..item(kind) });
+                let mentions = crate::files::named_in(&said)
+                    .into_iter()
+                    .map(|path| crate::files::Mention { path, named: true })
+                    .collect();
+                items.push(Item { text: Some(said), mentions, ..item(kind) });
                 break;
             }
         }
@@ -299,7 +315,17 @@ impl Conversation {
                             .map(|step_idx| (step_idx + 1 + idx as i64).to_string())
                     })
                 });
+                let mentions = self
+                    .writes
+                    .get(&tool)
+                    .map(|p| written(block, p))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|p| crate::files::clean(&p))
+                    .map(|path| crate::files::Mention { path, named: false })
+                    .collect();
                 items.push(Item {
+                    mentions,
                     arg: Some(self.argument_of(&tool, input.as_ref())),
                     tool: Some(self.names.get(&tool).cloned().unwrap_or(tool)),
                     // A step joined to a later outcome is running until it comes.
@@ -400,6 +426,21 @@ fn input(v: &Value, dotted: &str) -> Option<Value> {
             Some(Value::String(table.as_object()?.keys().next()?.clone()))
         }
         None => path(v, dotted).cloned(),
+    }
+}
+
+/// The paths a step wrote: the string at a path, or each key of the table
+/// at a path ending in `@keys`.
+fn written(v: &Value, dotted: &str) -> Vec<String> {
+    match dotted.strip_suffix("@keys") {
+        Some(table) => {
+            let table = table.strip_suffix('.').map_or(Some(v), |p| path(v, p));
+            table
+                .and_then(Value::as_object)
+                .map(|t| t.keys().cloned().collect())
+                .unwrap_or_default()
+        }
+        None => path(v, dotted).and_then(Value::as_str).map(str::to_string).into_iter().collect(),
     }
 }
 
@@ -711,5 +752,64 @@ mod tests {
         assert_eq!(grok.read(format!("{good}\nnot json\n{good}\n").as_bytes(), 0), Err(Unreadable));
         let read = grok.read(format!("{good}\n{good}").as_bytes(), 0).unwrap();
         assert_eq!((read.items.len(), read.end), (1, good.len() + 1));
+    }
+
+    /// What each file a step wrote and each path a message names, on every
+    /// harness whose file says where a step's file is.
+    #[test]
+    fn steps_carry_the_files_they_wrote_and_messages_the_paths_they_name() {
+        use crate::files::Mention;
+        let wrote = |p: &str| Mention { path: p.into(), named: false };
+        let named = |p: &str| Mention { path: p.into(), named: true };
+        let mentions = |harness: &str, lines: &str| -> Vec<Vec<Mention>> {
+            let read = mapping(harness).read(lines.as_bytes(), 0).unwrap();
+            read.items.into_iter().map(|i| i.mentions).filter(|m| !m.is_empty()).collect()
+        };
+
+        let codex = concat!(
+            r#"{"timestamp":"2026-11-22T01:00:00Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"FileChange","status":"completed","changes":{"/w/out/report.md":{},"/w/src/q3.py":{}}}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-11-22T01:00:01Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","content":"Wrote `out/report.md`, see [the sheet](out/q3.xlsx)."}}}"#,
+            "\n",
+        );
+        assert_eq!(
+            mentions("codex", codex),
+            [
+                vec![wrote("/w/out/report.md"), wrote("/w/src/q3.py")],
+                vec![named("out/report.md"), named("out/q3.xlsx")]
+            ]
+        );
+
+        let claude = concat!(
+            r#"{"type":"assistant","timestamp":"2026-11-22T01:00:00Z","message":{"content":[{"type":"tool_use","id":"t1","name":"Write","input":{"file_path":"/w/plan.md","content":"x"}},{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"ls out/report.md"}}]}}"#,
+            "\n",
+        );
+        assert_eq!(mentions("claude-code", claude), [vec![wrote("/w/plan.md")]]);
+
+        let grok = include_str!("../tests/fixtures/conversation/grok.jsonl");
+        let found = mentions("grok", grok);
+        assert!(
+            found.iter().flatten().any(|m| !m.named && m.path.ends_with("/plan.md")),
+            "grok's write step names its file: {found:?}"
+        );
+    }
+
+    /// The paths are for weftd alone: a device never receives them.
+    #[test]
+    fn mentions_are_never_sent() {
+        let item = Item {
+            id: "0.0".into(),
+            kind: Kind::Agent,
+            at: None,
+            text: Some("`a.md`".into()),
+            tool: None,
+            arg: None,
+            call: None,
+            failed: None,
+            refs: Vec::new(),
+            mentions: vec![crate::files::Mention { path: "a.md".into(), named: true }],
+        };
+        let sent = serde_json::to_value(&item).unwrap();
+        assert!(sent.get("mentions").is_none() && sent.get("refs").is_none(), "{sent}");
     }
 }

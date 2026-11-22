@@ -105,6 +105,8 @@ steps = { when = { type = "assistant" }, in = "message.content", kind = "tool_us
 outcomes = { when = { type = "user" }, in = "message.content", kind = "tool_result", call = "tool_use_id", failed = { is_error = true } }
 argument = { Bash = "command", Read = "file_path", Edit = "file_path", MultiEdit = "file_path", Write = "file_path", NotebookEdit = "notebook_path", Grep = "pattern", Glob = "pattern", WebFetch = "url", WebSearch = "query", Agent = "description" }
 names = { Edit = "Update", MultiEdit = "Update" }
+# The files a step wrote, for the Conversation's file chips.
+writes = { Write = "input.file_path", Edit = "input.file_path", MultiEdit = "input.file_path" }
 
 # What Settings offers an Eval judge that runs here, and how one starts. A
 # judge is a session Weft starts with `--model` and `--effort` (Claude Code

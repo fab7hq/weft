@@ -1,6 +1,7 @@
 //! The WebSocket a device connects to (remote.md §5, §6): on a loopback port,
 //! which `cloudflared` carries; only `GET /ws` with the app's Origin
-//! upgrades, and everything else is refused at the upgrade. Each connection
+//! upgrades, and everything else is refused at the upgrade, but for a
+//! private link to a file (`/f/…`), which `links` answers. Each connection
 //! has a reader thread and a writer thread with a bounded queue, so a slow
 //! device never slows the loop or another device.
 
@@ -44,16 +45,56 @@ pub enum Socket {
 }
 
 /// Listen on `127.0.0.1` at a port the system picks; answers the port.
-pub fn listen<T: From<Socket> + Send + 'static>(tx: Sender<T>) -> std::io::Result<u16> {
+/// `links` are the private links to files it serves beside the WebSocket.
+pub fn listen<T: From<Socket> + Send + 'static>(
+    tx: Sender<T>,
+    links: crate::links::Links,
+) -> std::io::Result<u16> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     std::thread::spawn(move || {
         for (id, stream) in (1u64..).zip(listener.incoming().flatten()) {
-            let tx = tx.clone();
-            std::thread::spawn(move || serve(id, stream, tx));
+            let (tx, links) = (tx.clone(), links.clone());
+            std::thread::spawn(move || {
+                if !link(&stream, &links) {
+                    serve(id, stream, tx);
+                }
+            });
         }
     });
     Ok(port)
+}
+
+/// Answer a connection that asks for a private link; whether it did. Its
+/// first bytes are looked at without taking them, so a WebSocket upgrade
+/// still reads its request whole.
+fn link(stream: &TcpStream, links: &crate::links::Links) -> bool {
+    if stream.set_read_timeout(Some(HANDSHAKE)).is_err() {
+        return true;
+    }
+    let mut first = [0u8; 12];
+    let deadline = Instant::now() + HANDSHAKE;
+    loop {
+        let n = match stream.peek(&mut first) {
+            Ok(n) => n,
+            Err(_) => return true,
+        };
+        if n == 0 || crate::links::asks_for_link(&first[..n]) || n == first.len() {
+            break;
+        }
+        // Fewer bytes than a method and a path: wait for the rest.
+        if Instant::now() > deadline {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    if !crate::links::asks_for_link(&first) {
+        return false;
+    }
+    if let Ok(s) = stream.try_clone() {
+        crate::links::serve(s, links);
+    }
+    true
 }
 
 fn config() -> WebSocketConfig {

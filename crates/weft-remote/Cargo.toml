@@ -41,4 +41,5 @@ weft-proto = { path = "../weft-proto" }
 # that ships this crate.
 [dev-dependencies]
 weft-core = { path = "../weft-core", features = ["fixtures"] }
+tempfile = "3"
 weftd = { path = "../weftd" }

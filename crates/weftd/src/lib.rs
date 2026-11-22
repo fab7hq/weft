@@ -9,6 +9,7 @@ pub mod acts;
 pub mod conversation;
 pub mod export;
 pub mod fab7;
+pub mod files;
 pub mod forward;
 pub mod gpu;
 pub mod harness;

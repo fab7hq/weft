@@ -1,0 +1,23 @@
+{
+  "markdown": ["md", "markdown", "mdx"],
+  "text": [
+    "txt", "log", "json", "jsonl", "yaml", "yml", "toml", "xml", "ini", "cfg", "conf",
+    "sh", "bash", "zsh", "fish", "ps1", "py", "rs", "go", "java", "kt", "kts", "swift",
+    "c", "h", "cc", "cpp", "hpp", "cs", "rb", "php", "pl", "lua", "r", "scala", "dart",
+    "js", "mjs", "cjs", "jsx", "ts", "tsx", "vue", "svelte", "css", "scss", "less",
+    "sql", "graphql", "proto", "diff", "patch", "tex", "rst", "adoc", "gradle", "lock"
+  ],
+  "image": ["png", "jpg", "jpeg", "gif", "webp", "svg", "avif", "bmp", "ico"],
+  "video": ["mp4", "m4v", "webm", "mov"],
+  "audio": ["mp3", "m4a", "wav", "ogg", "flac"],
+  "csv": ["csv", "tsv"],
+  "sheet": ["xlsx", "xlsm", "xls", "ods"],
+  "document": ["docx"],
+  "notebook": ["ipynb"],
+  "pdf": ["pdf"],
+  "html": ["html", "htm"],
+  "other": [
+    "doc", "odt", "rtf", "pptx", "ppt", "odp", "key", "pages", "numbers",
+    "zip", "tar", "gz"
+  ]
+}

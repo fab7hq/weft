@@ -12,6 +12,7 @@ pub enum Action {
     Bar(BarAct),
     Sheet(SheetAct),
     Pane(PaneAct),
+    File(FileAct),
 }
 
 /// Where the keyboard goes.
@@ -369,6 +370,22 @@ pub enum PaneAct {
     SendMessage,
 }
 
+/// A file an agent pointed at, and the viewer showing one, by its id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileAct {
+    /// A chip: the file in the viewer, or in the machine's own app where
+    /// there is no viewer.
+    Open {
+        project: PathBuf,
+        pane: u32,
+        harness: String,
+        file: weft_core::files::Ref,
+    },
+    /// The viewer's file shown in the machine's file manager.
+    Reveal(u64),
+    Close(u64),
+}
+
 macro_rules! area {
     ($($t:ident => $v:ident),*) => {$(
         impl From<$t> for Action {
@@ -378,4 +395,4 @@ macro_rules! area {
         }
     )*};
 }
-area!(WindowAct => Window, TreeAct => Tree, BarAct => Bar, SheetAct => Sheet, PaneAct => Pane);
+area!(WindowAct => Window, TreeAct => Tree, BarAct => Bar, SheetAct => Sheet, PaneAct => Pane, FileAct => File);

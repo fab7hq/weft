@@ -146,6 +146,8 @@ enum Carries {
     Part(u64, Part),
     /// A page of an agent's conversation, by the agent's id.
     Conversation(String),
+    /// A file an agent's conversation pointed at, located: given a link.
+    File,
     /// What a followed agent's file grew by, for this device and agent.
     Follow(u64, usize, u32),
     /// The machine's settings, as `config.get` answers them.
@@ -253,6 +255,8 @@ struct Remote {
     adapter: Option<Tool>,
     /// The loopback port the tunnel carries.
     port: u16,
+    /// The private links to files given to devices.
+    links: crate::links::Links,
     /// Calls waiting for the daemon's answer, by project and call id.
     calls: HashMap<(usize, u64), Asked>,
     /// Calls a device made that were answered, for a while: a job a call
@@ -331,7 +335,8 @@ impl Remote {
     fn start(settings: Settings, tx: Sender<Wake>) -> anyhow::Result<Self> {
         let dir = store::remote_dir(&settings.weft)?;
         let control = daemon::Project::control(&settings.socket, tx.clone())?;
-        let port = socket::listen(tx.clone())?;
+        let links = crate::links::Links::default();
+        let port = socket::listen(tx.clone(), links.clone())?;
         let ticks = tx.clone();
         std::thread::spawn(move || {
             while ticks.send(Wake::Tick).is_ok() {
@@ -363,6 +368,7 @@ impl Remote {
             tunnel: None,
             adapter: None,
             port,
+            links,
             calls: HashMap::new(),
             answered: HashMap::new(),
             gathering: HashMap::new(),
@@ -675,6 +681,7 @@ impl Remote {
                 if self.devices.remove(&device) {
                     let _ = self.devices.save();
                 }
+                self.links.forget(&device);
                 for conn in self.conns.values().filter(|c| c.device.as_deref() == Some(&device)) {
                     conn.outbox.close();
                 }

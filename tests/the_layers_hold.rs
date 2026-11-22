@@ -68,8 +68,9 @@ const ALLOWED: &[(&str, &[&str], &str)] = &[
             "weft-term",
         ],
         "the desktop client draws the Toile screens with GPUI, edits its text fields a whole \
-         character at a time, persists UI state, and asks the daemon for everything else; never \
-         weftd",
+         character at a time, persists UI state, serves the files an agent pointed at from its own \
+         disk to the viewer's page (wry, on macOS only), and asks the daemon for everything else; \
+         never weftd",
     ),
     (
         "weft-remote",

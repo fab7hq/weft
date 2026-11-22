@@ -308,6 +308,8 @@ fn item(id: &str, kind: Kind, at: Option<i64>, text: Option<&str>) -> Item {
         arg: None,
         call: None,
         failed: None,
+        refs: Vec::new(),
+        mentions: Vec::new(),
     }
 }
 

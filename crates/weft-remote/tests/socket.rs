@@ -12,7 +12,7 @@ use weft_remote::socket::{self, Outbox, Socket};
 
 fn listening() -> (u16, Receiver<Socket>) {
     let (tx, rx) = channel();
-    (socket::listen(tx).unwrap(), rx)
+    (socket::listen(tx, Default::default()).unwrap(), rx)
 }
 
 fn connect(port: u16, path: &str, origin: &str) -> Result<WebSocket<TcpStream>, String> {

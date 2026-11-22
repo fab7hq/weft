@@ -14,6 +14,7 @@ pub mod daemon;
 pub mod devices;
 pub mod health;
 pub mod jobs;
+pub mod links;
 pub mod push;
 pub mod run;
 pub mod socket;

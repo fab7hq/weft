@@ -21,15 +21,18 @@ pub const PAGE: usize = 50;
 const CHUNK: u64 = 64 << 10;
 
 /// The pane's transcript, when one is known or found and allowed: the path a
-/// hook named, else the newest file `find` gives for the session.
+/// hook named, else the newest file `find` gives for the session. A named
+/// path that is not the session's own is passed over for `find`: a harness's
+/// sub-agent can report its parent's session with its own transcript.
 pub fn file(c: &Conversation, home: &Path, session: &str, named: Option<&Path>) -> Option<PathBuf> {
-    let path = match named {
-        Some(p) => p.to_path_buf(),
-        None => {
-            let pattern = c.find.as_deref()?.replace("{session}", session);
-            newest(home, &pattern)?
-        }
-    };
+    named.and_then(|p| allowed(home, session, p)).or_else(|| {
+        let pattern = c.find.as_deref()?.replace("{session}", session);
+        allowed(home, session, &newest(home, &pattern)?)
+    })
+}
+
+/// `path`, canonical, when it is inside `home` and the session's.
+fn allowed(home: &Path, session: &str, path: &Path) -> Option<PathBuf> {
     let path = path.canonicalize().ok()?;
     let home = home.canonicalize().ok()?;
     let inside = path.strip_prefix(&home).ok()?;
@@ -308,15 +311,35 @@ mod tests {
         assert_eq!(file(&grok(), h.path(), "s1", Some(&path)), Some(found.clone()));
         assert_eq!(file(&grok(), h.path(), "s2", Some(&path)), None, "another session's file");
         assert_eq!(file(&grok(), h.path(), "s2", None), None);
+        // A named path that is not allowed is never read: the session's own
+        // file is, as when no path was named.
         let outside = tempfile::tempdir().unwrap();
         let elsewhere = outside.path().join("s1/updates.jsonl");
         std::fs::create_dir_all(elsewhere.parent().unwrap()).unwrap();
         std::fs::write(&elsewhere, FIXTURE).unwrap();
-        assert_eq!(file(&grok(), h.path(), "s1", Some(&elsewhere)), None, "outside the home");
+        let own = Some(found.clone());
+        assert_eq!(file(&grok(), h.path(), "s1", Some(&elsewhere)), own, "outside the home");
         let link = h.path().join("sessions/%2Fw/s1/link.jsonl");
         std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
-        assert_eq!(file(&grok(), h.path(), "s1", Some(&link)), None, "a link out of the home");
-        assert_eq!(file(&grok(), h.path(), "s1", path.parent()), None, "a folder");
+        assert_eq!(file(&grok(), h.path(), "s1", Some(&link)), own, "a link out of the home");
+        assert_eq!(file(&grok(), h.path(), "s1", path.parent()), own, "a folder");
+        assert_eq!(file(&grok(), h.path(), "s2", Some(&elsewhere)), None, "nothing of s2's");
+    }
+
+    /// A Codex sub-agent's hook names the parent's session with the
+    /// sub-agent's own rollout: the pane keeps reading the parent's.
+    #[test]
+    fn a_sub_agents_transcript_leaves_the_sessions_own_in_view() {
+        let codex = Conversation::of(&harness_file("codex")["conversation"]).unwrap();
+        let h = tempfile::tempdir().unwrap();
+        let day = h.path().join("sessions/2026/11/22");
+        std::fs::create_dir_all(&day).unwrap();
+        let own = day.join("rollout-2026-11-22T08-00-00-parent.jsonl");
+        let sub = day.join("rollout-2026-11-22T08-30-00-child.jsonl");
+        std::fs::write(&own, "{}\n").unwrap();
+        std::fs::write(&sub, "{}\n").unwrap();
+        let found = file(&codex, h.path(), "parent", Some(&sub));
+        assert_eq!(found, Some(own.canonicalize().unwrap()));
     }
 
     /// Each harness's transcript gives the agent's last reply, read from

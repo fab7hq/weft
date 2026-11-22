@@ -197,15 +197,20 @@ fn a_pane_reads_the_transcript_its_hook_named_and_nothing_else() {
     assert_eq!(ended["readable"], true, "{ended}");
     assert!(ended["items"].as_array().unwrap().iter().any(|i| i["kind"] == "step"));
 
-    // A hook that names a file outside the home, or another session's.
+    // A hook that names a file outside the home: it is never read, and the
+    // session's own transcript still is.
     let outside = home.path().join("elsewhere/g1/updates.jsonl");
     std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
-    std::fs::write(&outside, fixture).unwrap();
+    let forged = serde_json::json!({"timestamp": 1_795_000_000, "params": {"update": {
+        "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "forged-marker"}}}});
+    std::fs::write(&outside, format!("{forged}\n")).unwrap();
     support::signal(&socket, says(&outside));
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while c.conversation(None, None)["readable"] != false {
-        assert!(Instant::now() < deadline, "a file outside the home was read");
-        std::thread::sleep(Duration::from_millis(20));
+    let until = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < until {
+        let page = c.conversation(None, None);
+        assert_eq!(page["readable"], true, "{page}");
+        assert!(!page.to_string().contains("forged-marker"), "a file outside the home was read");
+        std::thread::sleep(Duration::from_millis(50));
     }
     c.send(Call::Shutdown);
 }

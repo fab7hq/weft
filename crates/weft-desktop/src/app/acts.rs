@@ -20,6 +20,10 @@ impl WeftDesktopApp {
     /// Do what a click or a key asked.
     pub fn dispatch(&mut self, action: impl Into<Action>) {
         let action = action.into();
+        // A file's acts touch nothing the main window shows.
+        if let Action::File(a) = action {
+            return self.file_act(a);
+        }
         // What failed is said until the person acts where it is said.
         if self.bar_is_free() {
             self.failed = None;
@@ -44,6 +48,7 @@ impl WeftDesktopApp {
             Action::Bar(a) => self.bar_act(a),
             Action::Sheet(a) => self.sheet_act(a),
             Action::Pane(a) => self.pane_act(a),
+            Action::File(_) => {}
         }
         self.want_ask_sheet_at(std::time::Instant::now());
     }

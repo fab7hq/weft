@@ -15,8 +15,8 @@ use ::gpui::{
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, PathPromptOptions, Pixels, Point,
     Render, Rgba, ScrollHandle, ScrollWheelEvent, SharedString, StatefulInteractiveElement,
     StyleRefinement, Styled, SystemNotification, UTF16Selection, WeakEntity, Window,
-    WindowBounds as GpuiWindowBounds, WindowOptions, div as gpui_div, point, prelude::*, px,
-    relative, rgba, size,
+    WindowBounds as GpuiWindowBounds, WindowId, WindowOptions, div as gpui_div, point, prelude::*,
+    px, relative, rgba, size,
 };
 use anyhow::Result;
 use weft_core::state::WindowBounds;
@@ -418,8 +418,11 @@ pub fn run_interactive(mut app: WeftDesktopApp) -> Result<()> {
             }
             cx.activate(true);
         });
-        cx.on_window_closed(|cx, _| {
-            if cx.windows().is_empty() {
+        // The main window closing ends the app, viewers and all.
+        let main_id: Rc<Cell<Option<WindowId>>> = Rc::default();
+        let closing = Rc::clone(&main_id);
+        cx.on_window_closed(move |cx, id| {
+            if cx.windows().is_empty() || closing.get() == Some(id) {
                 cx.quit();
             }
         })
@@ -476,6 +479,8 @@ pub fn run_interactive(mut app: WeftDesktopApp) -> Result<()> {
 
                     let poll_shared = Arc::clone(&view_shared);
                     cx.spawn(async move |this, cx| {
+                        // Each open viewer's window.
+                        let mut viewers: HashMap<u64, ::gpui::AnyWindowHandle> = HashMap::new();
                         loop {
                             cx.background_executor().timer(Duration::from_millis(30)).await;
                             let (dirty, output, quit, notices, raise) = match poll_shared.lock() {
@@ -491,6 +496,7 @@ pub fn run_interactive(mut app: WeftDesktopApp) -> Result<()> {
                             if raise {
                                 cx.update(|cx| cx.activate(true));
                             }
+                            follow_files(&poll_shared, &mut viewers, cx);
                             for n in notices {
                                 cx.update(|cx| {
                                     cx.show_system_notification(SystemNotification {
@@ -525,7 +531,10 @@ pub fn run_interactive(mut app: WeftDesktopApp) -> Result<()> {
             },
         );
         match opened {
-            Ok(_) => cx.activate(true),
+            Ok(main) => {
+                main_id.set(Some(main.window_id()));
+                cx.activate(true)
+            }
             Err(e) => {
                 eprintln!("weft-desktop: {e}");
                 cx.quit();
@@ -534,6 +543,115 @@ pub fn run_interactive(mut app: WeftDesktopApp) -> Result<()> {
     });
 
     Ok(())
+}
+
+/// What the files the person opened ask of the windows: each viewer's
+/// window opened or brought in front, the ones whose viewer closed gone, and
+/// a file handed to the machine's own app or shown in its file manager.
+fn follow_files(
+    shared: &Arc<Mutex<SharedState>>,
+    viewers: &mut HashMap<u64, ::gpui::AnyWindowHandle>,
+    cx: &mut ::gpui::AsyncApp,
+) {
+    let Ok(mut guard) = shared.lock() else { return };
+    let files = &mut guard.app.files;
+    let opening: Vec<_> = std::mem::take(&mut files.to_open)
+        .into_iter()
+        .filter_map(|id| files.get(id).map(|v| (id, v.title(), v.page(), v.abs.clone())))
+        .collect();
+    let outside = std::mem::take(&mut files.outside);
+    let reveal = std::mem::take(&mut files.reveal);
+    let open: HashSet<u64> = files.viewers.iter().map(|v| v.id).collect();
+    drop(guard);
+
+    for path in outside {
+        cx.update(|cx| cx.open_with_system(&path));
+    }
+    for path in reveal {
+        cx.update(|cx| cx.reveal_path(&path));
+    }
+    viewers.retain(|id, handle| {
+        open.contains(id) || {
+            let _ = handle.update(cx, |_, window, _| window.remove_window());
+            false
+        }
+    });
+    for (id, title, page, file) in opening {
+        let shown = viewers.get(&id).is_some_and(|handle| {
+            handle
+                .update(cx, |_, window, _| {
+                    window.set_window_title(&title);
+                    window.activate_window();
+                })
+                .is_ok()
+        });
+        if !shown
+            && let Some(handle) = cx.update(|cx| open_viewer(shared, id, &title, &page, file, cx))
+        {
+            viewers.insert(id, handle);
+        }
+    }
+}
+
+/// A viewer's window, the size of the card it is drawn to, over the
+/// desktop's: the page fills it. Closed, its viewer goes.
+#[cfg(target_os = "macos")]
+fn open_viewer(
+    shared: &Arc<Mutex<SharedState>>,
+    id: u64,
+    title: &str,
+    page: &str,
+    file: PathBuf,
+    cx: &mut App,
+) -> Option<::gpui::AnyWindowHandle> {
+    use crate::action::FileAct;
+    use crate::viewer::{Ask, ViewerView};
+    let bounds = Bounds::centered(None, size(px(960.0), px(680.0)), cx);
+    let options = WindowOptions {
+        window_bounds: Some(GpuiWindowBounds::Windowed(bounds)),
+        titlebar: Some(::gpui::TitlebarOptions {
+            title: Some(SharedString::from(title.to_string())),
+            ..Default::default()
+        }),
+        app_id: Some(APP_ID.into()),
+        ..Default::default()
+    };
+    let (shared, page) = (Arc::clone(shared), page.to_string());
+    let opened = cx.open_window(options, move |window, cx| {
+        let asking = Arc::clone(&shared);
+        let asked = move |ask| {
+            if let Ok(mut guard) = asking.lock() {
+                guard.app.dispatch(match ask {
+                    Ask::Reveal => FileAct::Reveal(id),
+                    Ask::Close => FileAct::Close(id),
+                });
+            }
+        };
+        let view = ViewerView::new(window, &page, file, asked);
+        cx.new(|cx| {
+            cx.on_release(move |_, _| {
+                if let Ok(mut guard) = shared.lock() {
+                    guard.app.files.close(id);
+                }
+            })
+            .detach();
+            view
+        })
+    });
+    opened.ok().map(Into::into)
+}
+
+/// No window here holds a page: every file opens in the machine's own app.
+#[cfg(not(target_os = "macos"))]
+fn open_viewer(
+    _: &Arc<Mutex<SharedState>>,
+    _: u64,
+    _: &str,
+    _: &str,
+    _: PathBuf,
+    _: &mut App,
+) -> Option<::gpui::AnyWindowHandle> {
+    None
 }
 
 impl GpuiDesktopView {
@@ -2275,6 +2393,8 @@ mod tests {
                             arg: None,
                             call: None,
                             failed: None,
+                            refs: Vec::new(),
+                            mentions: Vec::new(),
                         })
                         .collect();
                     app.conversations.insert((root.clone(), pane), items);

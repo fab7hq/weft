@@ -1,0 +1,1 @@
+var e=e=>new TextDecoder(`utf-8`).decode(e);function t(e){let t=e.split(/\r\n|\n|\r/);return t.length>1&&t[t.length-1]===``&&t.pop(),t}export{t as n,e as t};
