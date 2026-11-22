@@ -39,28 +39,33 @@ fn io(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
-/// Make a tree read-only, or writable again so it can be removed.
+/// The workspace's folder in the cache, made and kept for its owner alone.
+fn private(base: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(base).map_err(io)?;
+    std::fs::set_permissions(base, std::fs::Permissions::from_mode(0o700)).map_err(io)
+}
+
+/// Make a tree read-only, or writable again by its owner so it can be
+/// removed. Only the write bits change: a file only its owner could read
+/// stays so.
 fn set_writable(path: &Path, writable: bool) {
     use std::os::unix::fs::PermissionsExt;
     let Ok(meta) = std::fs::symlink_metadata(path) else { return };
     if meta.file_type().is_symlink() {
         return;
     }
+    let mode_of = |mode: u32| if writable { mode | 0o200 } else { mode & !0o222 };
     let dir = meta.is_dir();
+    let mode = mode_of(meta.permissions().mode());
     if dir && writable {
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755));
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
     }
     if dir && let Ok(entries) = std::fs::read_dir(path) {
         for e in entries.flatten() {
             set_writable(&e.path(), writable);
         }
     }
-    let mode = match (dir, writable) {
-        (true, true) => 0o755,
-        (true, false) => 0o555,
-        (false, true) => 0o644,
-        (false, false) => 0o444,
-    };
     let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
 }
 
@@ -90,6 +95,7 @@ fn at_commit_in(base: &Path, root: &Path, commit: &str, eval: &str) -> Result<Pa
     let key = repo_key(root);
     let dir = base.join("snapshots").join(&key).join(commit);
     let meta = base.join("meta").join(&key).join(commit);
+    private(base)?;
     if !dir.join(".complete").exists() {
         remove(&dir);
         let parent = dir.parent().expect("a snapshot has a parent");
@@ -144,6 +150,7 @@ pub fn of_worktree(ws: &Workspace, root: &Path, eval: &str) -> Result<PathBuf, S
 
 fn of_worktree_in(base: &Path, root: &Path, eval: &str) -> Result<PathBuf, String> {
     let dir = base.join("evals").join(eval).join("after").join(repo_key(root));
+    private(base)?;
     remove(&dir);
     std::fs::create_dir_all(&dir).map_err(io)?;
     let listed = Command::new("git")
@@ -153,13 +160,19 @@ fn of_worktree_in(base: &Path, root: &Path, eval: &str) -> Result<PathBuf, Strin
         .output()
         .map_err(io)?;
     for rel in String::from_utf8_lossy(&listed.stdout).split('\0').filter(|p| !p.is_empty()) {
+        // A link is copied as the link, as Git keeps it: never the file it
+        // points to, which may be outside the repository.
         let from = root.join(rel);
-        if !from.is_file() {
-            continue;
-        }
+        let Ok(meta) = std::fs::symlink_metadata(&from) else { continue };
         let to = dir.join(rel);
-        std::fs::create_dir_all(to.parent().expect("a file has a folder")).map_err(io)?;
-        std::fs::copy(&from, &to).map_err(io)?;
+        if meta.file_type().is_symlink() {
+            let target = std::fs::read_link(&from).map_err(io)?;
+            std::fs::create_dir_all(to.parent().expect("a link has a folder")).map_err(io)?;
+            std::os::unix::fs::symlink(target, &to).map_err(io)?;
+        } else if meta.is_file() {
+            std::fs::create_dir_all(to.parent().expect("a file has a folder")).map_err(io)?;
+            std::fs::copy(&from, &to).map_err(io)?;
+        }
     }
     set_writable(&dir, false);
     Ok(dir)
@@ -169,6 +182,7 @@ fn of_worktree_in(base: &Path, root: &Path, eval: &str) -> Result<PathBuf, Strin
 pub fn reader_dir(ws: &Workspace, task: &str) -> Result<PathBuf, String> {
     let base = cache_dir(ws).ok_or("HOME is not set")?;
     let dir = base.join("readers").join(task);
+    private(&base)?;
     std::fs::create_dir_all(&dir).map_err(io)?;
     Ok(dir)
 }
@@ -267,6 +281,7 @@ fn prune_in(base: &Path, limit: u64, open: &dyn Fn(&str) -> bool) -> Vec<PathBuf
 mod tests {
     use super::*;
     use crate::testing::{commit, repo, tmp_dir, ws_for};
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn a_snapshot_is_the_commit_read_only_and_shared_by_two_evals() {
@@ -297,9 +312,22 @@ mod tests {
         std::fs::write(root.join("new.txt"), "new\n").unwrap();
         std::fs::create_dir_all(root.join("out")).unwrap();
         std::fs::write(root.join("out/build.bin"), "x").unwrap();
+        let outside = tmp_dir();
+        std::fs::write(outside.path().join("secret"), "key\n").unwrap();
+        std::os::unix::fs::symlink(outside.path().join("secret"), root.join("link")).unwrap();
+        std::fs::write(root.join("mine.txt"), "only me\n").unwrap();
+        std::fs::set_permissions(root.join("mine.txt"), std::fs::Permissions::from_mode(0o600))
+            .unwrap();
         let copy = of_worktree_in(&base, root, "ev_1").unwrap();
         assert_eq!(std::fs::read_to_string(copy.join("a.txt")).unwrap(), "edited\n");
         assert!(copy.join("new.txt").exists() && !copy.join("out").exists());
+        // A link stays a link; a file only its owner reads stays so, read-only.
+        let link = std::fs::symlink_metadata(copy.join("link")).unwrap();
+        assert!(link.file_type().is_symlink());
+        let mode = std::fs::metadata(copy.join("mine.txt")).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o400);
+        let base_mode = std::fs::metadata(&base).unwrap().permissions().mode();
+        assert_eq!(base_mode & 0o777, 0o700, "the cache is its owner's alone");
         release_in(&base, "ev_1");
         assert!(!copy.exists());
     }
