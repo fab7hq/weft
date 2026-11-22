@@ -794,10 +794,13 @@ mod tests {
         );
 
         let agy = concat!(
-            r##"{"step_index":3,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-22T01:00:00Z","tool_calls":[{"name":"write_to_file","args":{"TargetFile":"\"/w/out/report.md\"","CodeContent":"\"# Q3\""}}]}"##,
+            r##"{"step_index":3,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-22T01:00:00Z","tool_calls":[{"name":"write_file","args":{"Path":"\"/w/out/report.md\"","Content":"\"# Q3\""}},{"name":"write_to_file","args":{"TargetFile":"\"/w/out/plan.md\""}}]}"##,
             "\n",
         );
-        assert_eq!(mentions("antigravity", agy), [vec![wrote("/w/out/report.md")]]);
+        assert_eq!(
+            mentions("antigravity", agy),
+            [vec![wrote("/w/out/report.md")], vec![wrote("/w/out/plan.md")]]
+        );
     }
 
     /// The paths are for weftd alone: a device never receives them.

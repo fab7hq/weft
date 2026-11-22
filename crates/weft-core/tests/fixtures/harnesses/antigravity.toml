@@ -78,10 +78,10 @@ person = { when = { type = "USER_INPUT", source = "USER_EXPLICIT" }, text = "con
 agent = { when = { type = "PLANNER_RESPONSE" }, text = "content" }
 steps = { when = { type = "PLANNER_RESPONSE" }, in = "tool_calls", tool = "name", input = "args", call = "step_index" }
 outcomes = { when = { type = ["GENERIC", "TOOL_RESPONSE"] }, call = "step_index", text = "content", failed = { status = "ERROR" } }
-argument = { run_command = "CommandLine", view_file = "AbsolutePath", write_to_file = "TargetFile", replace_file_content = "TargetFile", ask_question = "questions.0.question", search_web = "query", read_url_content = "Url" }
-names = { run_command = "Run", view_file = "Read", write_to_file = "Write", replace_file_content = "Update", ask_question = "Ask" }
+argument = { run_command = "CommandLine", view_file = "AbsolutePath", write_file = "Path", write_to_file = "TargetFile", replace_file_content = "TargetFile", ask_question = "questions.0.question", search_web = "query", read_url_content = "Url" }
+names = { run_command = "Run", view_file = "Read", write_file = "Write", write_to_file = "Write", replace_file_content = "Update", ask_question = "Ask" }
 # The files a step wrote, for the Conversation's file chips.
-writes = { write_to_file = "args.TargetFile", replace_file_content = "args.TargetFile" }
+writes = { write_file = "args.Path", write_to_file = "args.TargetFile", replace_file_content = "args.TargetFile" }
 
 # What Settings offers an Eval judge that runs here, and how one starts. A
 # judge is a session Weft starts with `--model` and `--effort` (agy 1.4.5), so
