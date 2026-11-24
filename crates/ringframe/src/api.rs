@@ -487,7 +487,7 @@ pub fn eval_open_with(
     })
 }
 
-pub use crate::reads::{EvalPreview, NotRead, Skipped};
+pub use crate::reads::{EvalPreview, NotRead, Skipped, Until};
 
 /// What the Eval of the work `ask` is in would read now, recording nothing:
 /// where its range starts, its commits and files, what it counts and does

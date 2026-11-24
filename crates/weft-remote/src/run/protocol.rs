@@ -38,6 +38,9 @@ impl Remote {
             Some("settings") => self.settings(conn, m, &req),
             Some("set") => self.set(conn, m, &req),
             Some("skip_check") => self.skip(conn, m, &req, Call::SkipCheck),
+            Some("decisions") => self
+                .project_named(m)
+                .and_then(|at| self.ask(at, Call::Decisions, conn, &req, Carries::Decisions)),
             Some("skip_add") => match (m["file"].as_str(), m["line"].as_str()) {
                 (Some(file), Some(line)) => {
                     let call = Call::SkipAdd { file: file.into(), line: line.into() };
@@ -144,6 +147,7 @@ impl Remote {
                     }
                     Carries::Settings => ok["settings"] = v,
                     Carries::Skip => ok["findings"] = v["findings"].clone(),
+                    Carries::Decisions => ok["decisions"] = v,
                     Carries::Sessions => {
                         let Some(open) = self.projects.get_mut(at).and_then(Option::as_mut) else {
                             return;

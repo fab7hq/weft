@@ -113,6 +113,25 @@ pub struct Item {
     /// What each reading said of it.
     #[serde(default)]
     pub reads: Vec<Read>,
+    /// The rule of the project it goes against, or that explained it before
+    /// and has changed since.
+    #[serde(default)]
+    pub rule: Option<Rule>,
+}
+
+/// A rule an item names: where it is written, and its words.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct Rule {
+    /// `AGENTS.md`, or `docs/security.md, as it was on 10 Nov`.
+    pub label: String,
+    pub quote: String,
+}
+
+/// A rule's file as the person reads it: `./AGENTS.md@3f2a…` is `AGENTS.md`,
+/// `api/docs/rules.md@…` stays `api/docs/rules.md`.
+fn rule_file(source: &str) -> String {
+    let path = source.rsplit_once('@').map_or(source, |(p, _)| p);
+    path.strip_prefix("./").unwrap_or(path).to_string()
 }
 
 /// A change an item points at: its file, and the words the readings quoted.
@@ -325,7 +344,7 @@ fn requirements(changes: &Value, outputs: &[Value]) -> Vec<Value> {
 fn class(unit: bool, answer: &Value) -> &'static str {
     if unit {
         match answer["answer"].as_str() {
-            Some("unexplained") => "unexplained",
+            Some("unexplained" | "conflicts") => "unexplained",
             Some("elsewhere") => "elsewhere",
             _ => "explained",
         }
@@ -505,6 +524,9 @@ struct Report<'a> {
     carried: Vec<Carried>,
     again: BTreeSet<String>,
     failed_checks: Vec<String>,
+    /// Changes an earlier Eval of this work said a rule explained, whose rule
+    /// has changed since.
+    changed: Vec<&'a Value>,
 }
 
 impl Report<'_> {
@@ -553,11 +575,15 @@ fn items_of(reads: &[Read1], rep: &Report<'_>) -> (Vec<Item>, Vec<(String, Strin
     // Units before requirements, as the readings take them.
     let mut ordered: Vec<&Read1> = reads.iter().filter(|r| r.unit).collect();
     ordered.extend(reads.iter().filter(|r| !r.unit));
+    let ruled = |r: &Read1| {
+        r.unit.then(|| rep.changed.iter().find(|c| s(c, "path") == r.what)).flatten().copied()
+    };
     for r in ordered {
         let against = if r.unit { against(r.id()) } else { None };
         let kind = match (r.result.as_str(), against) {
             (_, Some(_)) | ("unexplained" | "not_met", _) => Kind::Look,
             ("unsettled", _) => Kind::Unsettled,
+            ("explained" | "mechanical", _) if ruled(r).is_some() => continue,
             ("explained" | "mechanical", _) => {
                 explained += 1;
                 continue;
@@ -600,9 +626,26 @@ fn items_of(reads: &[Read1], rep: &Report<'_>) -> (Vec<Item>, Vec<(String, Strin
         if kind == Kind::Look && !r.unit && !missing.is_empty() {
             why.push(fill("eval_view.missing", &[("what", &missing)]));
         }
-        let text = match (kind, sole.map(|q| s(q, "quote")).filter(|q| !q.is_empty())) {
+        let mut text = match (kind, sole.map(|q| s(q, "quote")).filter(|q| !q.is_empty())) {
             (Kind::Unsettled, Some(quote)) => fill("eval_view.differ_line", &[("quote", &quote)]),
             _ => behaviour.clone().unwrap_or_else(|| own.clone()),
+        };
+        // A change against a rule of the project names the rule.
+        let conflict = r
+            .unit
+            .then(|| r.answers.iter().rev().flatten().find(|a| s(a, "answer") == "conflicts"))
+            .flatten();
+        let rule = match conflict {
+            Some(a) if kind == Kind::Look && against.is_none() => {
+                head = word("eval_view.head.rule").to_string();
+                text = fill("eval_view.rule_line", &[("what", &text)]);
+                why = vec![word("eval_view.rule_why").to_string()];
+                Some(Rule {
+                    label: rule_file(&s(&a["context"], "source")),
+                    quote: s(&a["context"], "quote"),
+                })
+            }
+            _ => None,
         };
         let big = match kind {
             Kind::Unsettled if !r.unit => own.clone(),
@@ -637,6 +680,7 @@ fn items_of(reads: &[Read1], rep: &Report<'_>) -> (Vec<Item>, Vec<(String, Strin
                 .map(|c| fill("eval_view.settle_by", &[("check", c)])),
             windows,
             reads: r.reads(),
+            rule,
         };
         match kind {
             Kind::Look => look.push(item),
@@ -653,6 +697,39 @@ fn items_of(reads: &[Read1], rep: &Report<'_>) -> (Vec<Item>, Vec<(String, Strin
             count: 1,
             head: Kind::Look.words().into(),
             big: text,
+            ..Item::default()
+        });
+    }
+    // A change settled by a rule that has changed since an earlier Eval of
+    // this work read it: shown, never asked.
+    for c in &rep.changed {
+        let path = s(c, "path");
+        let now = reads.iter().find(|r| r.unit && r.what == path);
+        let reason = s(c, "reason");
+        let big = if reason.is_empty() { path.clone() } else { first_sentence(&reason) };
+        let what = big.trim_end_matches('.').to_string();
+        let date = day(&s(c, "date"));
+        let windows: Vec<String> = now.map(|r| vec![r.id().to_string()]).unwrap_or_default();
+        quoted.extend(windows.iter().map(|w| (w.clone(), String::new())));
+        settled.push(Item {
+            key: format!("ruled|{}|{path}", s(c, "eval_id")),
+            kind: Kind::Settled,
+            text: fill("eval_view.ruled_line", &[("what", &what)]),
+            count: 1,
+            dots: now.map(Read1::dots).unwrap_or_default(),
+            head: word("eval_view.head.ruled").into(),
+            big,
+            why: vec![fill("eval_view.ruled_why", &[("date", &date)])],
+            sure: now.map(Read1::sure).unwrap_or_default(),
+            windows,
+            reads: now.map(Read1::reads).unwrap_or_default(),
+            rule: Some(Rule {
+                label: fill(
+                    "eval_view.rule_then",
+                    &[("file", &rule_file(&s(c, "source"))), ("date", &date)],
+                ),
+                quote: s(c, "quote"),
+            }),
             ..Item::default()
         });
     }
@@ -797,6 +874,7 @@ impl EvalView {
             carried,
             again: BTreeSet::new(),
             failed_checks,
+            changed: list(report, "rule_changed").iter().collect(),
         };
         let (items, quoted) = items_of(&reads, &rep);
         let paths: BTreeMap<String, String> =
@@ -1205,6 +1283,54 @@ mod tests {
 
     fn listed(v: &EvalView) -> Vec<(Kind, String)> {
         v.items.iter().map(|i| (i.kind, i.text.clone())).collect()
+    }
+
+    /// A change against a rule names the rule; a change an earlier Eval said
+    /// a rule explained, whose rule has changed since, is settled and says so.
+    #[test]
+    fn items_name_the_rule_a_change_goes_against_and_one_that_has_changed() {
+        let conflicts = json!({"answer": {"answer": "conflicts", "reason": "The typed email is logged.",
+            "quote": "log(email)", "context": {"source": "./AGENTS.md@3f2a9c1",
+            "quote": "Never write a person’s email or password to a log."}}});
+        let serves = json!({"answer": {"answer": "serves", "reason": "asked for"}});
+        let record = json!({
+            "units": [
+                {"id": "w1", "path": "src/log.rs", "result": "unexplained",
+                 "readings": [conflicts, conflicts]},
+                {"id": "w2", "path": "src/retention.rs", "result": "explained",
+                 "readings": [serves, serves]},
+                {"id": "w3", "path": "src/form.rs", "result": "explained", "readings": [serves]},
+            ],
+            "report": {"rule_changed": [{"eval_id": "evl_1", "date": "2026-11-10T09:00:00Z",
+                "unit": "w9", "path": "src/retention.rs",
+                "reason": "Failed sign-ins are kept for 90 days.",
+                "source": "./docs/security.md@9e1d", "quote": "Keep failed sign-ins for 90 days."}]},
+        });
+        let v = EvalView::of_record("evl_2", &record);
+        let rule = &v.items[0];
+        assert_eq!(
+            (rule.kind, rule.text.as_str()),
+            (Kind::Look, "Against a rule · The typed email is logged.")
+        );
+        assert_eq!(rule.head, "Against a rule of this project");
+        assert_eq!(
+            rule.rule,
+            Some(Rule {
+                label: "AGENTS.md".into(),
+                quote: "Never write a person’s email or password to a log.".into()
+            })
+        );
+        assert_eq!(rule.dots, [true, true], "both readings found it");
+        let ruled = v.items.iter().find(|i| i.key.starts_with("ruled|")).unwrap();
+        assert_eq!(ruled.kind, Kind::Settled);
+        assert_eq!(ruled.text, "Failed sign-ins are kept for 90 days · its rule changed since");
+        assert_eq!(ruled.big, "Failed sign-ins are kept for 90 days.");
+        assert_eq!(ruled.head, "Settled · by a rule that has changed since");
+        assert!(ruled.why[0].starts_with("At your Eval of 10 Nov"), "{:?}", ruled.why);
+        assert_eq!(ruled.rule.as_ref().unwrap().label, "docs/security.md, as it was on 10 Nov");
+        assert_eq!(ruled.windows, ["w2"], "its lines are this change's");
+        let gathered = v.items.iter().find(|i| i.key == "settled|explained").unwrap();
+        assert_eq!(gathered.count, 1, "the change shown alone is not counted again");
     }
 
     #[test]

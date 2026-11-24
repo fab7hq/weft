@@ -236,6 +236,10 @@ mod tests {
         assert_eq!(skips.last(), Some(&Vec::new()), "told it is found no more");
         let ignore = std::fs::read_to_string(proj.join(".gitignore")).unwrap();
         assert!(ignore.lines().any(|l| l == "/runs/"), "{ignore}");
+        // The settings' decisions are read off the run loop: none yet.
+        let decisions = ask(6, Call::Decisions, &mut skips).unwrap();
+        assert_eq!(decisions["title"], "YOUR DECISIONS", "{decisions}");
+        assert_eq!(decisions["list"], serde_json::json!([]), "{decisions}");
         let _ = UnixStream::connect(&sock).map(|mut s| {
             weft_proto::send(&mut s, &Line::Call { id: 1, call: Call::Shutdown }.encode())
         });

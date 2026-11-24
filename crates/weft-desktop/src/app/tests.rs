@@ -3747,7 +3747,8 @@ fn a_project_s_own_settings_list_what_differs_and_reset_it() {
         {"id": "practice.yagni", "label": "YAGNI", "tier": "core", "source": "shipped"}]}]})
     };
     for _ in 0..2 {
-        let (id, call) = wire.call();
+        let (id, call) =
+            super::waiting_tests::call_of(&mut wire, |c| matches!(c, Call::Read { .. }));
         let Call::Read { unit, .. } = call else { panic!("a read: {call:?}") };
         wire.answer(id, rules(if unit == "project" { "situational" } else { "core" }));
     }
@@ -4170,4 +4171,35 @@ fn a_terminal_scrolled_back_shows_the_way_to_its_end_and_one_press_goes_there() 
     app.dispatch(PaneAct::ToEnd { project: weft(), pane });
     assert_eq!(app.pane_view_mut(&weft(), pane).unwrap().scroll_offset(), 0);
     assert!(app.render().find_layer("scroll to end").is_none(), "at its end again, none");
+}
+
+/// An item that names a rule of the project shows it under why, before its
+/// lines: the rule's file, then its words in quotes. One without a rule shows
+/// none.
+#[test]
+fn an_eval_item_against_a_rule_shows_the_rule_under_why() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    let mut view = an_eval_view();
+    let item = view.items.iter_mut().find(|i| i.key == "w|w_log").expect("an item to look at");
+    item.head = words::word("eval_view.head.rule").into();
+    item.why = vec![words::word("eval_view.rule_why").into()];
+    item.rule = Some(weft_core::eval_view::Rule {
+        label: "AGENTS.md".into(),
+        quote: "Never write a person’s email or password to a log.".into(),
+    });
+    open_view(&mut app, &mut wire, &view);
+    let sheet = app.render().find_layer("sheet EvalView").unwrap().clone();
+    assert!(sheet.find_layer("the rule").is_none(), "the item picked first names no rule");
+
+    app.dispatch(SheetAct::EvalOpen("w|w_log".into()));
+    let sheet = app.render().find_layer("sheet EvalView").unwrap().clone();
+    let detail = sheet.find_layer("eval detail").unwrap();
+    let rule = detail.find_layer("the rule").expect("the rule");
+    assert_eq!(rule.all_text(), "AGENTS.md “Never write a person’s email or password to a log.”");
+    // In order: why, the rule, then the lines that show it.
+    let said = detail.all_text();
+    let at = |s: &str| said.find(s).unwrap_or_else(|| panic!("{s} in {said}"));
+    assert!(at(words::word("eval_view.rule_why")) < at("AGENTS.md"), "{said}");
+    assert!(at("AGENTS.md") < at(words::word("eval_view.lines")), "{said}");
+    assert!(said.starts_with("■ Against a rule of this project"), "{said}");
 }

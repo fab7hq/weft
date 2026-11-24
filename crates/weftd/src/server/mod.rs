@@ -3046,6 +3046,21 @@ impl Session {
                 self.check_skip(at, Some((client, call_id)));
                 return Ok(Answer::Later);
             }
+            Call::Decisions => {
+                // Read off the run loop: each pin's file is hashed again.
+                let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
+                let (root, tx) = (self.projects[at].root.clone(), self.tx.clone());
+                std::thread::spawn(move || {
+                    let answer = match crate::ringframe::decisions(&root) {
+                        Ok(d) => Answer::Ok(serde_json::to_value(d).unwrap_or_default()),
+                        Err(crate::ringframe::Error::Refused { message, .. }) => {
+                            Answer::No("decisions", message)
+                        }
+                    };
+                    let _ = tx.send(Wake::Answer { client, call_id, answer });
+                });
+                return Ok(Answer::Later);
+            }
             Call::SkipAdd { file, line } => {
                 let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
                 return Ok(self.add_skip_line(

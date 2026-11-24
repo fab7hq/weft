@@ -161,6 +161,8 @@ pub fn allowed(call: &Call) -> bool {
         // Which files an Eval should skip, checked again; and a line the
         // daemon's own check proposed, written: never one a device made up.
         Call::SkipCheck | Call::SkipAdd { .. } => true,
+        // The person's decisions, listed: nothing is changed.
+        Call::Decisions => true,
         // The reads a device's Details and Eval view are gathered from, and
         // the files an agent's conversation pointed at (weftd reads no other).
         Call::Read { what, .. } => {

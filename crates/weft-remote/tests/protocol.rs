@@ -524,6 +524,15 @@ fn a_device_is_told_what_to_skip_and_takes_only_a_proposed_line() {
     assert_eq!(d.answer(2)["code"], "not_proposed");
     d.send(json!({"type": "skip_add", "project": "work", "file": ".gitignore", "req": 3}));
     assert_eq!(d.answer(3)["code"], "bad_request");
+    // The person's decisions are asked of the daemon and its answer passed
+    // on: this project is no Git repository, so RingFrame has none to list.
+    d.send(json!({"type": "decisions", "project": "work", "req": 4}));
+    let listed = d.answer(4);
+    assert_eq!(
+        (listed["type"].clone(), listed["code"].clone()),
+        (json!("error"), json!("decisions")),
+        "{listed}"
+    );
 
     // An Eval dialog said again: the same id, its reads as they are now.
     let dialog = |files: u64, added: bool| {

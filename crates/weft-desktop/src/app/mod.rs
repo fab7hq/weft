@@ -713,6 +713,11 @@ impl WeftDesktopApp {
                 let _ = c.read("rules", if mine { "project" } else { "machine" }, None, then);
             }
         }
+        // A project's own settings list the person's decisions in it.
+        let then = crate::daemon::Then::Decisions;
+        if project.is_some() && !c.read.contains_key(&then) && !c.refused.contains_key(&then) {
+            let _ = c.decisions();
+        }
         // On RingFrame, what the preview keeps, said beside Show.
         if let Some(ActiveSheet::Settings { tab: SettingsTab::RingFrame }) = &self.active_sheet {
             let unit = self.preview_unit();

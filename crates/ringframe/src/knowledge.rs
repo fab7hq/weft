@@ -236,12 +236,26 @@ pub fn state_at(root: &Path, pin: &Value, at: Option<&str>) -> Value {
 /// Whether any of a decision's pins is stale at the commit each repository
 /// is read at. A decision with no pins is never stale.
 pub fn decision_stale(ws: &Workspace, pins: &[Value], at: &BTreeMap<String, String>) -> bool {
-    pins.iter().any(|p| {
+    !stale_files(ws, pins, at).is_empty()
+}
+
+/// The files of `pins` that have changed at `at`: `src/session.rs`, or
+/// `api/src/session.rs` in another repository.
+pub fn stale_files(ws: &Workspace, pins: &[Value], at: &BTreeMap<String, String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for p in pins {
         let repo = p["repo"].as_str().unwrap_or(".");
         let root = repo_root(ws, repo);
         let commit = at.get(repo).cloned().or_else(|| commit_of(&root, "HEAD"));
-        commit.is_none_or(|c| state(&root, p, &c)["stale"] == json!(true))
-    })
+        if commit.is_none_or(|c| state(&root, p, &c)["stale"] == json!(true)) {
+            let path = p["path"].as_str().unwrap_or_default();
+            let shown = if repo == "." { path.to_string() } else { format!("{repo}/{path}") };
+            if !out.contains(&shown) {
+                out.push(shown);
+            }
+        }
+    }
+    out
 }
 
 /// The pins of a decision: the files of its windows, as the Eval's change
@@ -363,6 +377,7 @@ pub fn split_decisions(
         let pins = d["pins"].as_array().cloned().unwrap_or_default();
         let mut stale_touched = false;
         let mut stale = false;
+        let mut changed: Vec<String> = Vec::new();
         for p in &pins {
             let repo = p["repo"].as_str().unwrap_or(".");
             let root = repo_root(ws, repo);
@@ -383,6 +398,10 @@ pub fn split_decisions(
                     f.contains(path) || f.contains(p["path"].as_str().unwrap_or_default())
                 }) {
                     stale_touched = true;
+                    let shown = p["path"].as_str().unwrap_or(path).to_string();
+                    if !changed.contains(&shown) {
+                        changed.push(shown);
+                    }
                 }
             }
         }
@@ -391,6 +410,7 @@ pub fn split_decisions(
             (true, true) => {
                 let mut d = d;
                 d["stale"] = json!(true);
+                d["changed"] = json!(changed);
                 again.push(d);
             }
             (true, false) => left.push(d),
@@ -711,8 +731,10 @@ pub fn show(ws: &Workspace, at: Option<&str>) -> Result<Value, LedgerError> {
         .filter(|d| d["pins"].as_array().is_some_and(|p| !p.is_empty()))
         .map(|d| {
             let pins = d["pins"].as_array().cloned().unwrap_or_default();
+            let changed = stale_files(ws, &pins, &commits);
             json!({"id": d["id"], "behaviour": d["behaviour"], "answer": d["answer"],
-                   "date": d["date"], "pins": pins, "stale": decision_stale(ws, &pins, &commits)})
+                   "date": d["date"], "pins": pins, "stale": !changed.is_empty(),
+                   "changed": changed})
         })
         .collect();
     Ok(json!({"refreshed": view["refreshed"], "rules": view["rules"], "decisions": decisions}))

@@ -187,6 +187,9 @@ pub enum Call {
         version: String,
         program: String,
     },
+    /// The person's decisions in this project, as its settings list them:
+    /// answers with `weft_core::decisions::Decisions`.
+    Decisions,
     /// Look again at which files an Eval of this project should skip
     /// (`.gitignore`, `.gitattributes`). Answers with `{"findings": [..]}`,
     /// the project's as `Event::Skip` says them, once the check is done.
@@ -594,6 +597,7 @@ impl Call {
             Call::Detach => ("detach", json!({})),
             Call::Dismiss => ("project.dismiss", json!({})),
             Call::SkipCheck => ("skip.check", json!({})),
+            Call::Decisions => ("decisions.list", json!({})),
             Call::SkipAdd { file, line } => ("skip.add", json!({"file": file, "line": line})),
             Call::Update { version, program } => {
                 ("update", json!({"version": version, "program": program}))
@@ -692,6 +696,7 @@ impl Call {
             "detach" => Call::Detach,
             "project.dismiss" => Call::Dismiss,
             "skip.check" => Call::SkipCheck,
+            "decisions.list" => Call::Decisions,
             "skip.add" => Call::SkipAdd { file: s("file")?, line: s("line")? },
             "update" => Call::Update { version: s("version")?, program: s("program")? },
             "shutdown" => Call::Shutdown,
@@ -1238,6 +1243,7 @@ mod tests {
             Call::StartAtLogin { on: true, program: "/w/weft".into(), path: "/usr/bin".into() },
             Call::Dismiss,
             Call::SkipCheck,
+            Call::Decisions,
             Call::SkipAdd { file: ".gitignore".into(), line: "/output/".into() },
             Call::Update { version: "0.2.1".into(), program: "/w/weft".into() },
             Call::Detach,

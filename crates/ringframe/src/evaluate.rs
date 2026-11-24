@@ -679,9 +679,13 @@ pub struct Open<'a> {
 
 /// Where one unit's own change ends, and the Asks of the units begun after
 /// it.
-struct NextUnit {
-    end: String,
-    later: BTreeSet<String>,
+pub(crate) struct NextUnit {
+    pub end: String,
+    pub later: BTreeSet<String>,
+    /// The Ask whose base ends it, its title, and when it was made.
+    pub ask: String,
+    pub title: String,
+    pub time: String,
 }
 
 /// The end of a unit's own change: the base commit of the first Ask of the
@@ -689,7 +693,7 @@ struct NextUnit {
 /// from the anchor, is not the anchor, and is an ancestor of the subject.
 /// None otherwise: the unit is the latest, its work was not committed when
 /// the next began, or the units interleave.
-fn next_unit(
+pub(crate) fn next_unit(
     ws: &Workspace,
     unit: &[String],
     anchor: &str,
@@ -705,7 +709,7 @@ fn next_unit(
     let began: BTreeMap<String, i64> =
         all.iter().filter_map(|a| Some((str_of(a, "ask_id"), time(a)?))).collect();
     let mut later = BTreeSet::new();
-    let mut first: Option<(i64, String)> = None;
+    let mut first: Option<(i64, String, &Value)> = None;
     for a in all.iter().filter(|a| !ours(a) && a["outcome"] != "cancelled") {
         let Some(t) = time(a).filter(|t| *t > last) else { continue };
         let theirs = crate::ask::unit_of(ws, &str_of(a, "ask_id"))?;
@@ -714,12 +718,12 @@ fn next_unit(
         }
         later.extend(theirs);
         if let Some(base) = a["base_commit"].as_str()
-            && first.as_ref().is_none_or(|(f, _)| t < *f)
+            && first.as_ref().is_none_or(|(f, _, _)| t < *f)
         {
-            first = Some((t, base.to_string()));
+            first = Some((t, base.to_string(), a));
         }
     }
-    let Some((_, base)) = first else { return Ok(None) };
+    let Some((_, base, by)) = first else { return Ok(None) };
     let tip = if kind == "git_commit" { reference } else { "HEAD" };
     let (Ok(anchor), Ok(end), Ok(tip)) =
         (commit_of(&ws.root, anchor), commit_of(&ws.root, &base), commit_of(&ws.root, tip))
@@ -731,7 +735,13 @@ fn next_unit(
     if end == anchor || !ancestor(&anchor, &end) || !ancestor(&end, &tip) {
         return Ok(None);
     }
-    Ok(Some(NextUnit { end, later }))
+    Ok(Some(NextUnit {
+        end,
+        later,
+        ask: str_of(by, "ask_id"),
+        title: str_of(by, "title"),
+        time: str_of(by, "time"),
+    }))
 }
 
 /// When the anchor was recorded, in milliseconds since the epoch: a Seal's
@@ -1866,6 +1876,20 @@ mod tests {
             tick();
             let c = ask(b"Add c.\n");
             let c3 = commit(&ws.root, &[("src/c.js", Some("export const c = 3;\n"))], "c");
+
+            // The dialog says the same span before the Eval opens: the unit's
+            // own commits, until the next unit's first Ask.
+            let said = crate::reads::preview(ws, &a).unwrap();
+            assert_eq!((said.commits, said.files), (1, 1));
+            let until = said.until.unwrap();
+            assert_eq!(until.ask, b);
+            assert!(!until.time.is_empty() && !until.title.is_empty());
+            let said = crate::reads::preview(ws, &b).unwrap();
+            assert_eq!(
+                (said.commits, said.files, said.until.map(|u| u.ask)),
+                (1, 2, Some(c.clone()))
+            );
+            assert_eq!(crate::reads::preview(ws, &c).unwrap().until, None);
 
             let open = |id: &str| open_eval(ws, Open { ask: Some(id), ..Default::default() });
             let first = open(&a).unwrap();

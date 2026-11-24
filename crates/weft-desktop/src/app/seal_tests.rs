@@ -379,3 +379,70 @@ fn the_seals_questions_use_only_what_the_window_draws() {
         }
     }
 }
+
+/// A question against a rule says so above its behaviour and shows the rule
+/// in the place of why; a decision asked again because its file changed says
+/// which file, in the place of why; the review says where each comes from.
+#[test]
+fn a_question_against_a_rule_and_one_asked_again_say_why_they_are_asked() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    let questions = json!({"questions": [
+        {"id": "q1", "ask": "did_you_want",
+         "behaviour": "The email typed at sign-in is written to the server log.",
+         "why": "Nothing you asked for says to.",
+         "rules": [{"source": "./AGENTS.md@3f2a9c1",
+                    "quote": "Never write a person’s email or password to a log."}]},
+        {"id": "q2", "ask": "did_you_want",
+         "behaviour": "A session ends after 1 hour without activity.",
+         "why": "You wanted this before.",
+         "asked_before": {"decision": "sel_1/d2", "seal": "sel_1", "date": "2026-11-03",
+                          "answer": "wanted", "stale": true, "changed": ["src/session.rs"]}}
+    ], "eval": "evl_3"});
+    open_seal(&mut app, &mut wire, questions);
+
+    let d = dialog(&app);
+    let above = d.find_layer("asked before").expect("the quiet line").all_text();
+    assert_eq!(above, words::word("seal.q.against_rule"));
+    let rule = d.find_layer("the rule").expect("the rule").all_text();
+    assert_eq!(rule, "AGENTS.md “Never write a person’s email or password to a log.”");
+    assert!(d.find_layer("why").is_none(), "the rule says why");
+    assert!(d.find_layer("changed since").is_none());
+    let said = d.all_text();
+    let at = |s: &str| said.find(s).unwrap_or_else(|| panic!("{s} in {said}"));
+    assert!(at("written to the server log") < at("AGENTS.md"), "{said}");
+    assert!(at("AGENTS.md") < at("Did you want this?"), "{said}");
+
+    app.dispatch(BarAct::SealAnswer("not_wanted".into()));
+    app.dispatch(BarAct::SealNext);
+    let d = dialog(&app);
+    assert_eq!(d.find_layer("asked before").unwrap().all_text(), "Asked before · wanted on 3 Nov");
+    let changed = d.find_layer("changed since").expect("which file changed");
+    assert_eq!(changed.all_text(), "src/session.rs has changed since, so it’s asked again.");
+    let text = changed.text.clone().unwrap();
+    let mono: Vec<&str> =
+        changed.runs.iter().filter(|(_, r)| r.mono).map(|(r, _)| &text[r.clone()]).collect();
+    assert_eq!(mono, ["src/session.rs"], "a file name is set as a path is");
+    assert!(d.find_layer("why").is_none() && d.find_layer("the rule").is_none());
+
+    // The review: each behaviour with where it comes from.
+    app.dispatch(BarAct::SealAnswer("wanted".into()));
+    app.dispatch(BarAct::SealNext);
+    let d = dialog(&app);
+    let first = d.find_layer("review 0").unwrap().all_text();
+    assert!(first.contains("written to the server log. Against a rule of this project"), "{first}");
+    let second = d.find_layer("review 1").unwrap().all_text();
+    assert!(second.contains("without activity. Asked before · wanted on 3 Nov"), "{second}");
+}
+
+/// A question without a rule or a changed file reads as it always did.
+#[test]
+fn a_question_asked_for_the_first_time_keeps_its_why() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    open_seal(&mut app, &mut wire, two_questions());
+    let d = dialog(&app);
+    assert_eq!(
+        d.find_layer("why").expect("why").all_text(),
+        "You weren't sure last time, so it's asked again."
+    );
+    assert!(d.find_layer("the rule").is_none() && d.find_layer("changed since").is_none());
+}

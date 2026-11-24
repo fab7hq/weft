@@ -1,7 +1,8 @@
 //! The Seal's dialog when its Eval left questions: one question at a time
-//! (17.4), each answered before the next, then a review of every answer with
-//! the decision and its reason (17.5), and only there Seal. It takes the
-//! window's body. Picking an answer sends nothing; Seal sends it all, once.
+//! (17.4, 17.29, 17.30), each answered before the next, then a review of
+//! every answer with the decision and its reason (17.5), and only there
+//! Seal. It takes the window's body. Picking an answer sends nothing; Seal
+//! sends it all, once.
 
 use std::path::Path;
 
@@ -11,7 +12,7 @@ use weft_core::words::{fill, word};
 use crate::action::{BarAct, Focus};
 use crate::app::SealAsking;
 use crate::daemon::ProjectClient;
-use crate::gpui::{Element, div, input_el, palette, span};
+use crate::gpui::{Element, div, input_el, palette, rich, span};
 
 pub struct SealProps<'a> {
     pub client: Option<&'a ProjectClient>,
@@ -202,7 +203,17 @@ fn question(props: &SealProps, a: &Answering, q: &Question) -> Element {
             .color(palette::TEXT)
             .text(q.behaviour.clone()),
     );
-    if let Some(why) = q.why.as_deref().filter(|w| !w.is_empty()) {
+    // A decision asked again says which file changed; a question against a
+    // rule shows the rule; either in the place of why.
+    if let Some(rule) = q.rule() {
+        col = col.child(gap(12)).child(crate::ui::rule_block(&rule.0, &rule.1));
+    } else if let Some(changed) = q.changed_line() {
+        let files = q.asked_before.as_ref().map(|b| b.changed.clone()).unwrap_or_default();
+        let runs = crate::ui::mono_runs(&changed, &files, Some(palette::TEXT));
+        col = col
+            .child(gap(8))
+            .child(rich(changed, runs).layer("changed since").font_size(14).color(palette::MUTED));
+    } else if let Some(why) = q.why.as_deref().filter(|w| !w.is_empty()) {
         col = col
             .child(gap(8))
             .child(div().layer("why").font_size(14).color(palette::MUTED).text(why.to_string()));

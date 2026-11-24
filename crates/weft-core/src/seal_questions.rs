@@ -16,6 +16,31 @@ pub struct Before {
     pub seal: String,
     /// `2026-11-10`, as the record writes it.
     pub date: String,
+    /// What was answered then, for a decision asked again.
+    #[serde(default)]
+    pub answer: Option<String>,
+    /// Asked again because a file it is about has changed since: those files.
+    #[serde(default)]
+    pub stale: bool,
+    #[serde(default)]
+    pub changed: Vec<String>,
+}
+
+/// A rule of the project a question's behaviour goes against, as RingFrame
+/// cites it: `./AGENTS.md@<commit>`, and its words.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestionRule {
+    pub source: String,
+    #[serde(default)]
+    pub quote: String,
+}
+
+impl QuestionRule {
+    /// The rule's file as the person reads it: `AGENTS.md`.
+    pub fn file(&self) -> String {
+        let path = self.source.rsplit_once('@').map_or(self.source.as_str(), |(p, _)| p);
+        path.strip_prefix("./").unwrap_or(path).to_string()
+    }
 }
 
 /// A question an Eval left for its Seal, as RingFrame stored it.
@@ -33,6 +58,9 @@ pub struct Question {
     /// About a behaviour that goes against an earlier decision.
     #[serde(default)]
     pub against: Option<Before>,
+    /// The rules of the project it goes against.
+    #[serde(default)]
+    pub rules: Vec<QuestionRule>,
 }
 
 impl Question {
@@ -58,13 +86,41 @@ impl Question {
 
     /// The quiet line above a question asked before: `Asked before · not
     /// sure on 10 Nov`, or `… not wanted on 3 Nov`. None for this Eval's own.
+    /// `Asked before · wanted on 3 Nov` for a decision asked again because
+    /// its file changed; `Against a rule of this project` for one against a
+    /// rule.
     pub fn before_line(&self) -> Option<String> {
         let (key, b) = match (&self.asked_before, &self.against) {
+            (Some(b), _) if b.stale => (
+                match b.answer.as_deref() {
+                    Some("wanted") => "seal.q.before_wanted",
+                    Some("not_wanted") => "seal.q.before_not_wanted",
+                    _ => "seal.q.before_answered",
+                },
+                b,
+            ),
             (Some(b), _) => ("seal.q.before_not_sure", b),
             (None, Some(b)) => ("seal.q.before_not_wanted", b),
+            (None, None) if !self.rules.is_empty() => {
+                return Some(word("seal.q.against_rule").to_string());
+            }
             (None, None) => return None,
         };
         Some(fill(key, &[("date", &day(&b.date))]))
+    }
+
+    /// Why a decision is asked again: `src/session.rs has changed since, so
+    /// it’s asked again.` None for any other question.
+    pub fn changed_line(&self) -> Option<String> {
+        let b = self.asked_before.as_ref().filter(|b| b.stale && !b.changed.is_empty())?;
+        let key =
+            if b.changed.len() == 1 { "seal.q.changed_since" } else { "seal.q.changed_since_n" };
+        Some(fill(key, &[("files", &b.changed.join(", "))]))
+    }
+
+    /// The rule it goes against: its file and its words.
+    pub fn rule(&self) -> Option<(String, String)> {
+        self.rules.first().map(|r| (r.file(), r.quote.clone()))
     }
 }
 
@@ -264,8 +320,12 @@ mod tests {
 
     #[test]
     fn a_question_from_an_earlier_seal_says_so_in_one_quiet_line() {
-        let before =
-            Before { decision: "sel_1/d1".into(), seal: "sel_1".into(), date: "2026-11-10".into() };
+        let before = Before {
+            decision: "sel_1/d1".into(),
+            seal: "sel_1".into(),
+            date: "2026-11-10".into(),
+            ..Before::default()
+        };
         let carried = Question { asked_before: Some(before.clone()), ..q("q1", "did_you_want") };
         assert_eq!(carried.before_line().unwrap(), "Asked before · not sure on 10 Nov");
         let against = Question {
@@ -275,6 +335,57 @@ mod tests {
         assert_eq!(against.before_line().unwrap(), "Asked before · not wanted on 3 Nov");
         assert_eq!(q("q3", "still_want").before_line(), None, "this Eval's own");
         assert_eq!(day("not a date"), "not a date");
+        assert_eq!(carried.changed_line(), None, "not asked because a file changed");
+    }
+
+    #[test]
+    fn a_decision_whose_file_changed_is_asked_again_saying_so() {
+        let stale = Before {
+            decision: "sel_1/d2".into(),
+            seal: "sel_1".into(),
+            date: "2026-11-03".into(),
+            answer: Some("wanted".into()),
+            stale: true,
+            changed: vec!["src/session.rs".into()],
+        };
+        let again = Question { asked_before: Some(stale.clone()), ..q("q4", "did_you_want") };
+        assert_eq!(again.before_line().unwrap(), "Asked before · wanted on 3 Nov");
+        assert_eq!(
+            again.changed_line().unwrap(),
+            "src/session.rs has changed since, so it’s asked again."
+        );
+        let two = Before {
+            answer: Some("later".into()),
+            changed: vec!["a.rs".into(), "b.rs".into()],
+            ..stale
+        };
+        let again = Question { asked_before: Some(two), ..q("q5", "still_want") };
+        assert_eq!(again.before_line().unwrap(), "Asked before · answered on 3 Nov");
+        assert_eq!(
+            again.changed_line().unwrap(),
+            "a.rs, b.rs have changed since, so it’s asked again."
+        );
+    }
+
+    #[test]
+    fn a_question_against_a_rule_names_the_rule() {
+        let rule = QuestionRule {
+            source: "./AGENTS.md@3f2a9c1".into(),
+            quote: "Never write a person’s email or password to a log.".into(),
+        };
+        let asked = Question { rules: vec![rule], ..q("q3", "did_you_want") };
+        assert_eq!(asked.before_line().unwrap(), "Against a rule of this project");
+        assert_eq!(
+            asked.rule().unwrap(),
+            ("AGENTS.md".into(), "Never write a person’s email or password to a log.".into())
+        );
+        assert_eq!(asked.label(), "Did you want this?");
+        let parsed: Question = serde_json::from_value(serde_json::json!({
+            "id": "q3", "ask": "did_you_want", "behaviour": "b",
+            "rules": [{"source": "api/docs/rules.md@abc", "quote": "q", "repo": "api"}]
+        }))
+        .unwrap();
+        assert_eq!(parsed.rule().unwrap().0, "api/docs/rules.md");
     }
 
     #[test]

@@ -154,6 +154,8 @@ enum Carries {
     Settings,
     /// Which files an Eval should skip, as the daemon's check found them.
     Skip,
+    /// The person's decisions in a project, as its settings list them.
+    Decisions,
     /// A read of sealed work, under its name: a follow-up's words
     /// (`remedy`) or the commits Undo offers (`commits`).
     Sealed(String),

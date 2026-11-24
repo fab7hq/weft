@@ -513,3 +513,76 @@ fn the_eval_dialog_says_what_it_reads_and_warns_of_a_large_change() {
         .collect();
     assert_eq!(mono, ["research/papers/to-err-is-agentic/evidence/", ".gitattributes"]);
 }
+
+/// An Eval of work with later work on top of its commits reads only its own
+/// change: Reads says until where, naming the later work, and the sentence
+/// says it reads this work's own change. Without
+/// it, the dialog is as it was.
+#[test]
+fn the_eval_dialog_says_until_where_a_work_with_later_work_reads() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    let staged = |app: &mut WeftDesktopApp, wire: &mut Wire, id: &str, reads: serde_json::Value| {
+        app.dispatch(TreeAct::SelectWork { project: weft(), unit: "ask_1".into() });
+        app.dispatch(BarAct::Eval);
+        let call = act_call(wire, "eval");
+        let asking = weft_core::offers::evaluating("fix login", 2, "claude");
+        wire.event(Event::Pending {
+            id: id.into(),
+            pane: u32::MAX,
+            what: asking.what,
+            why: asking.why.join("\n"),
+            payload: serde_json::to_vec(&json!({ "reads": reads })).unwrap(),
+            sends: None,
+            go: Some(weft_proto::Go { word: "act.eval".into(), warn: false }),
+        });
+        wire.answer(call, json!({"pending": id}));
+        let id = id.to_string();
+        pumped(app, |a| a.clients[0].waiting.iter().any(|w| w.id == id));
+        app.render().find_layer("Cancel / Send bar").unwrap().clone()
+    };
+    let now =
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()
+            as i64;
+    let midnight = now - now.rem_euclid(86_400_000);
+    let began = weft_core::turns::stamp(midnight + 9 * 3_600_000 + 12 * 60_000);
+    let later = weft_core::turns::stamp(midnight + 10 * 3_600_000 + 40 * 60_000);
+    let reads = json!({"since": "ask", "when": began, "commits": 2, "files": 6,
+                       "skipped": {}, "large": false,
+                       "until": {"ask": "ask_2", "title": "health endpoint", "time": later}});
+    let bar = staged(&mut app, &mut wire, "p1", reads);
+    let said = bar.find_layer("reads").expect("Reads").all_text();
+    assert_eq!(
+        said,
+        "Reads 2 commits · 6 files from its first Ask, today 09:12, until health endpoint began, 10:40"
+    );
+    let all = bar.all_text();
+    assert!(
+        all.contains(&words::fill("dialog.eval.judges_own", &[("harness", "claude")])),
+        "{all}"
+    );
+    assert!(!all.contains(&words::fill("dialog.eval.judges", &[("harness", "claude")])), "{all}");
+    app.dispatch(BarAct::Resolve { project: weft(), pending: "p1".into(), answer: Answer::No });
+    wire.event(Event::Resolved { id: "p1".into(), yes: false });
+    pumped(&mut app, |a| a.clients[0].waiting.is_empty());
+
+    // Another day: each says its own day. Reading to now: as it always was.
+    let reads = json!({"since": "seal", "when": "2026-11-08T09:12:00Z", "commits": 2,
+                       "files": 6, "skipped": {}, "large": false,
+                       "until": {"ask": "ask_2", "title": "health endpoint",
+                                 "time": "2026-11-09T10:40:00Z"}});
+    let bar = staged(&mut app, &mut wire, "p2", reads);
+    let said = bar.find_layer("reads since").unwrap().all_text();
+    assert_eq!(said, "from its last Seal, Nov 8, until health endpoint began, Nov 9");
+    app.dispatch(BarAct::Resolve { project: weft(), pending: "p2".into(), answer: Answer::No });
+    wire.event(Event::Resolved { id: "p2".into(), yes: false });
+    pumped(&mut app, |a| a.clients[0].waiting.is_empty());
+
+    let reads = json!({"since": "ask", "when": "2026-11-08T09:12:00Z", "commits": 2,
+                       "files": 6, "skipped": {}, "large": false, "until": null});
+    let bar = staged(&mut app, &mut wire, "p3", reads);
+    let since = bar.find_layer("reads since").unwrap();
+    assert_eq!(since.all_text(), "since its first Ask, Nov 8");
+    let all = bar.all_text();
+    assert!(all.contains(&words::fill("dialog.eval.judges", &[("harness", "claude")])), "{all}");
+    assert!(!all.contains("this work’s own change"), "{all}");
+}

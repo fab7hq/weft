@@ -14,6 +14,7 @@ pub mod bm25;
 pub mod board;
 pub mod config;
 pub mod conversation;
+pub mod decisions;
 pub mod done;
 pub mod eval_stages;
 pub mod eval_view;

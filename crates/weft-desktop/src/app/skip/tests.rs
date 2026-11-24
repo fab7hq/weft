@@ -379,3 +379,81 @@ fn an_evals_details_say_what_it_did_not_read_by_kind_and_folder() {
     e.not_read.clear();
     assert!(app.render().find_layer("not read").is_none());
 }
+
+/// A project's settings read the person's decisions each time they open,
+/// and list them under its settings, before the files to skip: each with its
+/// answer, day and files, a stale one with what changed and its tag. With
+/// none, or none read, there is no section.
+#[test]
+fn a_projects_settings_list_your_decisions() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    app.dispatch(TreeAct::OpenProjectSettings(weft()));
+    let (id, _) = call_of(&mut wire, |c| matches!(c, Call::Decisions));
+    let sheet =
+        |app: &WeftDesktopApp| app.render().find_layer("sheet Project settings").unwrap().clone();
+    assert!(sheet(&app).find_layer("your decisions").is_none(), "nothing until it is read");
+    let view = json!({"decisions": [
+        {"id": "sel_2/d1", "behaviour": "The sign-in button is off while it sends.",
+         "answer": "wanted", "date": "2026-11-10T10:00:00Z", "stale": false,
+         "pins": [{"repo": ".", "path": "src/login.rs"}]},
+        {"id": "sel_1/d1", "behaviour": "Emails are written to the server log.",
+         "answer": "not_wanted", "date": "2026-11-03T09:00:00Z", "stale": false,
+         "pins": [{"repo": ".", "path": "src/log.rs"}, {"repo": ".", "path": "AGENTS.md"}]},
+        {"id": "sel_1/d2", "behaviour": "A session ends after 1 hour without activity.",
+         "answer": "wanted", "date": "2026-11-03T08:00:00Z", "stale": true,
+         "changed": ["src/session.rs"], "pins": [{"repo": ".", "path": "src/session.rs"}]},
+    ]});
+    let decisions = weft_core::decisions::of_view(&view);
+    wire.answer(id, serde_json::to_value(&decisions).unwrap());
+    pumped(&mut app, |a| a.clients[0].read.contains_key(&crate::daemon::Then::Decisions));
+
+    let s = sheet(&app);
+    let section = s.find_layer("your decisions").expect("the section");
+    drawn(section);
+    assert_eq!(
+        section.find_layer("decisions head").unwrap().all_text(),
+        "YOUR DECISIONS 3 · 1 to ask again"
+    );
+    let rows: Vec<String> = section
+        .children
+        .iter()
+        .filter(|c| c.layer_name.as_deref().is_some_and(|l| l.starts_with("a decision")))
+        .map(Element::all_text)
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            "The sign-in button is off while it sends. Wanted · 10 Nov · src/login.rs",
+            "Emails are written to the server log. Not wanted · 3 Nov · src/log.rs, AGENTS.md",
+            "A session ends after 1 hour without activity. Wanted · 3 Nov · src/session.rs has \
+             changed since; the next Eval that touches it asks again changed since",
+        ]
+    );
+    let stale = section.find_layer("a decision gone stale").unwrap();
+    assert_eq!(stale.find_layer("decision changed").unwrap().all_text(), "changed since");
+    let said = stale.find_layer("decision said").unwrap();
+    let text = said.text.clone().unwrap();
+    let mono: Vec<&str> =
+        said.runs.iter().filter(|(_, r)| r.mono).map(|(r, _)| &text[r.clone()]).collect();
+    assert_eq!(mono, ["src/session.rs"], "a file is set as a path is");
+    assert_eq!(
+        section.children.iter().filter(|c| c.find_layer("decision changed").is_some()).count(),
+        1,
+        "only the stale one is tagged"
+    );
+    assert!(every(section).iter().all(|e| e.action.is_none()), "nothing is pressable");
+    // Under the project's settings, before the files to skip.
+    let text = s.all_text();
+    let at = |t: &str| text.find(t).unwrap_or_else(|| panic!("{t} in {text}"));
+    assert!(at(words::word("desktop.project.add")) < at("YOUR DECISIONS"), "{text}");
+    assert!(at("YOUR DECISIONS") < at(words::word("skip.title")), "{text}");
+
+    // Opened again, it is read again; none decided, no section.
+    app.dispatch(SheetAct::Close);
+    app.dispatch(TreeAct::OpenProjectSettings(weft()));
+    let (id, _) = call_of(&mut wire, |c| matches!(c, Call::Decisions));
+    wire.answer(id, serde_json::to_value(weft_core::decisions::of_view(&json!({}))).unwrap());
+    pumped(&mut app, |a| a.clients[0].read.contains_key(&crate::daemon::Then::Decisions));
+    assert!(sheet(&app).find_layer("your decisions").is_none());
+    assert!(sheet(&app).find_layer("files to skip").is_some());
+}

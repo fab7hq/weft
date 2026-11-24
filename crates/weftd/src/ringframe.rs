@@ -616,9 +616,17 @@ pub fn eval_open(
     }
 }
 
+/// The person's decisions in the project, each stale or not at each
+/// repository's HEAD, as its settings list them.
+pub fn decisions(project: &Path) -> Result<weft_core::decisions::Decisions, Error> {
+    let view = api::knowledge_view(&workspace(project)?, None).map_err(refused)?;
+    Ok(weft_core::decisions::of_view(&view))
+}
+
 /// What the Eval of the work `ask` is in would read now, as its dialog says
 /// it: `{since, when, commits, files, skipped: {generated, vendored, binary,
-/// lock}, folder, folder_files, large}`.
+/// lock}, folder, folder_files, large, until}`, where `until` is the later
+/// work the change ends at, `{ask, title, time}`, or null when it reads to now.
 pub fn eval_preview(project: &Path, ask: &str) -> Result<Value, Error> {
     let p = api::eval_preview(&workspace(project)?, ask).map_err(refused)?;
     Ok(serde_json::json!({
@@ -635,6 +643,7 @@ pub fn eval_preview(project: &Path, ask: &str) -> Result<Value, Error> {
         "folder": p.folder,
         "folder_files": p.folder_files,
         "large": p.large,
+        "until": p.until.map(|u| serde_json::json!({"ask": u.ask, "title": u.title, "time": u.time})),
     }))
 }
 

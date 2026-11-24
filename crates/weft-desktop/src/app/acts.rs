@@ -165,8 +165,12 @@ impl WeftDesktopApp {
             TreeAct::OpenProjectSettings(p) => {
                 self.project_menu = None;
                 self.choice = None;
-                self.active_sheet = Some(ActiveSheet::ProjectSettings { project: p });
+                self.active_sheet = Some(ActiveSheet::ProjectSettings { project: p.clone() });
                 self.clients.iter_mut().for_each(|c| c.refused.retain(|t, _| !t.is_settings()));
+                // The decisions, read again each time: a file may have changed since.
+                if let Some(c) = self.clients.iter_mut().find(|c| c.root == p) {
+                    let _ = c.decisions();
+                }
                 self.want_rules();
             }
             TreeAct::TogglePlus(p) => {

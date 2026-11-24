@@ -80,6 +80,7 @@ pub(super) fn render(props: &SheetProps, project: &Path) -> Element {
         }
         body = body.child(list);
     }
+    body = body.children(crate::decisions_view::settings(client));
     body = body.child(crate::skip_view::settings(project, client));
     // A Seal's Git note: this project's only, off unless turned on (17.19).
     let on = now(props, Some(project), &["export", "git_note"]) == Value::Bool(true);

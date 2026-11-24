@@ -2299,7 +2299,9 @@ fn questions_of(ctx: &Ctx, st: &Status, tasks: &[Task]) -> Vec<Value> {
             .filter_map(|i| i.strip_prefix("c|"))
             .find_map(|id| carried.iter().find(|d| d["id"] == id));
         q["asked_before"] = match before {
-            Some(d) => json!({"decision": d["id"], "seal": d["seal"], "date": d["date"]}),
+            Some(d) => json!({"decision": d["id"], "seal": d["seal"], "date": d["date"],
+                              "answer": d["answer"], "stale": d["stale"] == json!(true),
+                              "changed": d.get("changed").cloned().unwrap_or(json!([]))}),
             None => Value::Null,
         };
         let against = array_of(&report, "against_decisions").iter().find(|a| {
@@ -2585,9 +2587,10 @@ fn rule_changed(ctx: &Ctx) -> Vec<Value> {
                 Some((
                     c.get("source")?.as_str()?.to_string(),
                     c.get("quote").and_then(Value::as_str).unwrap_or_default().to_string(),
+                    str_of(&x["answer"], "reason"),
                 ))
             });
-            let Some((source, quote)) = cited else { continue };
+            let Some((source, quote, reason)) = cited else { continue };
             let Some(pin) = crate::knowledge::pin_source(ws, &ctx.changes, &source) else {
                 continue;
             };
@@ -2596,7 +2599,9 @@ fn rule_changed(ctx: &Ctx) -> Vec<Value> {
                 continue;
             }
             if !out.iter().any(|o| o["path"] == u["path"] && o["source"] == json!(source)) {
-                out.push(json!({"eval_id": rec["eval_id"], "unit": u["id"], "path": u["path"],
+                out.push(json!({"eval_id": rec["eval_id"], "date": r["opened_at"],
+                                "unit": u["id"], "path": u["path"],
+                                "reason": crate::knowledge::scrub(&reason),
                                 "source": source, "quote": crate::knowledge::scrub(&quote)}));
             }
         }
@@ -4062,7 +4067,10 @@ mod tests {
                 "not standing"
             );
             let again = array_of(&brief, "carried").iter().find(|x| x["id"] == json!(d)).cloned();
-            assert_eq!(again.map(|x| x["stale"].clone()), Some(json!(true)), "{brief}");
+            let again = again.expect("carried");
+            assert_eq!(again["stale"], json!(true), "{brief}");
+            assert_eq!(again["changed"], json!(["src/telemetry.js"]), "the file that changed");
+            assert_eq!(again["answer"], json!("wanted"), "what was answered then");
         });
     }
 
@@ -4089,6 +4097,7 @@ mod tests {
             );
             let shown = crate::knowledge::show(ws, None).unwrap();
             assert_eq!(shown["decisions"][0]["stale"], json!(true), "{shown}");
+            assert_eq!(shown["decisions"][0]["changed"], json!(["src/telemetry.js"]), "{shown}");
         });
     }
 
@@ -4161,6 +4170,8 @@ mod tests {
                 ),
                 (json!("src/telemetry.js"), json!(source), json!(e))
             );
+            assert!(changed[0]["date"].is_string(), "the earlier Eval's day: {}", changed[0]);
+            assert!(changed[0]["reason"].is_string(), "{}", changed[0]);
             let md = render(&report);
             assert!(
                 md.contains("## Explained by a rule that changed") && md.contains(rule),

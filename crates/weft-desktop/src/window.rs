@@ -1947,7 +1947,9 @@ fn style(d: Div, k: &str, v: &str) -> std::result::Result<Div, Div> {
             None => d,
         },
         "border-left" => match parse_border_color(v) {
-            Some(c) => d.border_l_1().border_color(c),
+            Some(c) => {
+                if v.starts_with("2px") { d.border_l_2() } else { d.border_l_1() }.border_color(c)
+            }
             None => d,
         },
         "position" => match v {

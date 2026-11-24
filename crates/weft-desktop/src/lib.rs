@@ -4,6 +4,7 @@ pub mod action;
 pub mod app;
 pub mod bottom_bar;
 pub mod daemon;
+pub mod decisions_view;
 pub mod earlier;
 pub mod files;
 pub mod fonts;

@@ -215,10 +215,20 @@ fn render_staged_bar(
     };
     // A dialog that types nothing names its work in its head, beside its
     // title, and says the rest in one line.
-    let lines: Vec<&str> = staged.why.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let data = staged.data();
+    let reads = data.as_ref().map(|d| &d["reads"]);
+    // An Eval that ends where later work began reads this work's own change.
+    let own = reads.is_some_and(|r| r["until"].is_object());
+    let lines: Vec<String> = staged
+        .why
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(|l| own.then_some(l).and_then(own_change).unwrap_or_else(|| l.to_string()))
+        .collect();
     let work = match lines.as_slice() {
         [first, _, ..] if typed.is_empty() && !first.ends_with(['.', '?', '!', ':']) => {
-            Some(*first)
+            Some(first.as_str())
         }
         _ => None,
     };
@@ -232,8 +242,6 @@ fn render_staged_bar(
     let work = work.map(|w| div().font_size(13).color(palette::MUTED).text(w.to_string()));
     // An Eval's dialog says what it will read; a large change, why in amber,
     // and its yes reads "Eval anyway".
-    let data = staged.data();
-    let reads = data.as_ref().map(|d| &d["reads"]);
     let large = reads.is_some_and(|r| r["large"] == true);
     let anyway = weft_proto::Go { word: "reads.anyway".into(), warn: false };
     let go = if large { Some(&anyway) } else { staged.go.as_ref() };
@@ -410,8 +418,8 @@ fn render_reads(r: &serde_json::Value, zone: i64) -> Element {
         }
         None => div().text(format!("{counts}{files}")),
     };
-    let since = if r["since"] == "seal" { "reads.since_seal" } else { "reads.since_ask" };
     let when = reads_when(r["when"].as_str().unwrap_or_default(), zone);
+    let since = reads_since(r, &when, zone);
     let kinds: Vec<(u64, &str)> = ["generated", "vendored", "binary", "lock"]
         .iter()
         .map(|k| (n_of(&r["skipped"][*k]), *k))
@@ -433,10 +441,45 @@ fn render_reads(r: &serde_json::Value, zone: i64) -> Element {
         .font_size(13)
         .child(div().w(64).shrink_0().color(palette::MUTED).text(word("reads.label")))
         .child(counts.layer("reads counts").font_mono())
-        .child(
-            div().layer("reads since").color(palette::MUTED).text(fill(since, &[("when", &when)])),
-        )
+        .child(since.layer("reads since").color(palette::MUTED))
         .children(skipped)
+}
+
+/// Since when the Eval reads, and, when a later work began on top of this
+/// one's commits, until where: `from its first Ask, today 09:12, until
+/// health endpoint began, 10:40`, the later work's title in the text's colour.
+fn reads_since(r: &serde_json::Value, when: &str, zone: i64) -> Element {
+    const DAY: i64 = 86_400_000;
+    let seal = r["since"] == "seal";
+    let until = &r["until"];
+    if !until.is_object() {
+        let since = if seal { "reads.since_seal" } else { "reads.since_ask" };
+        return div().text(fill(since, &[("when", when)]));
+    }
+    let from = fill(if seal { "reads.from_seal" } else { "reads.from_ask" }, &[("when", when)]);
+    let title = until["title"].as_str().unwrap_or_default();
+    let time = until["time"].as_str().unwrap_or_default();
+    let mut then = reads_when(time, zone);
+    // The same day as it began, said with its time: its time alone.
+    let day = |at: &str| millis_of(at).map(|ms| (ms + zone).div_euclid(DAY));
+    let began = r["when"].as_str().unwrap_or_default();
+    if day(time).is_some_and(|d| day(began) == Some(d))
+        && let Some((_, clock)) = then.rsplit_once(' ').filter(|(_, c)| c.contains(':'))
+    {
+        then = clock.to_string();
+    }
+    let began = fill("reads.began", &[("when", &then)]);
+    let at = from.len() + 1;
+    let run = Run { color: Some(palette::TEXT), ..Run::default() };
+    rich(format!("{from} {title} {began}"), vec![(at..at + title.len(), run)])
+}
+
+/// The dialog's sentence for an Eval that reads only its work's own change,
+/// up to where a later work began: the same harness reads it.
+fn own_change(line: &str) -> Option<String> {
+    let (pre, post) = word("dialog.eval.judges").split_once("{harness}")?;
+    let harness = line.strip_prefix(pre)?.strip_suffix(post)?;
+    Some(fill("dialog.eval.judges_own", &[("harness", harness)]))
 }
 
 /// A large change, said in amber before its yes: where most of it is, and

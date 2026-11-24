@@ -384,6 +384,10 @@ fn detail_pane(it: &Item, reads_open: bool) -> Element {
     for w in &it.why {
         pane = pane.child(note(w.clone(), palette::MUTED).font_size(14));
     }
+    // The rule of the project it goes against, or that explained it before.
+    if let Some(rule) = &it.rule {
+        pane = pane.child(crate::ui::rule_block(&rule.label, &rule.quote));
+    }
     if !it.sure.is_empty() {
         pane = pane.child(
             div()

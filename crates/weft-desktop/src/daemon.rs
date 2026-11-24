@@ -276,6 +276,8 @@ pub enum Then {
     },
     /// An Eval's dialog staged: its pending id, or why not.
     Eval,
+    /// The person's decisions in the project, as its settings list them.
+    Decisions,
     /// RingFrame's practices and rules: every project's, or this project's too.
     Rules {
         project: bool,
@@ -332,6 +334,7 @@ impl Then {
                 | Then::Preview { .. }
                 | Then::Profile { .. }
                 | Then::AskSheet { .. }
+                | Then::Decisions
         )
     }
 
@@ -855,6 +858,17 @@ impl ProjectClient {
     pub fn skip_check(&mut self) -> Result<u64> {
         self.skip_refused = None;
         self.tell(Call::SkipCheck, Then::SkipCheck)
+    }
+
+    /// Read the person's decisions in the project again, as its settings
+    /// open; once while it is being read.
+    pub fn decisions(&mut self) -> Result<()> {
+        if self.owes(&Then::Decisions) {
+            return Ok(());
+        }
+        self.read.remove(&Then::Decisions);
+        self.refused.remove(&Then::Decisions);
+        self.tell(Call::Decisions, Then::Decisions).map(|_| ())
     }
 
     /// Write the line a finding proposed; once while it is being written.

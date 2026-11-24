@@ -184,3 +184,49 @@ pub fn asking_bar(layer: &str, accent: &str) -> Element {
 pub fn bar_acts(acts: Vec<Element>) -> Element {
     div().self_stretch().flex_row().gap(10).items_center().child(div().flex_1()).children(acts)
 }
+
+/// A rule of the project an item or a question names: a line down its left,
+/// its file faint in mono, then its words in quotes.
+pub fn rule_block(label: &str, quote: &str) -> Element {
+    div()
+        .layer("the rule")
+        .self_stretch()
+        .flex_col()
+        .gap(2)
+        .style("padding", "2px 0 2px 14px")
+        .style("border-left", format!("2px solid {}", palette::LINE))
+        .child(
+            div()
+                .layer("rule file")
+                .font_mono()
+                .font_size(12)
+                .color(palette::DIM)
+                .text(label.to_string()),
+        )
+        .child(
+            div()
+                .layer("rule quote")
+                .font_size(14)
+                .color(palette::MUTED)
+                .text(format!("“{quote}”")),
+        )
+}
+
+/// Runs that set each of `names` in mono, where `said` holds it: file names
+/// in a sentence.
+pub fn mono_runs(
+    said: &str,
+    names: &[String],
+    colour: Option<&'static str>,
+) -> Vec<(std::ops::Range<usize>, crate::gpui::Run)> {
+    let mut runs: Vec<(std::ops::Range<usize>, crate::gpui::Run)> = Vec::new();
+    for name in names.iter().filter(|n| !n.is_empty()) {
+        let taken = |at: usize| runs.iter().any(|(r, _)| r.contains(&at));
+        if let Some((at, _)) = said.match_indices(name.as_str()).find(|(at, _)| !taken(*at)) {
+            let run = crate::gpui::Run { mono: true, color: colour, ..Default::default() };
+            runs.push((at..at + name.len(), run));
+        }
+    }
+    runs.sort_by_key(|(r, _)| r.start);
+    runs
+}

@@ -687,7 +687,9 @@ fn a_projects_ringframe_rows_breathe_and_say_why_they_were_refused() {
     for id in reads {
         wire.refuse(id, "RingFrame is not installed");
     }
-    pumped(&mut app, |a| !a.clients[0].owes_any(|_| true));
+    pumped(&mut app, |a| {
+        !a.clients[0].owes_any(|t| matches!(t, crate::daemon::Then::Rules { .. }))
+    });
     let failed = app.render().find_layer("failed").expect("why").all_text();
     assert!(failed.contains("RingFrame is not installed"), "{failed}");
 }

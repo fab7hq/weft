@@ -52,6 +52,8 @@ pub struct EvalPreview {
     /// More text than the readers are given whole: past RingFrame's patch
     /// limit, a change's patch is cut and the rest is not read.
     pub large: bool,
+    /// The later work the change ends at; none when it reads to now.
+    pub until: Option<Until>,
 }
 
 /// A work's range: where it starts, and the files in it.
@@ -69,6 +71,18 @@ pub(crate) struct Range {
     pub tracked: Vec<(String, bool)>,
     /// The untracked files made since the work began.
     pub untracked: Vec<String>,
+    /// Where the work's own change ends, when a later work began on top of
+    /// its commits: that commit, the Ask that began there and when.
+    pub until: Option<(String, Until)>,
+}
+
+/// The later work a work's own change ends at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Until {
+    /// The first Ask of that work, its title, and when it was made.
+    pub ask: String,
+    pub title: String,
+    pub time: String,
 }
 
 /// The range of the work `ask` is in, as its Eval would read it now.
@@ -101,9 +115,18 @@ pub(crate) fn range(ws: &Workspace, ask: &str) -> Result<Range, EvalError> {
     };
     let began = evaluate::anchor_since(ws, &asks, &anchor);
     let root = ws.root.as_path();
+    let next = evaluate::next_unit(ws, &unit, &anchor_ref, "worktree", "")?;
     let anchor_ref = evaluate::commit_of(root, &anchor_ref)?;
-    let numstat = git(root, &["diff", "--numstat", "-z", "--relative", &anchor_ref, "--", "."])?;
-    let untracked = crate::untracked::listed(root, began)?;
+    let (numstat, untracked) = match &next {
+        Some(n) => (
+            git(root, &["diff", "--numstat", "-z", "--relative", &anchor_ref, &n.end, "--", "."])?,
+            Vec::new(),
+        ),
+        None => (
+            git(root, &["diff", "--numstat", "-z", "--relative", &anchor_ref, "--", "."])?,
+            crate::untracked::listed(root, began)?,
+        ),
+    };
     Ok(Range {
         since,
         when,
@@ -112,14 +135,20 @@ pub(crate) fn range(ws: &Workspace, ask: &str) -> Result<Range, EvalError> {
         asks,
         tracked: numstat_files(&numstat),
         untracked,
+        until: next.map(|n| (n.end, Until { ask: n.ask, title: n.title, time: n.time })),
     })
 }
 
 /// What the Eval of the work `ask` is in would read now.
 pub fn preview(ws: &Workspace, ask: &str) -> Result<EvalPreview, EvalError> {
-    let Range { since, when, anchor: anchor_ref, tracked, untracked, .. } = range(ws, ask)?;
+    let Range { since, when, anchor: anchor_ref, tracked, untracked, until, .. } = range(ws, ask)?;
     let root = ws.root.as_path();
-    let commits = git(root, &["rev-list", "--count", &format!("{anchor_ref}..HEAD"), "--", "."])?
+    let end = until.as_ref().map_or("HEAD", |(end, _)| end.as_str());
+    let refs: Vec<&str> = match &until {
+        Some((end, _)) => vec![anchor_ref.as_str(), end.as_str()],
+        None => vec![anchor_ref.as_str()],
+    };
+    let commits = git(root, &["rev-list", "--count", &format!("{anchor_ref}..{end}"), "--", "."])?
         .trim()
         .parse()
         .unwrap_or(0);
@@ -156,8 +185,7 @@ pub fn preview(ws: &Workspace, ask: &str) -> Result<EvalPreview, EvalError> {
     let (folder, folder_files) = most_in(&paths);
     let limit = evaluate::PATCH_LIMIT;
     let large = untracked_bytes > limit
-        || diff_bytes(root, &anchor_ref, &not_read, limit - untracked_bytes)?
-            > limit - untracked_bytes;
+        || diff_bytes(root, &refs, &not_read, limit - untracked_bytes)? > limit - untracked_bytes;
     Ok(EvalPreview {
         since,
         when,
@@ -167,6 +195,7 @@ pub fn preview(ws: &Workspace, ask: &str) -> Result<EvalPreview, EvalError> {
         folder,
         folder_files,
         large,
+        until: until.map(|(_, u)| u),
     })
 }
 
@@ -387,7 +416,7 @@ fn most_in(paths: &[String]) -> (String, usize) {
 /// `skip` left out: counted until past `room`, then Git is stopped.
 fn diff_bytes(
     root: &Path,
-    anchor: &str,
+    refs: &[&str],
     skip: &BTreeSet<&str>,
     room: usize,
 ) -> Result<usize, EvalError> {
@@ -395,7 +424,9 @@ fn diff_bytes(
     let mut child = Command::new("git")
         .arg("-C")
         .arg(root)
-        .args(["diff", "--no-color", "--no-ext-diff", "--relative", anchor, "--", "."])
+        .args(["diff", "--no-color", "--no-ext-diff", "--relative"])
+        .args(refs)
+        .args(["--", "."])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
