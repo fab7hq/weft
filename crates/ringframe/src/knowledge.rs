@@ -233,6 +233,121 @@ pub fn state_at(root: &Path, pin: &Value, at: Option<&str>) -> Value {
            "moved": now != path})
 }
 
+/// The SHA-256 of each `<commit>:<path>` in `names`, None where it is not a
+/// file there: one `git cat-file --batch` for them all, so a product with many
+/// decisions costs one process per repository, not one per pin.
+fn blob_hashes(root: &Path, names: &[String]) -> Vec<Option<String>> {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::process::{Command, Stdio};
+    if names.is_empty() {
+        return Vec::new();
+    }
+    // A name with a line break cannot be given to a batch.
+    if names.iter().any(|n| n.contains('\n')) {
+        return names
+            .iter()
+            .map(|n| {
+                let (c, p) = n.split_once(':').unwrap_or_default();
+                content_sha256(root, c, p)
+            })
+            .collect();
+    }
+    let Ok(mut child) = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["cat-file", "--batch"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return vec![None; names.len()];
+    };
+    let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+        return vec![None; names.len()];
+    };
+    let input: String = names.iter().map(|n| format!("{n}\n")).collect();
+    // Written beside the reading: a large answer would otherwise fill the pipe
+    // while the names are still going in.
+    let writer = std::thread::spawn(move || {
+        let _ = stdin.write_all(input.as_bytes());
+    });
+    let mut out = BufReader::new(stdout);
+    let mut hashes = Vec::with_capacity(names.len());
+    for _ in names {
+        let mut head = String::new();
+        if out.read_line(&mut head).unwrap_or(0) == 0 {
+            hashes.push(None);
+            continue;
+        }
+        // `<oid> <type> <size>`, then the content and a newline; or
+        // `<name> missing`.
+        let cols: Vec<&str> = head.split_whitespace().collect();
+        let hash = match cols.as_slice() {
+            [_, kind, size] => {
+                let n: usize = size.parse().unwrap_or(0);
+                let mut bytes = vec![0; n + 1];
+                if out.read_exact(&mut bytes).is_err() {
+                    None
+                } else {
+                    (*kind == "blob").then(|| digest::sha256_bytes(&bytes[..n]))
+                }
+            }
+            _ => None,
+        };
+        hashes.push(hash);
+    }
+    let _ = writer.join();
+    let _ = child.wait();
+    hashes
+}
+
+/// Where each pin is, as [`state_at`] says, each repository read at
+/// `at(repo)`: a commit, the worktree (`Some(None)`), or nowhere (`None`, every
+/// pin there stale). A repository's pinned files are read together; a pin
+/// whose path is gone is followed through renames on its own.
+fn states(
+    ws: &Workspace,
+    pins: &[&Value],
+    at: &dyn Fn(&str) -> Option<Option<String>>,
+) -> Vec<Value> {
+    let mut out = vec![Value::Null; pins.len()];
+    let mut by_repo: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    for (i, p) in pins.iter().enumerate() {
+        by_repo.entry(p["repo"].as_str().unwrap_or(".")).or_default().push(i);
+    }
+    for (repo, ids) in by_repo {
+        let root = repo_root(ws, repo);
+        match at(repo) {
+            None => {
+                for i in ids {
+                    out[i] = json!({"stale": true, "path": pins[i]["path"]});
+                }
+            }
+            Some(None) => {
+                for i in ids {
+                    out[i] = state_at(&root, pins[i], None);
+                }
+            }
+            Some(Some(commit)) => {
+                let names: Vec<String> = ids
+                    .iter()
+                    .map(|&i| format!("{commit}:{}", pins[i]["path"].as_str().unwrap_or_default()))
+                    .collect();
+                for (&i, got) in ids.iter().zip(blob_hashes(&root, &names)) {
+                    out[i] = match got {
+                        Some(h) => json!({"path": pins[i]["path"],
+                                          "stale": pins[i]["sha256"].as_str() != Some(h.as_str()),
+                                          "deleted": false, "moved": false}),
+                        None => state_at(&root, pins[i], Some(&commit)),
+                    };
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Whether any of a decision's pins is stale at the commit each repository
 /// is read at. A decision with no pins is never stale.
 pub fn decision_stale(ws: &Workspace, pins: &[Value], at: &BTreeMap<String, String>) -> bool {
@@ -242,20 +357,46 @@ pub fn decision_stale(ws: &Workspace, pins: &[Value], at: &BTreeMap<String, Stri
 /// The files of `pins` that have changed at `at`: `src/session.rs`, or
 /// `api/src/session.rs` in another repository.
 pub fn stale_files(ws: &Workspace, pins: &[Value], at: &BTreeMap<String, String>) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for p in pins {
-        let repo = p["repo"].as_str().unwrap_or(".");
-        let root = repo_root(ws, repo);
-        let commit = at.get(repo).cloned().or_else(|| commit_of(&root, "HEAD"));
-        if commit.is_none_or(|c| state(&root, p, &c)["stale"] == json!(true)) {
-            let path = p["path"].as_str().unwrap_or_default();
-            let shown = if repo == "." { path.to_string() } else { format!("{repo}/{path}") };
-            if !out.contains(&shown) {
-                out.push(shown);
+    stale_files_each(ws, &[pins.to_vec()], at).pop().unwrap_or_default()
+}
+
+/// [`stale_files`] for several decisions' pins at once: each repository's
+/// pinned files are read in one go, and its HEAD resolved once.
+pub fn stale_files_each(
+    ws: &Workspace,
+    each: &[Vec<Value>],
+    at: &BTreeMap<String, String>,
+) -> Vec<Vec<String>> {
+    let all: Vec<&Value> = each.iter().flatten().collect();
+    let heads: std::cell::RefCell<BTreeMap<String, Option<String>>> = Default::default();
+    let commit = |repo: &str| -> Option<Option<String>> {
+        let c = at.get(repo).cloned().or_else(|| {
+            heads
+                .borrow_mut()
+                .entry(repo.to_string())
+                .or_insert_with(|| commit_of(&repo_root(ws, repo), "HEAD"))
+                .clone()
+        });
+        c.map(Some)
+    };
+    let mut found = states(ws, &all, &commit).into_iter();
+    each.iter()
+        .map(|pins| {
+            let mut out: Vec<String> = Vec::new();
+            for (p, s) in pins.iter().zip(found.by_ref()) {
+                if s["stale"] == json!(true) {
+                    let repo = p["repo"].as_str().unwrap_or(".");
+                    let path = p["path"].as_str().unwrap_or_default();
+                    let shown =
+                        if repo == "." { path.to_string() } else { format!("{repo}/{path}") };
+                    if !out.contains(&shown) {
+                        out.push(shown);
+                    }
+                }
             }
-        }
-    }
-    out
+            out
+        })
+        .collect()
 }
 
 /// The pins of a decision: the files of its windows, as the Eval's change
@@ -372,24 +513,31 @@ pub fn split_decisions(
 ) -> (Vec<Value>, Vec<Value>, Vec<Value>) {
     let at = subjects(ws, changes);
     let touched = changed_files(changes);
+    let pins_of: Vec<Vec<Value>> =
+        standing.iter().map(|d| d["pins"].as_array().cloned().unwrap_or_default()).collect();
+    let all: Vec<&Value> = pins_of.iter().flatten().collect();
+    let heads: std::cell::RefCell<BTreeMap<String, Option<String>>> = Default::default();
+    // A repository the change names is read at its subject (the worktree when
+    // it has none); any other at its HEAD.
+    let read_at = |repo: &str| -> Option<Option<String>> {
+        match at.get(repo) {
+            Some(c) => Some(c.clone()),
+            None => heads
+                .borrow_mut()
+                .entry(repo.to_string())
+                .or_insert_with(|| commit_of(&repo_root(ws, repo), "HEAD"))
+                .clone()
+                .map(Some),
+        }
+    };
+    let mut found = states(ws, &all, &read_at).into_iter();
     let (mut fresh, mut again, mut left) = (Vec::new(), Vec::new(), Vec::new());
-    for d in standing {
-        let pins = d["pins"].as_array().cloned().unwrap_or_default();
+    for (d, pins) in standing.into_iter().zip(&pins_of) {
         let mut stale_touched = false;
         let mut stale = false;
         let mut changed: Vec<String> = Vec::new();
-        for p in &pins {
+        for (p, s) in pins.iter().zip(found.by_ref()) {
             let repo = p["repo"].as_str().unwrap_or(".");
-            let root = repo_root(ws, repo);
-            let commit = match at.get(repo) {
-                Some(c) => c.clone(),
-                None => commit_of(&root, "HEAD"),
-            };
-            let s = match (&commit, at.get(repo)) {
-                (_, Some(None)) => state_at(&root, p, None),
-                (Some(c), _) => state_at(&root, p, Some(c)),
-                (None, _) => json!({"stale": true, "path": p["path"]}),
-            };
             if s["stale"] == json!(true) {
                 stale = true;
                 let path = s["path"].as_str().unwrap_or_default();
@@ -417,6 +565,47 @@ pub fn split_decisions(
         }
     }
     (fresh, again, left)
+}
+
+/// The standing decisions an Eval of this change is given: those pinned to a
+/// file it changed or to a document its requirements are read from, those sealed for an Ask of `line` (the Asks judged and
+/// those they follow, revise or remediate), every `not_wanted` one (a behaviour
+/// the person refused can come back in any file), and any without pins, which
+/// cannot be placed. The brief then grows with the change, not with every
+/// decision ever made.
+pub fn on_the_change(
+    decisions: Vec<Value>,
+    changes: &Value,
+    line: &BTreeSet<String>,
+) -> Vec<Value> {
+    let touched = changed_files(changes);
+    let documents: BTreeSet<&str> = changes["requirements"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| r["part"].as_str().and_then(|p| p.split_once('#')).map(|(d, _)| d))
+        .collect();
+    decisions
+        .into_iter()
+        .filter(|d| {
+            let pins = d["pins"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+            d["answer"] == "not_wanted"
+                || pins.is_empty()
+                || d["asks"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|a| a.as_str().is_some_and(|a| line.contains(a)))
+                || pins.iter().any(|p| {
+                    let repo = p["repo"].as_str().unwrap_or(".");
+                    let path = p["path"].as_str().unwrap_or_default();
+                    let named =
+                        if repo == "." { path.to_string() } else { format!("{repo}/{path}") };
+                    touched.get(repo).is_some_and(|f| f.contains(path))
+                        || documents.contains(named.as_str())
+                })
+        })
+        .collect()
 }
 
 /// What an Eval's reader is shown of the product: for each repository of the
@@ -736,12 +925,18 @@ pub fn show(ws: &Workspace, at: Option<&str>) -> Result<Value, LedgerError> {
             commits.insert(".".to_string(), c);
         }
     }
-    let decisions: Vec<Value> = crate::decisions::all(ws)
+    let pinned: Vec<Value> = crate::decisions::all(ws)
         .into_iter()
         .filter(|d| d["pins"].as_array().is_some_and(|p| !p.is_empty()))
-        .map(|d| {
-            let pins = d["pins"].as_array().cloned().unwrap_or_default();
-            let changed = stale_files(ws, &pins, &commits);
+        .collect();
+    let pins: Vec<Vec<Value>> =
+        pinned.iter().map(|d| d["pins"].as_array().cloned().unwrap_or_default()).collect();
+    let changed = stale_files_each(ws, &pins, &commits);
+    let decisions: Vec<Value> = pinned
+        .iter()
+        .zip(pins)
+        .zip(changed)
+        .map(|((d, pins), changed)| {
             json!({"id": d["id"], "behaviour": d["behaviour"], "answer": d["answer"],
                    "date": d["date"], "pins": pins, "stale": !changed.is_empty(),
                    "changed": changed})
@@ -967,6 +1162,71 @@ mod tests {
         let p = pin(root, ".", None, "a.txt").unwrap();
         assert_eq!(p["commit"], json!(head));
         assert_eq!(p["sha256"], json!(digest::sha256_bytes(b"edited\n")));
+    }
+
+    #[test]
+    fn pins_read_together_say_what_each_read_alone_says() {
+        let dir = repo();
+        let root = dir.path();
+        let ws = ws_for(root);
+        let base = commit(
+            root,
+            &[
+                ("same.txt", Some("same\n")),
+                ("edited.txt", Some("one\n")),
+                ("moved.txt", Some("a file long enough to be found again once renamed\n")),
+                ("gone.txt", Some("gone\n")),
+                ("dir/x.txt", Some("x\n")),
+            ],
+            "base",
+        );
+        let mut pins: Vec<Value> = ["same.txt", "edited.txt", "moved.txt", "gone.txt"]
+            .iter()
+            .map(|p| pin(root, ".", Some(&base), p).unwrap())
+            .collect();
+        pins.push(json!({"repo": ".", "path": "dir", "commit": base, "sha256": "x"}));
+        let r = root.to_string_lossy().to_string();
+        std::fs::write(root.join("edited.txt"), "two\n").unwrap();
+        run(&["git", "-C", &r, "mv", "moved.txt", "renamed.txt"]);
+        let at = commit(root, &[("gone.txt", None)], "work");
+        let alone: Vec<Value> = pins.iter().map(|p| state(root, p, &at)).collect();
+        let refs: Vec<&Value> = pins.iter().collect();
+        let together = states(&ws, &refs, &|_| Some(Some(at.clone())));
+        assert_eq!(together, alone);
+        let stale: Vec<bool> = together.iter().map(|s| s["stale"] == json!(true)).collect();
+        assert_eq!(stale, [false, true, false, true, true]);
+        assert_eq!(together[2]["path"], json!("renamed.txt"));
+    }
+
+    #[test]
+    fn an_eval_is_given_the_decisions_on_its_change_and_every_refusal() {
+        let changes = json!({
+            "repos": [{"name": ".", "subject": {"kind": "git_commit", "ref": "c"}}],
+            "units": [{"repo": ".", "path": "src/a.js", "windows": ["w1"]}],
+            "requirements": [{"id": "r1", "part": "plans/plan.md#step-1"}],
+        });
+        let on = |path: &str| json!([{"repo": ".", "path": path, "commit": "c", "sha256": "s"}]);
+        let decisions = vec![
+            json!({"id": "touched", "answer": "wanted", "pins": on("src/a.js")}),
+            json!({"id": "elsewhere", "answer": "wanted", "pins": on("src/b.js")}),
+            json!({"id": "refused", "answer": "not_wanted", "pins": on("src/b.js")}),
+            json!({"id": "unpinned", "answer": "wanted"}),
+            json!({"id": "followed", "answer": "wanted", "pins": on("src/b.js"), "asks": ["ask_1"]}),
+            json!({"id": "planned", "answer": "drop", "pins": on("plans/plan.md")}),
+        ];
+        let line = BTreeSet::from(["ask_1".to_string()]);
+        let ids: Vec<Value> =
+            on_the_change(decisions, &changes, &line).iter().map(|d| d["id"].clone()).collect();
+        assert_eq!(
+            ids,
+            [
+                json!("touched"),
+                json!("refused"),
+                json!("unpinned"),
+                json!("followed"),
+                json!("planned")
+            ]
+        );
     }
 
     #[test]

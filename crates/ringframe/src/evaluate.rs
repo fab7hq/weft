@@ -1017,7 +1017,15 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
         }
         let (fresh, again, left) =
             crate::knowledge::split_decisions(ws, crate::decisions::standing(ws), &changes);
-        (product, fresh, again, left)
+        // The Asks judged here and those they follow, revise or remediate:
+        // the person's decisions on that line of work stand for this change.
+        let mut line = ids.clone();
+        for a in &asks {
+            for l in array_of(a, "links") {
+                line.insert(str_of(l, "id"));
+            }
+        }
+        (product, crate::knowledge::on_the_change(fresh, &changes, &line), again, left)
     };
     let span = json!({"anchor": anchor_ref, "end": subject["ref"], "end_kind": end_kind});
     let mut carried = crate::decisions::carried(ws, &unit_asks);

@@ -33,4 +33,6 @@ mod untracked;
 pub mod workspace;
 
 #[cfg(test)]
+mod scale;
+#[cfg(test)]
 mod testing;
