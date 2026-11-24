@@ -23,6 +23,11 @@ weft-term = { path = "../weft-term" }
 [target.'cfg(target_os = "macos")'.dependencies]
 # The viewer's page, in a WebView inside a GPUI window.
 wry = { version = "=0.57.3", default-features = false }
+# Whether the viewer's page has the keyboard: asked of the window.
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSResponder", "NSView", "NSWindow"] }
+raw-window-handle = "0.6"
+
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # On Linux, GPUI's own Wayland and X11 windows.

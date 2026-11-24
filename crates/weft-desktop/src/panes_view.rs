@@ -237,6 +237,13 @@ pub struct PanesProps<'a> {
     pub typing: bool,
     /// What sits under the panes: the docked Ask in place of the message row.
     pub dock: Option<Element>,
+    /// The file open in each agent's pane.
+    pub files: &'a crate::files::Files,
+    /// How wide the panes are together, for whether a file fits beside its
+    /// conversation.
+    pub width: f32,
+    /// Something is drawn over the panes, which a file's page would hide.
+    pub covered: bool,
 }
 
 /// The empty workspace's hairline grid: a line every 32 px, enough for any
@@ -610,7 +617,10 @@ fn render_pane_group(
     let body = if let Some(tab) = active_tab {
         match tab.view {
             PaneViewMode::Terminal => render_terminal_viewport(props, g_idx, tab, split),
-            PaneViewMode::Conversation => render_conversation_viewport(props, tab),
+            PaneViewMode::Conversation => {
+                let width = pane_width(props, props.panes.groups.len());
+                with_file(props, tab, render_conversation_viewport(props, tab), width)
+            }
         }
     } else {
         div().flex_1().self_stretch()
@@ -703,6 +713,50 @@ fn render_layout_menu(g_idx: usize) -> Element {
                 .pad(8, 14)
                 .text(words::word("web.layout.join")),
         )
+}
+
+/// How wide a pane is: the panes side by side share the width evenly.
+fn pane_width(props: &PanesProps, groups: usize) -> f32 {
+    let across = match (props.panes.layout, groups) {
+        (_, 1) | (SplitLayout::TwoRows, 2) => 1.0,
+        _ => 2.0,
+    };
+    props.width / across
+}
+
+/// The conversation with the file its agent has open beside it, the divider
+/// between them; in a pane too narrow for both, the file covers it.
+fn with_file(props: &PanesProps, tab: &SavedPaneTab, conversation: Element, pane: f32) -> Element {
+    let Some(file) = props.files.of(&tab.project, tab.pane) else { return conversation };
+    let page = crate::gpui::viewer_el(file.id, props.covered)
+        .layer("file page")
+        .self_stretch()
+        .flex_1()
+        .style("min-width", "0");
+    let row =
+        div().layer("pane with file").self_stretch().flex_1().flex_row().style("min-height", "0");
+    match props.files.beside(pane) {
+        Some(width) => row
+            .child(
+                div()
+                    .layer("conversation beside")
+                    .self_stretch()
+                    .shrink_0()
+                    .flex_col()
+                    .style("width", format!("{width:.0}px"))
+                    .child(conversation),
+            )
+            .child(
+                crate::gpui::divider_el(width)
+                    .layer("divider")
+                    .self_stretch()
+                    .shrink_0()
+                    .w(5)
+                    .bg(palette::LINE),
+            )
+            .child(page),
+        None => row.child(page),
+    }
 }
 
 fn render_terminal_viewport(
@@ -813,11 +867,12 @@ fn render_conversation_viewport(props: &PanesProps, tab: &SavedPaneTab) -> Eleme
         {
             chat_col.push(el);
         }
+        let open = props.files.of(&tab.project, tab.pane).map(|v| v.file.path.as_str());
         chat_col.extend(conversation_blocks(
             items,
             &harness,
-            &tab.project,
-            tab.pane,
+            (&tab.project, tab.pane),
+            open,
             props.unfolded_steps,
             needs_you,
             zone,
@@ -890,8 +945,8 @@ fn reading(
 fn conversation_blocks(
     items: &[Item],
     harness: &str,
-    project: &std::path::Path,
-    pane: u32,
+    (project, pane): (&std::path::Path, u32),
+    open: Option<&str>,
     unfolded_steps: &HashSet<(PathBuf, u32, usize)>,
     waiting: bool,
     zone: i64,
@@ -988,7 +1043,7 @@ fn conversation_blocks(
                                 .child(span(clock).color(palette::DIM)),
                         )
                         .child(crate::markdown_view::message(text))
-                        .children(files_named(&items[i], project, pane, harness)),
+                        .children(files_named(&items[i], (project, pane), open)),
                 );
                 i += 1;
             }
@@ -1024,13 +1079,12 @@ fn conversation_blocks(
 /// The chips for the files an agent's message named, under its words.
 fn files_named(
     item: &Item,
-    project: &std::path::Path,
-    pane: u32,
-    harness: &str,
+    (project, pane): (&std::path::Path, u32),
+    open: Option<&str>,
 ) -> Option<Element> {
     let refs: Vec<_> = item.refs.iter().collect();
     (!refs.is_empty())
-        .then(|| crate::files::chips(&refs, project, pane, harness).style("padding-top", "6px"))
+        .then(|| crate::files::chips(&refs, project, pane, open).style("padding-top", "6px"))
 }
 
 fn render_step_block(

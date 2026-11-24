@@ -1,6 +1,6 @@
-//! The files an agent pointed at: a chip for each under its messages and
-//! steps. On macOS a chip opens its file in the viewer, a window of its own
-//! whose page draws it; elsewhere, in the machine's own app.
+//! The files an agent named: a chip for each under its messages. On macOS a
+//! chip opens its file in the agent's pane, beside the conversation, where a
+//! page draws it; elsewhere, in the machine's own app.
 
 use std::path::{Path, PathBuf};
 
@@ -8,7 +8,7 @@ use weft_core::files::{FileKind, Ref};
 
 use crate::action::FileAct;
 use crate::app::WeftDesktopApp;
-use crate::gpui::{Element, div, palette};
+use crate::gpui::{Element, Run, div, palette, rich};
 
 /// A file's name: the last part of its path.
 pub fn name(path: &str) -> &str {
@@ -45,54 +45,49 @@ fn glyph(kind: FileKind) -> &'static str {
 }
 
 /// The chips for the files an item points at, wrapping onto more lines as
-/// they need; each opens its file.
-pub fn chips(refs: &[&Ref], project: &Path, pane: u32, harness: &str) -> Element {
+/// they need; each opens its file, and the one open beside them is marked.
+pub fn chips(refs: &[&Ref], project: &Path, pane: u32, open: Option<&str>) -> Element {
     div().layer("files").self_stretch().flex_row().style("flex-wrap", "wrap").gap(8).children(
         refs.iter().map(|r| {
-            let open = FileAct::Open {
-                project: project.to_path_buf(),
-                pane,
-                harness: harness.to_string(),
-                file: (*r).clone(),
-            };
-            div()
-                .layer("file")
+            let shown = open == Some(r.path.as_str());
+            let open = FileAct::Open { project: project.to_path_buf(), pane, file: (*r).clone() };
+            // One run of text, the glyph and the size dimmer than the name: a
+            // message may name many files, and each chip is one box to lay out.
+            let (glyph, name, size) = (glyph(r.kind), name(&r.path), size(r.size));
+            let text = format!("{glyph} {name} {size}");
+            let tail = text.len() - size.len();
+            let runs = vec![
+                (0..glyph.len(), Run { color: Some(palette::MUTED), ..Run::default() }),
+                (tail..text.len(), Run { color: Some(palette::DIM), ..Run::default() }),
+            ];
+            rich(text, runs)
+                .layer(if shown { "file open" } else { "file" })
                 .aria_label(r.path.clone())
+                .aria_selected(shown)
                 .on_click(open)
-                .flex_row()
-                .items_center()
-                .gap(7)
                 .h(28)
                 .pad(0, 10)
                 .style("max-width", "360px")
-                .bg(palette::SURFACE)
-                .border(palette::LINE)
+                .style("line-height", "26px")
+                .style("white-space", "nowrap")
+                .style("overflow", "hidden")
+                .style("text-overflow", "ellipsis")
+                .bg(if shown { palette::SELECTED_BG } else { palette::SURFACE })
+                .border(if shown { palette::BLUE_BORDER } else { palette::LINE })
                 .font_mono()
                 .font_size(12)
-                .color(palette::TEXT)
-                .child(div().shrink_0().color(palette::MUTED).text(glyph(r.kind)))
-                .child(
-                    div()
-                        .style("min-width", "0")
-                        .style("white-space", "nowrap")
-                        .style("overflow", "hidden")
-                        .style("text-overflow", "ellipsis")
-                        .text(name(&r.path).to_string()),
-                )
-                .child(div().shrink_0().font_size(11).color(palette::DIM).text(size(r.size)))
+                .color(if shown { palette::BLUE_BORDER } else { palette::TEXT })
         }),
     )
 }
 
-/// One file open in the viewer.
+/// The file open in an agent's pane.
 #[derive(Debug)]
 pub struct Viewer {
+    /// A new one each time a chip is clicked, so the page reads the file again.
     pub id: u64,
     pub project: PathBuf,
-    /// The project's name, for the window's title.
-    pub project_name: String,
     pub pane: u32,
-    pub harness: String,
     pub file: Ref,
     /// Where the file is on this machine, found when its chip was clicked:
     /// the one file the viewer's page may read.
@@ -100,13 +95,8 @@ pub struct Viewer {
 }
 
 impl Viewer {
-    /// The window's title: the file's name and its project's.
-    pub fn title(&self) -> String {
-        format!("{} — {}", name(&self.file.path), self.project_name)
-    }
-
-    /// The page the viewer's window loads: the file's address and what is
-    /// known of it, after `#` so the page reads them without asking.
+    /// The page the viewer loads: the file's address and what is known of
+    /// it, after `#` so the page reads them without asking.
     pub fn page(&self) -> String {
         let kind = serde_json::to_value(self.file.kind).ok();
         let fields = [
@@ -115,8 +105,6 @@ impl Viewer {
             ("kind", kind.as_ref().and_then(|k| k.as_str()).unwrap_or("other")),
             ("size", &self.file.size.to_string()),
             ("modified", &self.file.modified.to_string()),
-            ("agent", self.harness.as_str()),
-            ("project", self.project_name.as_str()),
         ];
         let query: Vec<String> =
             fields.iter().map(|(k, v)| format!("{k}={}", form_encoded(v))).collect();
@@ -139,17 +127,35 @@ fn form_encoded(value: &str) -> String {
     out
 }
 
-/// The open viewers, and what the windows are to do for them.
-#[derive(Default)]
+/// The conversation's width beside a file, until the divider is dragged.
+pub const CONVERSATION_WIDTH: f32 = 420.0;
+/// The narrowest the conversation and the file each get beside the other.
+pub const CONVERSATION_MIN: f32 = 280.0;
+pub const FILE_MIN: f32 = 360.0;
+
+/// The file open in each agent's pane, and what the window is to do for them.
 pub struct Files {
+    /// At most one for each agent.
     pub viewers: Vec<Viewer>,
     next: u64,
-    /// Viewers whose window is to open, or come in front.
-    pub to_open: Vec<u64>,
+    /// The conversation's width beside a file, as the divider was left.
+    pub width: f32,
     /// Files to hand to the machine's own app.
     pub outside: Vec<PathBuf>,
     /// Files to show in the machine's file manager.
     pub reveal: Vec<PathBuf>,
+}
+
+impl Default for Files {
+    fn default() -> Self {
+        Files {
+            viewers: Vec::new(),
+            next: 0,
+            width: CONVERSATION_WIDTH,
+            outside: Vec::new(),
+            reveal: Vec::new(),
+        }
+    }
 }
 
 impl Files {
@@ -157,9 +163,21 @@ impl Files {
         self.viewers.iter().find(|v| v.id == id)
     }
 
-    /// The viewer is gone: its window closed.
+    /// The file open in an agent's pane.
+    pub fn of(&self, project: &Path, pane: u32) -> Option<&Viewer> {
+        self.viewers.iter().find(|v| v.project == project && v.pane == pane)
+    }
+
     pub fn close(&mut self, id: u64) {
         self.viewers.retain(|v| v.id != id);
+    }
+
+    /// The conversation's width beside a file in a pane `pane` wide: as the
+    /// divider was left, leaving each side its least; `None` when the pane
+    /// is too narrow for both, and the file covers the conversation.
+    pub fn beside(&self, pane: f32) -> Option<f32> {
+        (pane >= CONVERSATION_MIN + FILE_MIN)
+            .then(|| self.width.clamp(CONVERSATION_MIN, pane - FILE_MIN))
     }
 }
 
@@ -177,40 +195,18 @@ const VIEWER: bool = cfg!(target_os = "macos");
 impl WeftDesktopApp {
     pub(crate) fn file_act(&mut self, act: FileAct) {
         match act {
-            FileAct::Open { project, pane, harness, file } => {
+            FileAct::Open { project, pane, file } => {
                 let abs = on_disk(&project, &file.path);
                 if !VIEWER {
                     self.files.outside.push(abs);
                     return;
                 }
-                let project_name =
-                    self.client(&project).map(|c| c.name.clone()).unwrap_or_default();
-                // A file already open comes in front: one window for it.
-                let open = self.files.viewers.iter().position(|v| {
-                    v.project == project && v.pane == pane && v.file.path == file.path
-                });
-                let id = match open {
-                    Some(at) => {
-                        let v = &mut self.files.viewers[at];
-                        (v.file, v.harness, v.abs) = (file, harness, abs);
-                        v.id
-                    }
-                    None => {
-                        self.files.next += 1;
-                        let id = self.files.next;
-                        self.files.viewers.push(Viewer {
-                            id,
-                            project,
-                            project_name,
-                            pane,
-                            harness,
-                            file,
-                            abs,
-                        });
-                        id
-                    }
-                };
-                self.files.to_open.push(id);
+                // One file for each agent: the next one takes its place, and
+                // the same one again is read again.
+                self.files.viewers.retain(|v| !(v.project == project && v.pane == pane));
+                self.files.next += 1;
+                let id = self.files.next;
+                self.files.viewers.push(Viewer { id, project, pane, file, abs });
             }
             FileAct::Reveal(id) => {
                 if let Some(v) = self.files.get(id) {
@@ -219,6 +215,7 @@ impl WeftDesktopApp {
                 }
             }
             FileAct::Close(id) => self.files.close(id),
+            FileAct::Width(width) => self.files.width = width as f32,
         }
     }
 }

@@ -1832,6 +1832,14 @@ impl WeftDesktopApp {
         let _ = self.save_state();
     }
 
+    /// How wide the panes are together: the window's width, less the list
+    /// beside them.
+    fn panes_width(&self) -> f32 {
+        let window = self.state.settings.window_bounds.map_or(1280.0, |b| b.width);
+        let list = if self.state.settings.sidebar_open { 340.0 } else { 0.0 };
+        window - list
+    }
+
     /// The message field of the agent in front.
     pub fn message_field(&mut self) -> &mut TextField {
         let key = self.active_tab().map_or_else(Default::default, |t| (t.project, t.pane));
@@ -2070,6 +2078,12 @@ impl WeftDesktopApp {
                     message_draft: self.message_text(),
                     typing: self.focus == Focus::Message,
                     dock,
+                    files: &self.files,
+                    width: self.panes_width(),
+                    covered: self.menu_open
+                        || self.plus_popover_project.is_some()
+                        || self.layout_menu_pane.is_some()
+                        || self.project_menu.is_some(),
                 }))
             }
         }

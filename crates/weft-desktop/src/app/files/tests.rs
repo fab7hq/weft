@@ -1,5 +1,5 @@
-//! The files an agent pointed at: which become chips, the viewer each
-//! opens, the page it loads, and what the page may ask.
+//! The files an agent named: which become chips, the file each opens in its
+//! agent's pane, the page it loads, and what the page may ask.
 
 use std::path::PathBuf;
 
@@ -112,14 +112,15 @@ fn drawable(el: &Element) {
 }
 
 fn open(app: &mut WeftDesktopApp, file: Ref) {
-    app.dispatch(FileAct::Open { project: weft(), pane: 0, harness: "codex".into(), file });
+    app.dispatch(FileAct::Open { project: weft(), pane: 0, file });
 }
 
-/// On macOS every kind opens in the viewer, a window of its own, the page
-/// drawing what it can; the same file again brings its window in front.
-/// Elsewhere every file opens in the machine's own app.
+/// On macOS a chip opens its file in its agent's pane, the page drawing what
+/// it can: one file for each agent, the next one taking its place and the
+/// same one again read again. Elsewhere every file opens in the machine's
+/// own app.
 #[test]
-fn a_chip_opens_its_file_in_the_viewer() {
+fn a_chip_opens_its_file_in_its_agents_pane() {
     let (tmp, mut app, _wire) = wired_app();
     let kinds =
         [FileKind::Markdown, FileKind::Pdf, FileKind::Html, FileKind::Video, FileKind::Other];
@@ -128,23 +129,32 @@ fn a_chip_opens_its_file_in_the_viewer() {
     }
     if !cfg!(target_os = "macos") {
         assert_eq!(app.files.outside.len(), kinds.len());
-        assert!(app.files.viewers.is_empty() && app.files.to_open.is_empty(), "no viewer");
+        assert!(app.files.viewers.is_empty(), "no viewer");
         return;
     }
     assert!(app.files.outside.is_empty(), "none in the machine's own app");
-    let ids: Vec<u64> = app.files.viewers.iter().map(|v| v.id).collect();
-    assert_eq!(app.files.to_open, ids);
-    open(&mut app, a_ref("out/0", FileKind::Markdown));
-    assert_eq!(app.files.viewers.len(), kinds.len(), "its window again, not a second one");
-    assert_eq!(app.files.to_open.last(), Some(&ids[0]));
+    let [v] = &app.files.viewers[..] else { panic!("one file for the agent") };
+    assert_eq!((v.file.path.as_str(), v.abs.clone()), ("out/4", weft().join("out/4")));
+    let first = v.id;
+    open(&mut app, a_ref("out/4", FileKind::Other));
+    let again = app.files.of(&weft(), 0).unwrap().id;
+    assert_ne!(again, first, "the same file again is read again");
+    assert!(app.files.get(first).is_none());
 
-    // The file the window may serve is where it is on this machine.
+    // Another agent's pane keeps its own.
+    app.dispatch(FileAct::Open {
+        project: weft(),
+        pane: 1,
+        file: a_ref("out/notes.md", FileKind::Markdown),
+    });
+    assert_eq!(app.files.viewers.len(), 2);
+    assert_eq!(app.files.of(&weft(), 0).unwrap().id, again);
+
+    // The file it may serve is where it is on this machine.
     let file = tmp.path().join("report.md");
     std::fs::write(&file, "# Q3").unwrap();
     open(&mut app, a_ref(&file.to_string_lossy(), FileKind::Markdown));
-    let v = app.files.viewers.last().unwrap();
-    assert_eq!(v.abs, file.canonicalize().unwrap());
-    assert_eq!(app.files.get(ids[1]).unwrap().abs, weft().join("out/1"), "gone: as named");
+    assert_eq!(app.files.of(&weft(), 0).unwrap().abs, file.canonicalize().unwrap());
 }
 
 /// The page it loads names the file's address and what is known of it, as
@@ -157,16 +167,15 @@ fn the_viewer_loads_its_page_with_the_file() {
     }
     open(&mut app, a_ref("out/Q3 report & notes.md", FileKind::Markdown));
     let v = app.files.viewers.last().unwrap();
-    assert_eq!(v.title(), "Q3 report & notes.md — weft");
     assert_eq!(
         v.page(),
         "weft://app/viewer.html#u=weft%3A%2F%2Ffile%2F0&path=out%2FQ3+report+%26+notes.md\
-         &kind=markdown&size=4710&modified=1795312120486&agent=codex&project=weft"
+         &kind=markdown&size=4710&modified=1795312120486"
     );
 }
 
 /// Reveal shows the viewer's file in the machine's file manager; Close
-/// ends its viewer.
+/// gives the pane back to the conversation.
 #[test]
 fn the_viewer_reveals_its_file_or_closes() {
     let (_tmp, mut app, _wire) = wired_app();
@@ -174,11 +183,78 @@ fn the_viewer_reveals_its_file_or_closes() {
         return;
     }
     open(&mut app, a_ref("out/report.md", FileKind::Markdown));
-    let id = *app.files.to_open.last().unwrap();
+    let id = app.files.of(&weft(), 0).unwrap().id;
     app.dispatch(FileAct::Reveal(id));
     assert_eq!(app.files.reveal, [weft().join("out/report.md")]);
     app.dispatch(FileAct::Close(id));
     assert!(app.files.get(id).is_none() && app.files.viewers.is_empty());
     app.dispatch(FileAct::Reveal(id));
     assert_eq!(app.files.reveal.len(), 1, "closed: nothing to reveal");
+}
+
+/// The file opens beside the conversation in its agent's pane, its chip
+/// marked, the divider between them; a narrow pane gives the file its
+/// whole width, and Close gives it back to the conversation.
+#[test]
+fn the_file_opens_beside_its_conversation() {
+    if !cfg!(target_os = "macos") {
+        return;
+    }
+    let (_tmp, mut app, mut wire) = wired_app();
+    app.state.panes.groups.clear();
+    let pane = start(&mut app, &mut wire, "codex");
+    app.dispatch(PaneAct::SetView { group: 0, tab: 0, view: PaneViewMode::Conversation });
+    let (id, _) = wire.call();
+    let items = vec![said(
+        "1.0",
+        Kind::Agent,
+        Some("Wrote `out/report.md` from `scripts/q3.py`."),
+        vec![a_ref("out/report.md", FileKind::Markdown), a_ref("scripts/q3.py", FileKind::Text)],
+    )];
+    wire.answer(id, json!({"conversation": {"items": items}}));
+    pumped(&mut app, |a| a.conversations.contains_key(&(weft(), pane)));
+    assert!(app.render().find_layer("pane with file").is_none(), "no file open yet");
+
+    app.dispatch(FileAct::Open {
+        project: weft(),
+        pane,
+        file: a_ref("out/report.md", FileKind::Markdown),
+    });
+    let viewer = app.files.of(&weft(), pane).unwrap().id;
+    let dom = app.render();
+    drawable(&dom);
+    let beside = dom.find_layer("conversation beside").expect("the conversation beside it");
+    assert!(beside.find_layer("pane conversation").is_some());
+    let open = beside.find_layer("file open").expect("its chip marked");
+    assert_eq!(open.aria_label.as_deref(), Some("out/report.md"));
+    assert_eq!(chip_names(beside), ["scripts/q3.py"], "the other chip as it was");
+    assert!(dom.find_layer("divider").is_some());
+    let page = dom.find_layer("file page").unwrap();
+    assert_eq!(page.tag, "viewer");
+    assert!(page.attrs.contains(&("data-id".into(), viewer.to_string())));
+
+    // Too narrow for both: the file alone.
+    app.set_window_bounds(0.0, 0.0, 960.0, 640.0);
+    let dom = app.render();
+    assert!(dom.find_layer("conversation beside").is_none());
+    assert!(dom.find_layer("file page").is_some());
+
+    app.dispatch(FileAct::Close(viewer));
+    let dom = app.render();
+    assert!(dom.find_layer("pane with file").is_none());
+    assert!(dom.find_layer("pane conversation").is_some(), "the conversation back");
+}
+
+/// The divider leaves the conversation its width, as long as each side
+/// keeps its least.
+#[test]
+fn the_divider_keeps_each_side_its_least() {
+    use crate::files::{CONVERSATION_MIN, FILE_MIN, Files};
+    let mut files = Files::default();
+    assert_eq!(files.beside(940.0), Some(420.0));
+    files.width = 100.0;
+    assert_eq!(files.beside(940.0), Some(CONVERSATION_MIN));
+    files.width = 900.0;
+    assert_eq!(files.beside(940.0), Some(940.0 - FILE_MIN));
+    assert_eq!(files.beside(CONVERSATION_MIN + FILE_MIN - 1.0), None, "too narrow: the file alone");
 }

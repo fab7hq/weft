@@ -186,6 +186,27 @@ pub fn terminal_el(project: &Path, pane: u32) -> Element {
     el
 }
 
+/// The file open in a pane, whose page the window places here; `covered`
+/// while something is drawn over it.
+pub fn viewer_el(id: u64, covered: bool) -> Element {
+    let mut el = div();
+    el.tag = "viewer";
+    el.attrs.push(("data-id".into(), id.to_string()));
+    if covered {
+        el.attrs.push(("data-covered".into(), "true".into()));
+    }
+    el
+}
+
+/// The divider between a conversation and its file, which the person drags;
+/// `width` is the conversation's.
+pub fn divider_el(width: f32) -> Element {
+    let mut el = div();
+    el.tag = "divider";
+    el.attrs.push(("data-width".into(), format!("{width:.0}")));
+    el
+}
+
 impl Element {
     pub fn layer(mut self, name: impl Into<String>) -> Self {
         self.layer_name = Some(name.into());

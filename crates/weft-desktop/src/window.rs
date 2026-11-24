@@ -10,13 +10,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ::gpui::{
-    Animation, AnimationExt, AnyElement, App, Bounds, ClipboardItem, Context, Div, ElementId,
-    EntityInputHandler, FocusHandle, Focusable, FontWeight, IntoElement, KeyDownEvent, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, PathPromptOptions, Pixels, Point,
-    Render, Rgba, ScrollHandle, ScrollWheelEvent, SharedString, StatefulInteractiveElement,
-    StyleRefinement, Styled, SystemNotification, UTF16Selection, WeakEntity, Window,
-    WindowBounds as GpuiWindowBounds, WindowId, WindowOptions, div as gpui_div, point, prelude::*,
-    px, relative, rgba, size,
+    Animation, AnimationExt, AnyElement, App, Bounds, ClipboardItem, Context, CursorStyle, Div,
+    ElementId, EntityInputHandler, FocusHandle, Focusable, FontWeight, IntoElement, KeyDownEvent,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, PathPromptOptions,
+    Pixels, Point, Render, Rgba, ScrollHandle, ScrollWheelEvent, SharedString,
+    StatefulInteractiveElement, StyleRefinement, Styled, SystemNotification, UTF16Selection,
+    WeakEntity, Window, WindowBounds as GpuiWindowBounds, WindowId, WindowOptions, div as gpui_div,
+    point, prelude::*, px, relative, rgba, size,
 };
 use anyhow::Result;
 use weft_core::state::WindowBounds;
@@ -80,7 +80,7 @@ pub(crate) struct SharedState {
     output: Vec<(PathBuf, u32)>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 struct InheritedText {
     color: Rgba,
     font_size: f32,
@@ -104,6 +104,12 @@ struct GpuiDesktopView {
     scrolls: RefCell<HashMap<String, (ScrollHandle, Option<String>)>>,
     /// The element tree last built from the app.
     last: Option<Element>,
+    /// Each scroll with something drawn over it away from its end: whether
+    /// it was at its end when last drawn.
+    drawn_at_end: RefCell<HashMap<String, bool>>,
+    /// `last` was built when the view was told something changed, for the
+    /// draw that follows.
+    fresh: bool,
     /// The view was told something changed since it last drew.
     stale: bool,
     /// Only terminals were told to draw again since the view last drew.
@@ -114,11 +120,17 @@ struct GpuiDesktopView {
     builds: usize,
     /// Each pane's terminal, a view of its own.
     terminals: RefCell<HashMap<(PathBuf, u32), ::gpui::Entity<TerminalView>>>,
-    /// The boxes that hold no terminal and take their size from around
-    /// them, each a view of its own, by their place in the tree.
+    /// The boxes that hold no terminal, field or page and take their size
+    /// from around them, each a view of its own, by their place in the tree.
     parts: RefCell<HashMap<String, ::gpui::Entity<Part>>>,
     /// The terminals and parts this build drew.
     kept: RefCell<Kept>,
+    /// The file open in each pane that has one, by its viewer's id.
+    #[cfg(target_os = "macos")]
+    viewers: RefCell<HashMap<u64, ::gpui::Entity<crate::viewer::ViewerView>>>,
+    /// The divider being dragged: where the pointer started, and the
+    /// conversation's width then.
+    resizing: Option<(f32, f32)>,
 }
 
 /// The terminals and parts one build drew; the rest are dropped.
@@ -126,6 +138,7 @@ struct GpuiDesktopView {
 struct Kept {
     terminals: HashSet<(PathBuf, u32)>,
     parts: HashSet<String>,
+    viewers: HashSet<u64>,
 }
 
 /// A box of the window that holds no terminal and whose size is set by the
@@ -219,6 +232,26 @@ fn sized(el: &Element, parent_is_row: bool, parent: Room) -> (bool, bool) {
     let main = grows && main;
     let cross = stretched && cross;
     if parent.row { (w || main, h || cross) } else { (w || cross, h || main) }
+}
+
+/// The element at a part's path: `0` the root, `0/2/1` its third child's
+/// second.
+fn at_path<'a>(root: &'a Element, path: &str) -> Option<&'a Element> {
+    let mut steps = path.split('/');
+    if steps.next() != Some("0") {
+        return None;
+    }
+    steps.try_fold(root, |el, i| el.children.get(i.parse::<usize>().ok()?))
+}
+
+/// Whether a box holds what is read when it is drawn, not from its element:
+/// a text field's words, what shows only away from a scroll's end, a file's
+/// page that hides while a tab is dragged. Such a box is never a part.
+fn reads_as_drawn(el: &Element) -> bool {
+    el.field.is_some()
+        || el.ends.is_some()
+        || el.tag == "viewer"
+        || el.children.iter().any(reads_as_drawn)
 }
 
 /// Whether a pane's terminal is in an element or under it.
@@ -418,7 +451,7 @@ pub fn run_interactive(mut app: WeftDesktopApp) -> Result<()> {
             }
             cx.activate(true);
         });
-        // The main window closing ends the app, viewers and all.
+        // The main window closing ends the app.
         let main_id: Rc<Cell<Option<WindowId>>> = Rc::default();
         let closing = Rc::clone(&main_id);
         cx.on_window_closed(move |cx, id| {
@@ -479,8 +512,6 @@ pub fn run_interactive(mut app: WeftDesktopApp) -> Result<()> {
 
                     let poll_shared = Arc::clone(&view_shared);
                     cx.spawn(async move |this, cx| {
-                        // Each open viewer's window.
-                        let mut viewers: HashMap<u64, ::gpui::AnyWindowHandle> = HashMap::new();
                         loop {
                             cx.background_executor().timer(Duration::from_millis(30)).await;
                             let (dirty, output, quit, notices, raise) = match poll_shared.lock() {
@@ -496,7 +527,7 @@ pub fn run_interactive(mut app: WeftDesktopApp) -> Result<()> {
                             if raise {
                                 cx.update(|cx| cx.activate(true));
                             }
-                            follow_files(&poll_shared, &mut viewers, cx);
+                            follow_files(&poll_shared, cx);
                             for n in notices {
                                 cx.update(|cx| {
                                     cx.show_system_notification(SystemNotification {
@@ -545,113 +576,19 @@ pub fn run_interactive(mut app: WeftDesktopApp) -> Result<()> {
     Ok(())
 }
 
-/// What the files the person opened ask of the windows: each viewer's
-/// window opened or brought in front, the ones whose viewer closed gone, and
-/// a file handed to the machine's own app or shown in its file manager.
-fn follow_files(
-    shared: &Arc<Mutex<SharedState>>,
-    viewers: &mut HashMap<u64, ::gpui::AnyWindowHandle>,
-    cx: &mut ::gpui::AsyncApp,
-) {
+/// What the files the person opened ask of the machine: a file handed to
+/// its own app, or shown in its file manager.
+fn follow_files(shared: &Arc<Mutex<SharedState>>, cx: &mut ::gpui::AsyncApp) {
     let Ok(mut guard) = shared.lock() else { return };
-    let files = &mut guard.app.files;
-    let opening: Vec<_> = std::mem::take(&mut files.to_open)
-        .into_iter()
-        .filter_map(|id| files.get(id).map(|v| (id, v.title(), v.page(), v.abs.clone())))
-        .collect();
-    let outside = std::mem::take(&mut files.outside);
-    let reveal = std::mem::take(&mut files.reveal);
-    let open: HashSet<u64> = files.viewers.iter().map(|v| v.id).collect();
+    let outside = std::mem::take(&mut guard.app.files.outside);
+    let reveal = std::mem::take(&mut guard.app.files.reveal);
     drop(guard);
-
     for path in outside {
         cx.update(|cx| cx.open_with_system(&path));
     }
     for path in reveal {
         cx.update(|cx| cx.reveal_path(&path));
     }
-    viewers.retain(|id, handle| {
-        open.contains(id) || {
-            let _ = handle.update(cx, |_, window, _| window.remove_window());
-            false
-        }
-    });
-    for (id, title, page, file) in opening {
-        let shown = viewers.get(&id).is_some_and(|handle| {
-            handle
-                .update(cx, |_, window, _| {
-                    window.set_window_title(&title);
-                    window.activate_window();
-                })
-                .is_ok()
-        });
-        if !shown
-            && let Some(handle) = cx.update(|cx| open_viewer(shared, id, &title, &page, file, cx))
-        {
-            viewers.insert(id, handle);
-        }
-    }
-}
-
-/// A viewer's window, the size of the card it is drawn to, over the
-/// desktop's: the page fills it. Closed, its viewer goes.
-#[cfg(target_os = "macos")]
-fn open_viewer(
-    shared: &Arc<Mutex<SharedState>>,
-    id: u64,
-    title: &str,
-    page: &str,
-    file: PathBuf,
-    cx: &mut App,
-) -> Option<::gpui::AnyWindowHandle> {
-    use crate::action::FileAct;
-    use crate::viewer::{Ask, ViewerView};
-    let bounds = Bounds::centered(None, size(px(960.0), px(680.0)), cx);
-    let options = WindowOptions {
-        window_bounds: Some(GpuiWindowBounds::Windowed(bounds)),
-        titlebar: Some(::gpui::TitlebarOptions {
-            title: Some(SharedString::from(title.to_string())),
-            ..Default::default()
-        }),
-        app_id: Some(APP_ID.into()),
-        ..Default::default()
-    };
-    let (shared, page) = (Arc::clone(shared), page.to_string());
-    let opened = cx.open_window(options, move |window, cx| {
-        let asking = Arc::clone(&shared);
-        let asked = move |ask| {
-            if let Ok(mut guard) = asking.lock() {
-                guard.app.dispatch(match ask {
-                    Ask::Reveal => FileAct::Reveal(id),
-                    Ask::Close => FileAct::Close(id),
-                });
-            }
-        };
-        let view = ViewerView::new(window, &page, file, asked);
-        cx.new(|cx| {
-            cx.on_release(move |_, _| {
-                if let Ok(mut guard) = shared.lock() {
-                    guard.app.files.close(id);
-                }
-            })
-            .detach();
-            view
-        })
-    });
-    opened.ok().map(Into::into)
-}
-
-/// No window here holds a page: every file opens in the machine's own app.
-#[cfg(not(target_os = "macos"))]
-fn open_viewer(
-    _: &Arc<Mutex<SharedState>>,
-    _: u64,
-    _: &str,
-    _: &str,
-    _: PathBuf,
-    _: &mut App,
-) -> Option<::gpui::AnyWindowHandle> {
-    None
 }
 
 impl GpuiDesktopView {
@@ -659,14 +596,27 @@ impl GpuiDesktopView {
     fn new(shared: Arc<Mutex<SharedState>>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
-        // Told something changed: the tree is built again, and every part of
-        // it drawn again with it.
+        // Told something changed: the tree is built again, and each part of
+        // it whose boxes changed is drawn again with it, told before the
+        // window draws: a long conversation is not laid out again each time
+        // the bar's clock moves.
         cx.observe_self(|this: &mut Self, cx| {
             this.stale = true;
-            let parts: Vec<_> = this.parts.borrow().values().cloned().collect();
-            for part in parts {
-                part.update(cx, |_, cx| cx.notify());
+            let tree = this.built();
+            let parts: Vec<_> =
+                this.parts.borrow().iter().map(|(k, p)| (k.clone(), p.clone())).collect();
+            for (path, part) in parts {
+                match at_path(&tree, &path).map(filling) {
+                    Some(el) if part.read(cx).el == el => {}
+                    Some(el) => part.update(cx, |p, cx| {
+                        p.el = el;
+                        cx.notify();
+                    }),
+                    None => part.update(cx, |_, cx| cx.notify()),
+                }
             }
+            this.last = Some(tree);
+            this.fresh = true;
         })
         .detach();
         GpuiDesktopView {
@@ -677,6 +627,8 @@ impl GpuiDesktopView {
             painted: Rc::default(),
             scrolls: RefCell::default(),
             last: None,
+            drawn_at_end: RefCell::default(),
+            fresh: false,
             stale: true,
             output_only: false,
             rebuilding: Cell::new(true),
@@ -684,6 +636,9 @@ impl GpuiDesktopView {
             terminals: RefCell::default(),
             parts: RefCell::default(),
             kept: RefCell::default(),
+            #[cfg(target_os = "macos")]
+            viewers: RefCell::default(),
+            resizing: None,
         }
     }
 
@@ -773,6 +728,24 @@ impl GpuiDesktopView {
         let mods = ks.modifiers;
         let typing = self.shared.lock().map(|g| g.app.focus != Focus::Terminal).unwrap_or(false);
         let shortcut = keys::shortcut(System::this(), &chord(ks));
+
+        // A key the file's page had and did not use is the page's, not the
+        // agent's or a field's; the window's own shortcuts still work.
+        #[cfg(target_os = "macos")]
+        if !self.viewers.borrow().is_empty() && crate::viewer::page_has_keys(window) {
+            cx.stop_propagation();
+            if !matches!(
+                shortcut,
+                Some(
+                    Shortcut::Quit
+                        | Shortcut::OpenProject
+                        | Shortcut::ToggleList
+                        | Shortcut::Settings
+                )
+            ) {
+                return;
+            }
+        }
 
         // A text field takes its keys from the table; a character goes on to
         // the window's text input, which an input method composes. The
@@ -1121,17 +1094,23 @@ impl GpuiDesktopView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         // Only while its scroll is away from its end.
-        if let Some(key) = &el.ends
-            && self.scrolls.borrow().get(key).is_none_or(|(h, _)| at_end(h))
-        {
-            return gpui_div().into_any_element();
+        if let Some(key) = &el.ends {
+            let end = self.scrolls.borrow().get(key).is_none_or(|(h, _)| at_end(h));
+            self.drawn_at_end.borrow_mut().insert(key.clone(), end);
+            if end {
+                return gpui_div().into_any_element();
+            }
         }
         // The size this box gets from around it, when it gets one.
         let own = room.map(|r| sized(el, parent_is_row, r));
+        // A box that reads nothing as it is drawn is a part: laid out again
+        // only when it changes. A box holding a terminal, a field or a page is
+        // built here each time, and its other boxes become parts.
         if own == Some((true, true))
             && el.field.is_none()
             && !el.children.is_empty()
             && !holds_terminal(el)
+            && !reads_as_drawn(el)
         {
             return self.part(el, parent_text, parent_is_row, path, cx);
         }
@@ -1230,6 +1209,38 @@ impl GpuiDesktopView {
 
         if let Some(which) = el.field {
             return self.text_field(el, which, d, text_style, path, cx);
+        }
+
+        // The file open in a pane, its page laid over this box.
+        #[cfg(target_os = "macos")]
+        if el.tag == "viewer" {
+            let attr = |k: &str| el.attrs.iter().find(|(a, _)| a == k).map(|(_, v)| v.clone());
+            if let Some(view) = attr("data-id")
+                .and_then(|id| id.parse().ok())
+                .and_then(|id| self.viewer_view(id, attr("data-covered").is_some(), cx))
+            {
+                return d.child(view).into_any_element();
+            }
+        }
+
+        // The divider beside a file: dragged, the conversation's width follows.
+        if el.tag == "divider" {
+            let width: f32 = el
+                .attrs
+                .iter()
+                .find(|(a, _)| a == "data-width")
+                .and_then(|(_, v)| v.parse().ok())
+                .unwrap_or(crate::files::CONVERSATION_WIDTH);
+            return d
+                .cursor(CursorStyle::ResizeLeftRight)
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, e: &MouseDownEvent, _window, cx| {
+                        this.resizing = Some((f32::from(e.position.x), width));
+                        cx.stop_propagation();
+                    }),
+                )
+                .into_any_element();
         }
 
         // A pane's terminal, painted from its own cells.
@@ -1358,10 +1369,19 @@ impl GpuiDesktopView {
             }
             if let Some(action) = el.at_top.clone() {
                 let handle = self.kept_scroll(&id_str, el);
+                let (scrolled, key) = (handle.clone(), id_str.clone());
                 stateful = stateful.track_scroll(&handle).on_scroll_wheel(cx.listener(
-                    move |this, e: &ScrollWheelEvent, _window, cx| {
-                        // Whether it is at its end decides what is drawn over it.
-                        cx.notify();
+                    move |this, e: &ScrollWheelEvent, window, cx| {
+                        // Whether it is at its end decides what is drawn over
+                        // it: the window is drawn again only when that changes,
+                        // once the scroll has moved.
+                        let (scrolled, key) = (scrolled.clone(), key.clone());
+                        cx.defer_in(window, move |this, _, cx| {
+                            let was = this.drawn_at_end.borrow().get(&key).copied();
+                            if was.is_none_or(|end| end != at_end(&scrolled)) {
+                                cx.notify();
+                            }
+                        });
                         let up = e.delta.pixel_delta(px(1.0)).y > px(0.0);
                         if up
                             && handle.offset().y >= px(0.0)
@@ -1409,6 +1429,18 @@ impl GpuiDesktopView {
         d.into_any_element()
     }
 
+    /// The window's tree, built from the app.
+    fn built(&self) -> Element {
+        match self.shared.lock() {
+            Ok(guard) => {
+                let mut tree = guard.app.render();
+                keep_whole_in_scrolls(&mut tree);
+                tree
+            }
+            Err(_) => crate::gpui::div(),
+        }
+    }
+
     /// The view of a pane's terminal, the same from draw to draw.
     fn terminal_view(
         &self,
@@ -1425,6 +1457,60 @@ impl GpuiDesktopView {
         let view = cx.new(|_| TerminalView::new(shared, project.to_path_buf(), pane));
         self.terminals.borrow_mut().insert(key, view.clone());
         view
+    }
+
+    /// The view of the file a pane has open, the same from draw to draw;
+    /// `None` when the file is no longer open.
+    #[cfg(target_os = "macos")]
+    fn viewer_view(
+        &self,
+        id: u64,
+        covered: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<::gpui::Entity<crate::viewer::ViewerView>> {
+        use crate::action::FileAct;
+        use crate::viewer::{Ask, ViewerView};
+        self.kept.borrow_mut().viewers.insert(id);
+        let existing = self.viewers.borrow().get(&id).cloned();
+        let view = match existing {
+            Some(view) => view,
+            None => {
+                let (page, file) = {
+                    let guard = self.shared.lock().ok()?;
+                    let v = guard.app.files.get(id)?;
+                    (v.page(), v.abs.clone())
+                };
+                let shared = Arc::clone(&self.shared);
+                let asked = move |ask| {
+                    if let Ok(mut guard) = shared.lock() {
+                        guard.app.dispatch(match ask {
+                            Ask::Reveal => FileAct::Reveal(id),
+                            Ask::Close => FileAct::Close(id),
+                        });
+                        guard.dirty = true;
+                    }
+                };
+                let view = cx.new(|_| ViewerView::new(&page, file, asked));
+                self.viewers.borrow_mut().insert(id, view.clone());
+                view
+            }
+        };
+        view.update(cx, |v, _| v.covered = covered);
+        Some(view)
+    }
+
+    /// The divider followed to where the pointer is, while it is dragged.
+    fn resize(&mut self, e: &MouseMoveEvent, cx: &mut Context<Self>) {
+        let Some((from, width)) = self.resizing else { return };
+        if e.pressed_button != Some(MouseButton::Left) {
+            self.resizing = None;
+            return;
+        }
+        let to = (width + f32::from(e.position.x) - from).max(0.0);
+        if let Ok(mut guard) = self.shared.lock() {
+            guard.app.dispatch(crate::action::FileAct::Width(to.round() as u32));
+        }
+        cx.notify();
     }
 
     /// A box that holds no terminal and takes its size from around it, as a
@@ -1922,20 +2008,15 @@ impl EntityInputHandler for GpuiDesktopView {
 }
 
 impl Render for GpuiDesktopView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Drawn for terminals' output alone, the tree and its parts are as
         // they were; told anything else, both are built again.
         let output_only = std::mem::take(&mut self.output_only);
         let rebuild = std::mem::take(&mut self.stale) || !output_only || self.last.is_none();
         if rebuild {
-            self.last = Some(match self.shared.lock() {
-                Ok(guard) => {
-                    let mut tree = guard.app.render();
-                    keep_whole_in_scrolls(&mut tree);
-                    tree
-                }
-                Err(_) => crate::gpui::div(),
-            });
+            if !std::mem::take(&mut self.fresh) {
+                self.last = Some(self.built());
+            }
             self.builds += 1;
             *self.kept.borrow_mut() = Default::default();
         }
@@ -1953,20 +2034,50 @@ impl Render for GpuiDesktopView {
         let drawn = gpui_div()
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::on_key_down))
+            .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _window, cx| this.resize(e, cx)))
+            // A click anywhere on Weft's own view takes the keyboard back
+            // from a file's page, or from the window once a page is gone.
+            .capture_any_mouse_down(|_: &MouseDownEvent, _window, _cx| {
+                #[cfg(target_os = "macos")]
+                crate::viewer::take_keys(_window);
+            })
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _window, _cx| this.resizing = None),
+            )
             .size_full()
             .flex()
             .flex_col()
             .bg(parse_color(palette::CANVAS))
             .text_color(parse_color(palette::TEXT))
             .font_family(crate::fonts::SANS);
-        let window = Room { width: true, height: true, flex: true, row: false };
+        let room = Room { width: true, height: true, flex: true, row: false };
         let root_el = self.last.as_ref().expect("built above");
-        let root = self.build_gpui_element(root_el, root_text, false, "0", Some(window), cx);
+        let root = self.build_gpui_element(root_el, root_text, false, "0", Some(room), cx);
         if rebuild {
             // What this build did not draw is gone.
             let kept = self.kept.borrow();
             self.terminals.borrow_mut().retain(|k, _| kept.terminals.contains(k));
             self.parts.borrow_mut().retain(|k, _| kept.parts.contains(k));
+            // A file still open but not drawn keeps its page, out of sight;
+            // a file closed takes its page with it.
+            #[cfg(target_os = "macos")]
+            if let Ok(guard) = self.shared.lock() {
+                let files = &guard.app.files;
+                let before = self.viewers.borrow().len();
+                self.viewers.borrow_mut().retain(|id, view| {
+                    let open = files.get(*id).is_some();
+                    if open && !kept.viewers.contains(id) {
+                        view.read(cx).hide();
+                    }
+                    open
+                });
+                // A page closed takes the keyboard with it, if it had it:
+                // Weft's view takes it first.
+                if self.viewers.borrow().len() < before {
+                    crate::viewer::take_keys(window);
+                }
+            }
         }
         drawn.child(root)
     }
@@ -2214,11 +2325,31 @@ mod tests {
             let shown = shared.lock().unwrap().app.pane_view(&key.0, key.1).unwrap().contents();
             assert!(shown.contains("hello from the agent"), "{shown}");
 
-            // Anything else: the tree is built again and every part drawn again.
+            // Told of anything else, the tree is built again; a part drawn
+            // as it was is not drawn again, and one that changed is.
             view.update(cx, |_, cx| cx.notify());
             cx.run_until_parked();
             let told = counts(cx);
-            assert!(told.0 > after.0 && told.1 > after.1, "{after:?} then {told:?}");
+            assert!(told.0 > after.0, "built again: {after:?} then {told:?}");
+            assert_eq!(told.1, after.1, "no part changed, none drawn again");
+            let each = |cx: &mut VisualTestContext| {
+                view.read_with(cx, |v, cx| {
+                    v.parts
+                        .borrow()
+                        .iter()
+                        .map(|(k, p)| (k.clone(), p.read(cx).drawn))
+                        .collect::<HashMap<_, _>>()
+                })
+            };
+            let before = each(cx);
+            shared.lock().unwrap().app.state.settings.sidebar_open = false;
+            view.update(cx, |_, cx| cx.notify());
+            cx.run_until_parked();
+            let again = each(cx)
+                .into_iter()
+                .filter(|(k, n)| before.get(k).is_some_and(|was| n > was))
+                .count();
+            assert!(again > 0, "the parts it moved drawn again");
         });
     }
 

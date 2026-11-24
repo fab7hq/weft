@@ -378,12 +378,13 @@ pub enum FileAct {
     Open {
         project: PathBuf,
         pane: u32,
-        harness: String,
         file: weft_core::files::Ref,
     },
     /// The viewer's file shown in the machine's file manager.
     Reveal(u64),
     Close(u64),
+    /// The divider dragged: the conversation's width beside a file.
+    Width(u32),
 }
 
 macro_rules! area {

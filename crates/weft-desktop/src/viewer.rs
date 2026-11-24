@@ -1,8 +1,8 @@
-//! The viewer's window: a WebView filling it, whose page draws one file.
-//! The page and the file come over the WebView's own `weft:` scheme:
-//! `weft://app/<path>` the page's files, built into the binary, and
-//! `weft://file/0` the one file the window opened, read from the disk a
-//! requested range at a time.
+//! The file open in an agent's pane: a WebView in Weft's window, placed in
+//! the pane's box, whose page draws the file. The page and the file come over
+//! the WebView's own `weft:` scheme: `weft://app/<path>` the page's files,
+//! built into the binary, and `weft://file/0` the one file it opened, read
+//! from the disk a requested range at a time.
 
 use std::borrow::Cow;
 use std::fs::File;
@@ -10,7 +10,9 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use ::gpui::{Context, IntoElement, Render, Rgba, Window, canvas, div, prelude::*, rgb};
+use ::gpui::{
+    Bounds, Context, IntoElement, Pixels, Render, Rgba, Window, canvas, div, prelude::*, rgb,
+};
 use wry::dpi::{LogicalPosition, LogicalSize};
 use wry::http::{Method, Request, Response, StatusCode, header};
 use wry::{Rect, WebView, WebViewBuilder};
@@ -40,7 +42,7 @@ pub fn ask(message: &str) -> Option<Ask> {
     }
 }
 
-/// The answer to one of the page's requests; `file` is the window's file.
+/// The answer to one of the page's requests; `file` is the one it opened.
 pub fn answer(req: &Request<Vec<u8>>, file: &Path) -> Answer {
     match (req.uri().host(), req.uri().path()) {
         (Some("app"), path) => page_file(path),
@@ -115,7 +117,7 @@ fn range(asked: &str, total: u64) -> Option<Result<(u64, u64), ()>> {
     Some(Ok((start, end)))
 }
 
-/// The window's file, or the range of it asked for.
+/// The file it opened, or the range of it asked for.
 fn served(req: &Request<Vec<u8>>, file: &Path) -> Answer {
     let Ok(mut f) = File::open(file) else { return status(StatusCode::NOT_FOUND) };
     let Ok(meta) = f.metadata() else { return status(StatusCode::NOT_FOUND) };
@@ -204,51 +206,134 @@ fn canvas_color() -> (u8, u8, u8) {
     (hex(1), hex(3), hex(5))
 }
 
-/// A viewer's window: the page fills it. Dropped, the WebView goes with it.
-pub struct ViewerView {
-    /// `None` when the system would not make one: the window stays empty.
-    webview: Option<Rc<WebView>>,
+/// What a viewer's WebView is made from, until the window first draws it.
+struct Making {
+    page: String,
+    file: PathBuf,
+    asked: Box<dyn Fn(Ask)>,
 }
 
+/// The file open in a pane: its WebView, laid over the box the window gives
+/// it. Dropped, the WebView goes with it.
+pub struct ViewerView {
+    making: Option<Making>,
+    /// `None` until first drawn, or when the system would not make one.
+    webview: Option<Rc<WebView>>,
+    /// Something is drawn over the box, which the WebView would hide.
+    pub covered: bool,
+    /// Where the WebView was last put, and whether it showed: told to it
+    /// again only when that changes, so a scroll beside it does not make
+    /// WebKit lay its page out each frame.
+    placed: Rc<std::cell::Cell<Placed>>,
+}
+
+/// Where a WebView was put, and whether it showed.
+type Placed = Option<(Bounds<Pixels>, bool)>;
+
 impl ViewerView {
-    /// The WebView in `window`, loading `page`, serving `file`; what the
-    /// page asks goes to `asked`.
-    pub fn new(window: &Window, page: &str, file: PathBuf, asked: impl Fn(Ask) + 'static) -> Self {
-        let (r, g, b) = canvas_color();
-        let webview = WebViewBuilder::new()
-            .with_asynchronous_custom_protocol("weft".into(), move |_, req, responder| {
-                let file = file.clone();
-                std::thread::spawn(move || responder.respond(answer(&req, &file)));
-            })
-            .with_ipc_handler(move |req: Request<String>| {
-                if let Some(a) = ask(req.body()) {
-                    asked(a);
-                }
-            })
-            // The page stays: a link out of it does not take the window.
-            .with_navigation_handler(|url| {
-                ["weft:", "about:", "blob:", "data:"].iter().any(|s| url.starts_with(s))
-            })
-            .with_background_color((r, g, b, 255))
-            .with_url(page)
-            .build_as_child(window);
-        if let Err(e) = &webview {
-            eprintln!("weft-desktop: the viewer: {e}");
+    /// The view loading `page`, serving `file`; what the page asks goes to
+    /// `asked`.
+    pub fn new(page: &str, file: PathBuf, asked: impl Fn(Ask) + 'static) -> Self {
+        let making = Making { page: page.to_string(), file, asked: Box::new(asked) };
+        ViewerView { making: Some(making), webview: None, covered: false, placed: Rc::default() }
+    }
+
+    /// The WebView in `window`, made the first time it is drawn.
+    fn made(&mut self, window: &Window) -> Option<Rc<WebView>> {
+        if let Some(Making { page, file, asked }) = self.making.take() {
+            let (r, g, b) = canvas_color();
+            let webview = WebViewBuilder::new()
+                .with_asynchronous_custom_protocol("weft".into(), move |_, req, responder| {
+                    let file = file.clone();
+                    std::thread::spawn(move || responder.respond(answer(&req, &file)));
+                })
+                .with_ipc_handler(move |req: Request<String>| {
+                    if let Some(a) = ask(req.body()) {
+                        asked(a);
+                    }
+                })
+                // The page stays: a link out of it does not take the pane.
+                .with_navigation_handler(|url| {
+                    ["weft:", "about:", "blob:", "data:"].iter().any(|s| url.starts_with(s))
+                })
+                .with_background_color((r, g, b, 255))
+                .with_url(&page)
+                .build_as_child(window);
+            if let Err(e) = &webview {
+                eprintln!("weft-desktop: the viewer: {e}");
+            }
+            self.webview = webview.ok().map(Rc::new);
         }
-        ViewerView { webview: webview.ok().map(Rc::new) }
+        self.webview.clone()
+    }
+
+    /// Out of sight: its pane shows something else, or the file is gone.
+    pub fn hide(&self) {
+        if let Some(webview) = &self.webview {
+            let _ = webview.set_visible(false);
+            self.placed.set(None);
+        }
+    }
+}
+
+/// Whether a viewer's page has the keyboard: the window's first responder is
+/// a view inside Weft's own, not Weft's. The keys it does not use come on to
+/// Weft's view, and are the page's, not Weft's.
+pub fn page_has_keys(window: &Window) -> bool {
+    use objc2_app_kit::NSView;
+    let Some(weft) = weft_view(window) else { return false };
+    let Some(responder) = weft.window().and_then(|w| w.firstResponder()) else { return false };
+    let Ok(view) = responder.downcast::<NSView>() else { return false };
+    !std::ptr::eq(&*view, weft) && view.isDescendantOf(weft)
+}
+
+/// Weft's own view, the one GPUI draws into and takes keys in.
+fn weft_view(window: &Window) -> Option<&objc2_app_kit::NSView> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let handle = HasWindowHandle::window_handle(window).ok()?;
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else { return None };
+    // SAFETY: the handle's view is the window's own, alive while the window is.
+    Some(unsafe { handle.ns_view.cast().as_ref() })
+}
+
+/// The keyboard to Weft's own view, from whatever has it: a page, or the
+/// window itself once a page that had it is gone. Held by the window, each
+/// key reaches Weft twice.
+pub fn take_keys(window: &Window) {
+    let Some(weft) = weft_view(window) else { return };
+    let Some(w) = weft.window() else { return };
+    let has = w.firstResponder().is_some_and(|r| {
+        std::ptr::eq(
+            (&*r as *const objc2_app_kit::NSResponder).cast::<u8>(),
+            (weft as *const objc2_app_kit::NSView).cast::<u8>(),
+        )
+    });
+    if !has {
+        w.makeFirstResponder(Some(weft));
     }
 }
 
 impl Render for ViewerView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let webview = self.webview.clone();
+    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let webview = self.made(window);
+        let (covered, placed) = (self.covered, Rc::clone(&self.placed));
         let (r, g, b) = canvas_color();
         let bg: Rgba = rgb(u32::from_be_bytes([0, r, g, b]));
         div().size_full().bg(bg).child(
-            // The WebView follows this box on every frame.
+            // The WebView follows this box on every frame, out of sight while
+            // something is drawn over it or a tab is dragged across it.
             canvas(
-                move |bounds, _, _| {
+                move |bounds, _, cx| {
                     let Some(webview) = webview else { return };
+                    let shown = !covered && !cx.has_active_drag();
+                    let was = placed.replace(Some((bounds, shown)));
+                    if was.is_some_and(|(b, s)| s == shown && (!shown || b == bounds)) {
+                        return;
+                    }
+                    let _ = webview.set_visible(shown);
+                    if !shown {
+                        return;
+                    }
                     let _ = webview.set_bounds(Rect {
                         position: LogicalPosition::new(
                             f32::from(bounds.origin.x),
