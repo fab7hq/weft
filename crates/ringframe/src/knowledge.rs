@@ -272,7 +272,7 @@ pub fn pins_for(ws: &Workspace, changes: &Value, windows: &[String]) -> Vec<Valu
         let mine = u["windows"].as_array().into_iter().flatten().filter_map(Value::as_str);
         if mine.into_iter().any(|w| windows.iter().any(|x| x == w)) {
             let repo = u["repo"].as_str().unwrap_or(".").to_string();
-            let path = u["path"].as_str().unwrap_or_default().to_string();
+            let path = in_repo(&repo, u["path"].as_str().unwrap_or_default()).to_string();
             if !path.is_empty() {
                 files.insert((repo, path));
             }
@@ -356,7 +356,7 @@ fn changed_files(changes: &Value) -> BTreeMap<String, BTreeSet<String>> {
     let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for u in changes["units"].as_array().into_iter().flatten() {
         if let (Some(repo), Some(path)) = (u["repo"].as_str(), u["path"].as_str()) {
-            out.entry(repo.to_string()).or_default().insert(path.to_string());
+            out.entry(repo.to_string()).or_default().insert(in_repo(repo, path).to_string());
         }
     }
     out
@@ -564,6 +564,16 @@ pub fn check_context(
 
 /// A repository's root, by the name an Eval gives it (`.` or a path relative
 /// to the workspace).
+/// A change's path as its repository has it: the Eval names a file of
+/// another repository under that repository's name (`../lib/src/x.js`), and a
+/// pin keeps the path inside it (`src/x.js`).
+fn in_repo<'a>(repo: &str, path: &'a str) -> &'a str {
+    if repo == "." {
+        return path;
+    }
+    path.strip_prefix(repo).and_then(|p| p.strip_prefix('/')).unwrap_or(path)
+}
+
 pub fn repo_root(ws: &Workspace, name: &str) -> PathBuf {
     if name == "." { ws.root.clone() } else { ws.root.join(name) }
 }
@@ -900,6 +910,37 @@ mod tests {
         assert_eq!(state(root, &pa, &base)["stale"], json!(false));
         let gone = commit(root, &[("src/c.rs", None)], "delete");
         assert_eq!(state(root, &pb, &gone)["deleted"], json!(true));
+    }
+
+    /// A decision about a change in another repository of the product is
+    /// pinned to the file inside that repository, and goes stale on a branch
+    /// of it that changes the file, not on the branch that keeps it.
+    #[test]
+    fn a_file_of_another_repository_is_pinned_there_and_stale_on_its_branch() {
+        let (project, other) = (repo(), repo());
+        let ws = ws_for(project.path());
+        let name = format!("../{}", other.path().file_name().unwrap().to_string_lossy());
+        let lib = other.path();
+        let at = commit(lib, &[("src/x.js", Some("one\n"))], "lib");
+        let changes = json!({
+            "repos": [{"name": name, "subject": {"kind": "git_commit", "ref": at}}],
+            "units": [{"repo": name, "path": format!("{name}/src/x.js"), "windows": ["w1"]}],
+        });
+        let pins = pins_for(&ws, &changes, &["w1".to_string()]);
+        assert_eq!(pins.len(), 1, "{pins:?}");
+        assert_eq!(
+            (pins[0]["repo"].clone(), pins[0]["path"].clone()),
+            (json!(name), json!("src/x.js"))
+        );
+        assert!(changed_files(&changes)[&name].contains("src/x.js"));
+        let none = BTreeMap::new();
+        assert!(stale_files(&ws, &pins, &none).is_empty());
+        let l = lib.to_string_lossy().to_string();
+        run(&["git", "-C", &l, "checkout", "-qb", "other"]);
+        commit(lib, &[("src/x.js", Some("two\n"))], "other");
+        assert_eq!(stale_files(&ws, &pins, &none), [format!("{name}/src/x.js")]);
+        run(&["git", "-C", &l, "checkout", "-q", "-"]);
+        assert!(stale_files(&ws, &pins, &none).is_empty());
     }
 
     #[test]
