@@ -654,6 +654,8 @@ pub const WORDS: &[(&str, &str)] = &[
     ("file.source", "Source"),
     ("file.close", "Close"),
     ("file.reveal", "Reveal in Finder"),
+    ("file.more", "+{n} more"),
+    ("file.less", "Less"),
     ("file.changed", "changed {time}"),
     ("file.gone", "{path} was moved or deleted."),
     ("file.unreadable", "{path} could not be read."),

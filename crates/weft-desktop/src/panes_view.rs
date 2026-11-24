@@ -867,12 +867,11 @@ fn render_conversation_viewport(props: &PanesProps, tab: &SavedPaneTab) -> Eleme
         {
             chat_col.push(el);
         }
-        let open = props.files.of(&tab.project, tab.pane).map(|v| v.file.path.as_str());
         chat_col.extend(conversation_blocks(
             items,
             &harness,
             (&tab.project, tab.pane),
-            open,
+            props.files,
             props.unfolded_steps,
             needs_you,
             zone,
@@ -946,7 +945,7 @@ fn conversation_blocks(
     items: &[Item],
     harness: &str,
     (project, pane): (&std::path::Path, u32),
-    open: Option<&str>,
+    files: &crate::files::Files,
     unfolded_steps: &HashSet<(PathBuf, u32, usize)>,
     waiting: bool,
     zone: i64,
@@ -1043,7 +1042,16 @@ fn conversation_blocks(
                                 .child(span(clock).color(palette::DIM)),
                         )
                         .child(crate::markdown_view::message(text))
-                        .children(files_named(&items[i], (project, pane), open)),
+                        .children(files_named(
+                            &items[i],
+                            (project, pane),
+                            files.unfolded.contains(&(
+                                project.to_path_buf(),
+                                pane,
+                                items[i].id.clone(),
+                            )),
+                            files.of(project, pane).map(|v| v.file.path.as_str()),
+                        )),
                 );
                 i += 1;
             }
@@ -1079,12 +1087,14 @@ fn conversation_blocks(
 /// The chips for the files an agent's message named, under its words.
 fn files_named(
     item: &Item,
-    (project, pane): (&std::path::Path, u32),
+    at: (&std::path::Path, u32),
+    unfolded: bool,
     open: Option<&str>,
 ) -> Option<Element> {
     let refs: Vec<_> = item.refs.iter().collect();
-    (!refs.is_empty())
-        .then(|| crate::files::chips(&refs, project, pane, open).style("padding-top", "6px"))
+    (!refs.is_empty()).then(|| {
+        crate::files::chips(&refs, at, &item.id, unfolded, open).style("padding-top", "6px")
+    })
 }
 
 fn render_step_block(

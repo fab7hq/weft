@@ -44,11 +44,44 @@ fn glyph(kind: FileKind) -> &'static str {
     }
 }
 
-/// The chips for the files an item points at, wrapping onto more lines as
-/// they need; each opens its file, and the one open beside them is marked.
-pub fn chips(refs: &[&Ref], project: &Path, pane: u32, open: Option<&str>) -> Element {
-    div().layer("files").self_stretch().flex_row().style("flex-wrap", "wrap").gap(8).children(
-        refs.iter().map(|r| {
+/// How many of a message's chips show before "+N more".
+pub const SHOWN: usize = 4;
+
+/// The chips for the files a message named, wrapping onto more lines as they
+/// need; each opens its file, and the one open beside them is marked. Past
+/// the first few, "+N more" shows the rest, and "Less" folds them again.
+pub fn chips(
+    refs: &[&Ref],
+    (project, pane): (&Path, u32),
+    item: &str,
+    unfolded: bool,
+    open: Option<&str>,
+) -> Element {
+    let many = refs.len() > SHOWN;
+    let shown = if many && !unfolded { &refs[..SHOWN] } else { refs };
+    let fold = FileAct::Unfold { project: project.to_path_buf(), pane, item: item.to_string() };
+    let toggle = many.then(|| {
+        let said = if unfolded {
+            weft_core::words::word("file.less").to_string()
+        } else {
+            weft_core::words::fill("file.more", &[("n", &(refs.len() - SHOWN).to_string())])
+        };
+        div()
+            .layer(if unfolded { "fewer files" } else { "more files" })
+            .on_click(fold)
+            .flex_row()
+            .items_center()
+            .h(28)
+            .pad(0, 10)
+            .border_dashed(palette::LINE_HOVER)
+            .font_mono()
+            .font_size(12)
+            .color(palette::MUTED)
+            .text(said)
+    });
+    let chips = div().layer("files").self_stretch().flex_row().style("flex-wrap", "wrap").gap(8);
+    chips
+        .children(shown.iter().map(|r| {
             let shown = open == Some(r.path.as_str());
             let open = FileAct::Open { project: project.to_path_buf(), pane, file: (*r).clone() };
             // One run of text, the glyph and the size dimmer than the name: a
@@ -77,8 +110,8 @@ pub fn chips(refs: &[&Ref], project: &Path, pane: u32, open: Option<&str>) -> El
                 .font_mono()
                 .font_size(12)
                 .color(if shown { palette::BLUE_BORDER } else { palette::TEXT })
-        }),
-    )
+        }))
+        .children(toggle)
 }
 
 /// The file open in an agent's pane.
@@ -140,6 +173,8 @@ pub struct Files {
     next: u64,
     /// The conversation's width beside a file, as the divider was left.
     pub width: f32,
+    /// The messages whose chips all show, by their agent and item.
+    pub unfolded: std::collections::HashSet<(PathBuf, u32, String)>,
     /// Files to hand to the machine's own app.
     pub outside: Vec<PathBuf>,
     /// Files to show in the machine's file manager.
@@ -152,6 +187,7 @@ impl Default for Files {
             viewers: Vec::new(),
             next: 0,
             width: CONVERSATION_WIDTH,
+            unfolded: Default::default(),
             outside: Vec::new(),
             reveal: Vec::new(),
         }
@@ -216,6 +252,12 @@ impl WeftDesktopApp {
             }
             FileAct::Close(id) => self.files.close(id),
             FileAct::Width(width) => self.files.width = width as f32,
+            FileAct::Unfold { project, pane, item } => {
+                let key = (project, pane, item);
+                if !self.files.unfolded.remove(&key) {
+                    self.files.unfolded.insert(key);
+                }
+            }
         }
     }
 }

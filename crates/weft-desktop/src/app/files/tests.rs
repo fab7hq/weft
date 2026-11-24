@@ -258,3 +258,46 @@ fn the_divider_keeps_each_side_its_least() {
     assert_eq!(files.beside(940.0), Some(940.0 - FILE_MIN));
     assert_eq!(files.beside(CONVERSATION_MIN + FILE_MIN - 1.0), None, "too narrow: the file alone");
 }
+
+/// A message that names more than four files shows four and "+N more";
+/// opened, every chip and "Less", which folds them again.
+#[test]
+fn a_message_with_many_files_shows_four_then_the_rest_on_asking() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    app.state.panes.groups.clear();
+    let pane = start(&mut app, &mut wire, "codex");
+    app.dispatch(PaneAct::SetView { group: 0, tab: 0, view: PaneViewMode::Conversation });
+    let (id, _) = wire.call();
+    let refs: Vec<Ref> =
+        (0..7).map(|n| a_ref(&format!("out/chart-{n}.png"), FileKind::Image)).collect();
+    let text: String = refs.iter().map(|r| format!("`{}` ", r.path)).collect();
+    let items = vec![
+        said("1.0", Kind::Agent, Some(&text), refs),
+        said(
+            "2.0",
+            Kind::Agent,
+            Some("Wrote `out/report.md`."),
+            vec![a_ref("out/report.md", FileKind::Markdown)],
+        ),
+    ];
+    wire.answer(id, json!({"conversation": {"items": items}}));
+    pumped(&mut app, |a| a.conversations.contains_key(&(weft(), pane)));
+
+    let dom = app.render();
+    drawable(&dom);
+    let many = dom.find_layer("msg codex").unwrap();
+    assert_eq!(chip_names(many).len(), 4, "four first");
+    let more = many.find_layer("more files").expect("+N more");
+    assert_eq!(more.all_text(), "+3 more");
+    let one = dom.find_layer("msg codex 2").unwrap();
+    assert!(one.find_layer("more files").is_none(), "a few files: no more");
+
+    app.dispatch(more.action.clone().unwrap());
+    let dom = app.render();
+    let many = dom.find_layer("msg codex").unwrap();
+    assert_eq!(chip_names(many).len(), 7, "every chip");
+    let less = many.find_layer("fewer files").expect("Less");
+    assert_eq!(less.all_text(), "Less");
+    app.dispatch(less.action.clone().unwrap());
+    assert_eq!(chip_names(app.render().find_layer("msg codex").unwrap()).len(), 4, "folded again");
+}

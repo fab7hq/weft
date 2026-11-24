@@ -11,12 +11,12 @@ use std::time::Duration;
 
 use ::gpui::{
     Animation, AnimationExt, AnyElement, App, Bounds, ClipboardItem, Context, CursorStyle, Div,
-    ElementId, EntityInputHandler, FocusHandle, Focusable, FontWeight, IntoElement, KeyDownEvent,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, PathPromptOptions,
-    Pixels, Point, Render, Rgba, ScrollHandle, ScrollWheelEvent, SharedString,
-    StatefulInteractiveElement, StyleRefinement, Styled, SystemNotification, UTF16Selection,
-    WeakEntity, Window, WindowBounds as GpuiWindowBounds, WindowId, WindowOptions, div as gpui_div,
-    point, prelude::*, px, relative, rgba, size,
+    ElementId, EntityInputHandler, FocusHandle, Focusable, FollowMode, FontWeight, IntoElement,
+    KeyDownEvent, ListAlignment, ListState, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ParentElement, PathPromptOptions, Pixels, Point, Render, Rgba, ScrollHandle,
+    ScrollWheelEvent, SharedString, StatefulInteractiveElement, StyleRefinement, Styled,
+    SystemNotification, UTF16Selection, WeakEntity, Window, WindowBounds as GpuiWindowBounds,
+    WindowId, WindowOptions, div as gpui_div, point, prelude::*, px, relative, rgba, size,
 };
 use anyhow::Result;
 use weft_core::state::WindowBounds;
@@ -104,6 +104,9 @@ struct GpuiDesktopView {
     scrolls: RefCell<HashMap<String, (ScrollHandle, Option<String>)>>,
     /// The element tree last built from the app.
     last: Option<Element>,
+    /// Each conversation's list, by its scroll's key: kept while the app
+    /// runs, so each agent's conversation keeps its place.
+    lists: RefCell<HashMap<String, Listed>>,
     /// Each scroll with something drawn over it away from its end: whether
     /// it was at its end when last drawn.
     drawn_at_end: RefCell<HashMap<String, bool>>,
@@ -112,7 +115,8 @@ struct GpuiDesktopView {
     fresh: bool,
     /// The view was told something changed since it last drew.
     stale: bool,
-    /// Only terminals were told to draw again since the view last drew.
+    /// Only terminals were told to draw again, or a list scrolled, since the
+    /// view last drew: its tree is as it was.
     output_only: bool,
     /// This draw builds the tree from the app again.
     rebuilding: Cell<bool>,
@@ -131,6 +135,14 @@ struct GpuiDesktopView {
     /// The divider being dragged: where the pointer started, and the
     /// conversation's width then.
     resizing: Option<(f32, f32)>,
+}
+
+/// A conversation's list: where it is scrolled and each block's height, the
+/// blocks it holds, and the text style they inherit.
+struct Listed {
+    state: ListState,
+    blocks: Rc<RefCell<Vec<Element>>>,
+    text: Rc<Cell<InheritedText>>,
 }
 
 /// The terminals and parts one build drew; the rest are dropped.
@@ -627,6 +639,7 @@ impl GpuiDesktopView {
             painted: Rc::default(),
             scrolls: RefCell::default(),
             last: None,
+            lists: RefCell::default(),
             drawn_at_end: RefCell::default(),
             fresh: false,
             stale: true,
@@ -694,8 +707,9 @@ impl GpuiDesktopView {
             Action::Pane(PaneAct::ToEnd { project, pane }) => {
                 let id = crate::panes_view::conversation_id(project, *pane);
                 let key = crate::gpui::scroll_key("pane conversation", &id);
-                if let Some((handle, _)) = self.scrolls.borrow().get(&key) {
-                    handle.scroll_to_bottom();
+                if let Some(listed) = self.lists.borrow().get(&key) {
+                    listed.state.scroll_to_end();
+                    listed.state.set_follow_mode(FollowMode::Tail);
                 }
                 cx.notify();
             }
@@ -1095,7 +1109,7 @@ impl GpuiDesktopView {
     ) -> AnyElement {
         // Only while its scroll is away from its end.
         if let Some(key) = &el.ends {
-            let end = self.scrolls.borrow().get(key).is_none_or(|(h, _)| at_end(h));
+            let end = self.at_its_end(key);
             self.drawn_at_end.borrow_mut().insert(key.clone(), end);
             if end {
                 return gpui_div().into_any_element();
@@ -1313,6 +1327,22 @@ impl GpuiDesktopView {
             }
         }
 
+        // A conversation: a list that lays out only the blocks in sight.
+        if let Some(action) = el.at_top.clone() {
+            let key = match (&el.layer_name, &el.id) {
+                (Some(ln), Some(id)) => crate::gpui::scroll_key(ln, id),
+                _ => format!("node:{path}"),
+            };
+            let gap = el
+                .styles
+                .iter()
+                .find(|(k, _)| k == "gap")
+                .and_then(|(_, v)| v.trim_end_matches("px").parse().ok())
+                .unwrap_or(0.0);
+            let shown = self.listed(el, &key, text_style, path, action, gap, cx);
+            return d.child(shown).into_any_element();
+        }
+
         // The room this box gives its children.
         let flex =
             el.styles.iter().any(|(k, v)| (k == "display" && v == "flex") || k == "flex-direction")
@@ -1366,31 +1396,6 @@ impl GpuiDesktopView {
             }
             if let Some(at) = el.shows {
                 stateful = stateful.track_scroll(&self.shown_scroll(&id_str, at));
-            }
-            if let Some(action) = el.at_top.clone() {
-                let handle = self.kept_scroll(&id_str, el);
-                let (scrolled, key) = (handle.clone(), id_str.clone());
-                stateful = stateful.track_scroll(&handle).on_scroll_wheel(cx.listener(
-                    move |this, e: &ScrollWheelEvent, window, cx| {
-                        // Whether it is at its end decides what is drawn over
-                        // it: the window is drawn again only when that changes,
-                        // once the scroll has moved.
-                        let (scrolled, key) = (scrolled.clone(), key.clone());
-                        cx.defer_in(window, move |this, _, cx| {
-                            let was = this.drawn_at_end.borrow().get(&key).copied();
-                            if was.is_none_or(|end| end != at_end(&scrolled)) {
-                                cx.notify();
-                            }
-                        });
-                        let up = e.delta.pixel_delta(px(1.0)).y > px(0.0);
-                        if up
-                            && handle.offset().y >= px(0.0)
-                            && let Ok(mut guard) = this.shared.lock()
-                        {
-                            guard.app.dispatch(action.clone());
-                        }
-                    },
-                ));
             }
             if let Some(tab) = el.drag.clone() {
                 stateful = stateful.on_drag(tab, |tab, _, _, cx| cx.new(|_| DragChip(tab.clone())));
@@ -1571,21 +1576,104 @@ impl GpuiDesktopView {
         part.cached(placing).into_any_element()
     }
 
-    /// The scroll of an element that reads more above its top, kept from
-    /// frame to frame. It opens at its end and stays there as more comes,
-    /// until the person scrolls up. When more went in above the child that
-    /// was first, that child is kept at the top.
-    fn kept_scroll(&self, key: &str, el: &Element) -> ScrollHandle {
-        let mut scrolls = self.scrolls.borrow_mut();
-        let (handle, first) = scrolls.entry(key.to_string()).or_default();
-        let at = el.children.iter().position(|c| c.id.is_some() && c.id == *first);
-        if let Some(at) = at.filter(|&at| at > 0) {
-            handle.scroll_to_top_of_item(at);
-        } else if at_end(handle) {
-            handle.scroll_to_bottom();
+    /// A conversation's list, kept from frame to frame under `key`: it opens
+    /// at its end and follows what comes until the person scrolls up, and a
+    /// page read in above keeps the place. Only the blocks in sight are laid
+    /// out, so a long conversation scrolls as a short one does; a block that
+    /// changed is measured again, the others keep their heights.
+    #[allow(clippy::too_many_arguments)]
+    fn listed(
+        &self,
+        el: &Element,
+        key: &str,
+        text: InheritedText,
+        path: &str,
+        older: Action,
+        gap: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut lists = self.lists.borrow_mut();
+        let listed = lists.entry(key.to_string()).or_insert_with(|| {
+            let state = ListState::new(0, ListAlignment::Top, px(600.0));
+            state.set_follow_mode(FollowMode::Tail);
+            let (shared, desktop, key) =
+                (Arc::clone(&self.shared), cx.weak_entity(), key.to_string());
+            state.set_scroll_handler(move |e, _window, cx| {
+                // At its top, the page before it is read.
+                if e.is_scrolled
+                    && e.visible_range.start == 0
+                    && let Ok(mut guard) = shared.lock()
+                {
+                    guard.app.dispatch(older.clone());
+                }
+                // Scrolled, it draws again, and the window around it with it:
+                // the window's tree is as it was.
+                let _ = desktop.update(cx, |this, _| this.output_only = true);
+                // What is drawn over it changes only at its end, asked once
+                // the scroll is done: the list holds its state while it scrolls.
+                let (desktop, key) = (desktop.clone(), key.clone());
+                cx.defer(move |cx| {
+                    let _ = desktop.update(cx, |this, cx| {
+                        let was = this.drawn_at_end.borrow().get(&key).copied();
+                        if was.is_none_or(|drawn| drawn != this.at_its_end(&key)) {
+                            cx.notify();
+                        }
+                    });
+                });
+            });
+            Listed { state, blocks: Rc::default(), text: Rc::new(Cell::new(text)) }
+        });
+        listed.text.set(text);
+        {
+            // The blocks that changed: what lies between the same first ones
+            // and the same last ones.
+            let mut blocks = listed.blocks.borrow_mut();
+            let new = &el.children;
+            let first = blocks.iter().zip(new).take_while(|(a, b)| a == b).count();
+            let last = blocks[first..]
+                .iter()
+                .rev()
+                .zip(new[first..].iter().rev())
+                .take_while(|(a, b)| a == b)
+                .count();
+            if first < blocks.len().max(new.len()) {
+                listed.state.splice(first..blocks.len() - last, new.len() - first - last);
+                *blocks = new.clone();
+            }
         }
-        *first = el.children.first().and_then(|c| c.id.clone());
-        handle.clone()
+        let (blocks, text, base) =
+            (Rc::clone(&listed.blocks), Rc::clone(&listed.text), path.to_string());
+        let desktop = cx.weak_entity();
+        // Each block as wide as the list, laid out on its own.
+        let room = Room { width: true, height: false, flex: true, row: false };
+        ::gpui::list(listed.state.clone(), move |ix, _window, cx| {
+            let block = blocks.borrow().get(ix).cloned();
+            let built = block.zip(desktop.upgrade()).map(|(block, desktop)| {
+                let at = format!("{base}/{ix}");
+                desktop.update(cx, |view, cx| {
+                    view.build_gpui_element(&block, text.get(), false, &at, Some(room), cx)
+                })
+            });
+            let mut row = gpui_div().w_full().flex().flex_col().items_center();
+            if ix > 0 {
+                row = row.pt(px(gap));
+            }
+            row.children(built).into_any_element()
+        })
+        .w_full()
+        .flex_1()
+        .into_any_element()
+    }
+
+    /// Whether a conversation's list, or another scroll, is at its end.
+    fn at_its_end(&self, key: &str) -> bool {
+        if let Some(listed) = self.lists.borrow().get(key) {
+            // Followed, it is at its end; scrolled up, only when it knows it
+            // is back there.
+            return listed.state.is_following_tail()
+                || listed.state.is_scrolled_to_end() == Some(true);
+        }
+        self.scrolls.borrow().get(key).is_none_or(|(h, _)| at_end(h))
     }
 
     /// The scroll of an element that keeps its child `at` in view: scrolled
@@ -1838,7 +1926,9 @@ fn style(d: Div, k: &str, v: &str) -> std::result::Result<Div, Div> {
         },
         "border" => match parse_border_color(v) {
             Some(c) => {
-                if v.starts_with("2px") { d.border_2() } else { d.border_1() }.border_color(c)
+                let d = if v.starts_with("2px") { d.border_2() } else { d.border_1() };
+                let d = d.border_color(c);
+                if v.contains("dashed") { d.border_dashed() } else { d }
             }
             None => d,
         },
@@ -2545,37 +2635,46 @@ mod tests {
                     cx.run_until_parked();
                 }
             };
+            let key = |pane: u32| {
+                let root = shared.lock().unwrap().app.clients[0].root.clone();
+                let id = crate::panes_view::conversation_id(&root, pane);
+                crate::gpui::scroll_key("pane conversation", &id)
+            };
             let handle = |cx: &mut VisualTestContext, pane: u32| {
                 view.read_with(cx, |v, _| {
-                    let scrolls = v.scrolls.borrow();
-                    let mine: Vec<_> = scrolls
-                        .iter()
-                        .filter(|(k, _)| {
-                            k.contains("pane conversation") && k.ends_with(&format!(" {pane}"))
-                        })
-                        .map(|(_, (h, _))| h.clone())
-                        .collect();
-                    assert_eq!(mine.len(), 1, "one scroll for pane {pane}: {:?}", scrolls.keys());
-                    mine[0].clone()
+                    let lists = v.lists.borrow();
+                    let mine = lists.get(&key(pane));
+                    assert!(mine.is_some(), "a list for pane {pane}: {:?}", lists.keys());
+                    mine.unwrap().state.clone()
                 })
             };
-            let at_end = |h: &ScrollHandle| {
-                h.max_offset().y > px(0.0) && h.offset().y <= -h.max_offset().y + px(1.0)
+            let at_end = |cx: &mut VisualTestContext, pane: u32| {
+                view.read_with(cx, |v, _| v.at_its_end(&key(pane)))
             };
 
             show(cx, None);
             let (first, second) = (panes[0], panes[1]);
             assert_eq!(shared.lock().unwrap().app.state.panes.groups[0].active_tab, 1);
-            assert!(at_end(&handle(cx, second)), "the conversation opens at its end");
+            assert!(at_end(cx, second), "the conversation opens at its end");
             assert!(cx.debug_bounds("scroll to end").is_none(), "at its end, no button");
             // Read further up the second, then show the first.
-            handle(cx, second).set_offset(point(px(0.0), px(-100.0)));
+            let wheel = |cx: &mut VisualTestContext, dy: f32| {
+                let delta = ::gpui::ScrollDelta::Pixels(point(px(0.0), px(dy)));
+                let position = point(px(640.0), px(300.0));
+                cx.simulate_event(ScrollWheelEvent { position, delta, ..Default::default() });
+                cx.run_until_parked();
+            };
+            wheel(cx, 200.0);
+            assert!(!at_end(cx, second), "the wheel scrolls it up");
+            assert!(cx.debug_bounds("scroll to end").is_some(), "scrolled up, the button");
+            let up = ::gpui::ListOffset { item_ix: 10, offset_in_item: px(0.0) };
+            handle(cx, second).scroll_to(up);
             show(cx, Some(0));
-            assert!(at_end(&handle(cx, first)), "the first opens at its own end");
+            assert!(at_end(cx, first), "the first opens at its own end");
             show(cx, Some(1));
             assert_eq!(
-                handle(cx, second).offset().y,
-                px(-100.0),
+                handle(cx, second).logical_scroll_top().item_ix,
+                10,
                 "the second is where it was left"
             );
             // Away from its end, the way back to it; one press, and it is gone.
@@ -2586,7 +2685,7 @@ mod tests {
             });
             shared.lock().unwrap().dirty = true;
             show(cx, None);
-            assert!(at_end(&handle(cx, second)), "at its end");
+            assert!(at_end(cx, second), "at its end");
             assert!(cx.debug_bounds("scroll to end").is_none(), "at its end, no button");
         });
     }

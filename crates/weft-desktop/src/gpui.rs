@@ -340,6 +340,13 @@ impl Element {
             .style("border-radius", format!("{}px", palette::RADIUS_CONTROL))
     }
 
+    /// A dashed box with a control's corners: a chip that shows or hides
+    /// others, not a thing of its own.
+    pub fn border_dashed(self, color: &str) -> Self {
+        self.style("border", format!("1px dashed {color}"))
+            .style("border-radius", format!("{}px", palette::RADIUS_CONTROL))
+    }
+
     /// A panel's corners: a menu, a popover or a sheet over the page.
     pub fn panel_corners(self) -> Self {
         self.style("border-radius", format!("{}px", palette::RADIUS_PANEL))

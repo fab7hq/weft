@@ -385,6 +385,12 @@ pub enum FileAct {
     Close(u64),
     /// The divider dragged: the conversation's width beside a file.
     Width(u32),
+    /// A message's chips past the first few shown, or folded again.
+    Unfold {
+        project: PathBuf,
+        pane: u32,
+        item: String,
+    },
 }
 
 macro_rules! area {

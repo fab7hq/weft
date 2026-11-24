@@ -1,0 +1,1 @@
+import{c as e,n as t}from"./viewer-DM4t6mBq.js";function n({file:n,ready:r,fail:i}){return t(`div`,{class:`viewer-scroll viewer-image`,children:t(`img`,{src:n.url,alt:e(n.path),onLoad:r,onError:i})})}export{n as default};
