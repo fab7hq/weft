@@ -677,6 +677,63 @@ pub struct Open<'a> {
     pub progress: Option<&'a dyn Fn(OpenProgress)>,
 }
 
+/// Where one unit's own change ends, and the Asks of the units begun after
+/// it.
+struct NextUnit {
+    end: String,
+    later: BTreeSet<String>,
+}
+
+/// The end of a unit's own change: the base commit of the first Ask of the
+/// first unit begun after this unit's last Ask, when that commit descends
+/// from the anchor, is not the anchor, and is an ancestor of the subject.
+/// None otherwise: the unit is the latest, its work was not committed when
+/// the next began, or the units interleave.
+fn next_unit(
+    ws: &Workspace,
+    unit: &[String],
+    anchor: &str,
+    kind: &str,
+    reference: &str,
+) -> Result<Option<NextUnit>, EvalError> {
+    let all = crate::ask::list_asks(ws)?;
+    let time = |a: &Value| crate::sessions::parse_time(&str_of(a, "time"));
+    let ours = |a: &Value| unit.contains(&str_of(a, "ask_id"));
+    let Some(last) = all.iter().filter(|a| ours(a)).filter_map(time).max() else {
+        return Ok(None);
+    };
+    let began: BTreeMap<String, i64> =
+        all.iter().filter_map(|a| Some((str_of(a, "ask_id"), time(a)?))).collect();
+    let mut later = BTreeSet::new();
+    let mut first: Option<(i64, String)> = None;
+    for a in all.iter().filter(|a| !ours(a) && a["outcome"] != "cancelled") {
+        let Some(t) = time(a).filter(|t| *t > last) else { continue };
+        let theirs = crate::ask::unit_of(ws, &str_of(a, "ask_id"))?;
+        if theirs.iter().any(|x| began.get(x).is_none_or(|b| *b <= last)) {
+            continue;
+        }
+        later.extend(theirs);
+        if let Some(base) = a["base_commit"].as_str()
+            && first.as_ref().is_none_or(|(f, _)| t < *f)
+        {
+            first = Some((t, base.to_string()));
+        }
+    }
+    let Some((_, base)) = first else { return Ok(None) };
+    let tip = if kind == "git_commit" { reference } else { "HEAD" };
+    let (Ok(anchor), Ok(end), Ok(tip)) =
+        (commit_of(&ws.root, anchor), commit_of(&ws.root, &base), commit_of(&ws.root, tip))
+    else {
+        return Ok(None);
+    };
+    let ancestor =
+        |a: &str, b: &str| git(&ws.root, &["merge-base", a, b]).is_ok_and(|m| m.trim() == a);
+    if end == anchor || !ancestor(&anchor, &end) || !ancestor(&end, &tip) {
+        return Ok(None);
+    }
+    Ok(Some(NextUnit { end, later }))
+}
+
 /// When the anchor was recorded, in milliseconds since the epoch: a Seal's
 /// time, the time the Ask that took the base commit was compiled, or a given
 /// commit's own time. The work began then.
@@ -745,6 +802,24 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
         (Some(k), Some(r)) => (k.to_string(), r.to_string()),
         _ => default_subject(ws)?,
     };
+    let anchor = anchor_of(ws, &asks, unit.as_deref(), args.anchor)?;
+    // One unit's own change ends where the next unit's work begins, when its
+    // commits say so; otherwise at the subject. A subject the person named
+    // is read as named.
+    let next = match (&unit, args.subject_kind) {
+        (Some(u), None) => next_unit(ws, u, &str_of(&anchor, "ref"), &kind, &reference)?,
+        _ => None,
+    };
+    let (kind, reference, end_kind) = match &next {
+        Some(n) => ("git_commit".to_string(), n.end.clone(), "next_unit"),
+        None => (kind, reference, "subject"),
+    };
+    let elsewhere: Vec<Value> = match &next {
+        Some(n) => {
+            elsewhere.into_iter().filter(|a| !n.later.contains(&str_of(a, "ask_id"))).collect()
+        }
+        None => elsewhere,
+    };
     progress(OpenProgress { step: OpenStep::Changes, done: 0, total: 0, untracked: 0 });
     let ask_ids: Vec<String> = asks.iter().map(|a| str_of(a, "ask_id")).collect();
     let mut unit_asks: Vec<String> = Vec::new();
@@ -781,7 +856,6 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
         ));
     }
     let superseded: Vec<String> = dangling.iter().map(|r| str_of(r, "eval_id")).collect();
-    let anchor = anchor_of(ws, &asks, unit.as_deref(), args.anchor)?;
     let anchor_ref = str_of(&anchor, "ref");
     commit_of(&ws.root, &anchor_ref)?;
     let began = anchor_since(ws, &asks, &anchor);
@@ -935,12 +1009,13 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
             crate::knowledge::split_decisions(ws, crate::decisions::standing(ws), &changes);
         (product, fresh, again, left)
     };
+    let span = json!({"anchor": anchor_ref, "end": subject["ref"], "end_kind": end_kind});
     let mut carried = crate::decisions::carried(ws, &unit_asks);
     carried.extend(stale_again);
     let brief = json!({
         "schema": BRIEF_SCHEMA, "eval_id": eval_id, "time": sessions::now(),
         "checks": checks,
-        "workspace": ws.describe(), "anchor": anchor, "subject": subject,
+        "workspace": ws.describe(), "anchor": anchor, "subject": subject, "span": span,
         "asks": asks.iter().enumerate().map(|(i, a)| json!({
             "ask_id": a["ask_id"], "order": i + 1, "title": a["title"],
             "prompt_path": a["prompt"]["path"], "compiled": a["time"],
@@ -976,6 +1051,7 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
         store::publish(ws, &format!("evals/{eval_id}/brief.json"), &bytes, "eval_brief")?;
     let mut data = json!({
         "brief": reference, "changes_patch": changes_patch, "anchor": anchor, "subject": subject,
+        "span": span,
         "basis": {
             "asks": ask_ids,
             "unrecorded_prompts": before + counts.iter().sum::<usize>(),
@@ -1168,7 +1244,21 @@ pub fn void_eval(
         ws,
         &event("eval.voided", eval_id, Some(&actor), json!({"reason": reason.trim()}), vec![])?,
     )?;
+    closed(ws, eval_id);
     Ok(json!({"eval_id": eval_id, "state": "voided", "reason": reason.trim()}))
+}
+
+/// An Eval is closed: its own copies and reader folders go, and the cache is
+/// pruned past its limit, never a snapshot an open Eval uses.
+pub(crate) fn closed(ws: &Workspace, eval_id: &str) {
+    crate::snapshots::release(ws, eval_id);
+    let open: BTreeSet<String> = list_records(ws)
+        .unwrap_or_default()
+        .iter()
+        .filter(|r| r["state"] == "opened")
+        .map(|r| str_of(r, "eval_id"))
+        .collect();
+    crate::snapshots::prune(ws, crate::snapshots::LIMIT_BYTES, &|e| open.contains(e));
 }
 
 /// A report's head, then each section's heading and how many items it
@@ -1752,6 +1842,117 @@ mod tests {
             let d = str_of(&crate::testing::confirm_ask_linked(ws, follow(&eval_id)), "ask_id");
             assert_eq!(crate::ask::unit_of(ws, &d).unwrap(), [a.clone(), c, d]);
             assert_eq!(crate::ask::unit_of(ws, &b).unwrap(), [b]);
+        });
+    }
+
+    /// Three units committed one after another in one history, evaluated
+    /// after the third: each of the first two reads only its own commits, up
+    /// to the next unit's base, and the third reads to the subject. The
+    /// second's undo of the first's step is in the second's change.
+    #[test]
+    fn a_units_eval_reads_only_its_own_change() {
+        eval_bench(|ws| {
+            let base = head(&ws.root);
+            let ask = |w: &[u8]| str_of(&crate::testing::confirm_ask(ws, w), "ask_id");
+            let a = ask(b"Add a.\n");
+            let c1 = commit(&ws.root, &[("src/a.js", Some("export const a = 1;\n"))], "a");
+            tick();
+            let b = ask(b"Add b.\n");
+            let c2 = commit(
+                &ws.root,
+                &[("src/b.js", Some("export const b = 2;\n")), ("src/a.js", Some("// gone\n"))],
+                "b",
+            );
+            tick();
+            let c = ask(b"Add c.\n");
+            let c3 = commit(&ws.root, &[("src/c.js", Some("export const c = 3;\n"))], "c");
+
+            let open = |id: &str| open_eval(ws, Open { ask: Some(id), ..Default::default() });
+            let first = open(&a).unwrap();
+            assert_eq!(
+                first["span"],
+                json!({"anchor": base, "end": c1, "end_kind": "next_unit"}),
+                "{first}"
+            );
+            assert_eq!(first["subject"]["ref"], json!(c1));
+            let brief = brief_of(ws, &first);
+            assert_eq!(paths_of(&brief["changes"]), ["src/a.js"]);
+            assert!(array_of(&brief, "elsewhere").is_empty(), "later units are not other work");
+
+            let second = open(&b).unwrap();
+            assert_eq!(second["span"], json!({"anchor": c1, "end": c2, "end_kind": "next_unit"}));
+            assert_eq!(paths_of(&brief_of(ws, &second)["changes"]), ["src/a.js", "src/b.js"]);
+
+            let third = open(&c).unwrap();
+            assert_eq!(third["span"], json!({"anchor": c2, "end": c3, "end_kind": "subject"}));
+            let brief = brief_of(ws, &third);
+            assert_eq!(paths_of(&brief["changes"]), ["src/c.js"]);
+            let others: Vec<String> =
+                array_of(&brief, "elsewhere").iter().map(|x| str_of(x, "ask_id")).collect();
+            assert_eq!(others, [a.clone(), b], "earlier units are named, not judged");
+
+            // A Seal of the bounded Eval pins to the unit's end, so the unit's
+            // next Eval starts there.
+            let e = str_of(&first, "eval_id");
+            crate::testing::settled(ws, &e, true);
+            let receipt = crate::seal::create(ws, "accepted", Some(&e), None, None, None).unwrap();
+            let rec = load_record(ws, &e).unwrap().unwrap();
+            let md = crate::tasks::render(&rec);
+            assert!(
+                md.contains(&format!(
+                    "from `{}` to `{}`, where the next unit began",
+                    &base[..7],
+                    &c1[..7]
+                )),
+                "{md}"
+            );
+            assert_eq!(receipt["subject"]["ref"], json!(c1), "{receipt}");
+            assert_eq!(receipt["eval"]["subject_matches"], true);
+        });
+    }
+
+    /// A unit whose work is not committed when the next unit begins, and
+    /// units whose Asks interleave, read to the subject; the other unit is
+    /// named as other work.
+    #[test]
+    fn uncommitted_or_interleaved_units_read_to_the_subject() {
+        eval_bench(|ws| {
+            let ask = |w: &[u8]| str_of(&crate::testing::confirm_ask(ws, w), "ask_id");
+            let a = ask(b"Add a.\n");
+            std::fs::create_dir_all(ws.root.join("src")).unwrap();
+            std::fs::write(ws.root.join("src/a.js"), "export const a = 1;\n").unwrap();
+            tick();
+            let b = ask(b"Add b.\n");
+            let out = open_eval(ws, Open { ask: Some(&a), ..Default::default() }).unwrap();
+            assert_eq!(out["span"]["end_kind"], "subject", "{out}");
+            assert_eq!(out["subject"]["kind"], "worktree");
+            let others: Vec<String> = array_of(&brief_of(ws, &out), "elsewhere")
+                .iter()
+                .map(|x| str_of(x, "ask_id"))
+                .collect();
+            assert_eq!(others, [b]);
+        });
+        eval_bench(|ws| {
+            let ask = |w: &[u8]| str_of(&crate::testing::confirm_ask(ws, w), "ask_id");
+            let a = ask(b"Add a.\n");
+            commit(&ws.root, &[("src/a.js", Some("export const a = 1;\n"))], "a");
+            tick();
+            let b = ask(b"Add b.\n");
+            commit(&ws.root, &[("src/b.js", Some("export const b = 2;\n"))], "b");
+            tick();
+            let follow = vec![json!({"rel": "follows", "id": a})];
+            let a2 = str_of(&crate::testing::confirm_ask_linked(ws, follow), "ask_id");
+            let end = commit(&ws.root, &[("src/a2.js", Some("export const a2 = 1;\n"))], "a2");
+            for (id, other) in [(&a2, &b), (&b, &a)] {
+                let out = open_eval(ws, Open { ask: Some(id), ..Default::default() }).unwrap();
+                assert_eq!(out["span"]["end_kind"], "subject", "{out}");
+                assert_eq!(out["span"]["end"], json!(end));
+                let brief = brief_of(ws, &out);
+                let others: Vec<String> =
+                    array_of(&brief, "elsewhere").iter().map(|x| str_of(x, "ask_id")).collect();
+                assert!(others.contains(other), "{others:?}");
+                crate::testing::settled(ws, &str_of(&out, "eval_id"), true);
+            }
         });
     }
 

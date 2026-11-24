@@ -280,6 +280,41 @@ pub fn pins_for(ws: &Workspace, changes: &Value, windows: &[String]) -> Vec<Valu
         .collect()
 }
 
+/// The pins of a decision about requirements: the plan document each comes
+/// from, as the Eval's change had it at its subject. A requirement from an
+/// Ask's own words has no document and no pin.
+pub fn pins_for_requirements(ws: &Workspace, changes: &Value, ids: &[String]) -> Vec<Value> {
+    let mut names: Vec<&str> = changes["repos"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| r["name"].as_str())
+        .collect();
+    names.sort_by_key(|r| std::cmp::Reverse(r.len()));
+    let subjects = subjects(ws, changes);
+    let mut files = BTreeSet::new();
+    for r in changes["requirements"].as_array().into_iter().flatten() {
+        if !ids.iter().any(|i| r["id"].as_str() == Some(i)) {
+            continue;
+        }
+        let Some((doc, _)) = r["part"].as_str().and_then(|p| p.split_once('#')) else { continue };
+        let (repo, path) = names
+            .iter()
+            .filter(|n| **n != ".")
+            .find_map(|n| doc.strip_prefix(&format!("{n}/")).map(|p| (n.to_string(), p)))
+            .unwrap_or((".".to_string(), doc));
+        files.insert((repo, path.to_string()));
+    }
+    files
+        .into_iter()
+        .filter_map(|(repo, path)| {
+            let root = repo_root(ws, &repo);
+            let commit = subjects.get(&repo).cloned().flatten();
+            pin(&root, &repo, commit.as_deref(), &path)
+        })
+        .collect()
+}
+
 // ---- what an Eval is given ---------------------------------------------------
 
 /// Each repository of an Eval's change with the commit its subject is read at:

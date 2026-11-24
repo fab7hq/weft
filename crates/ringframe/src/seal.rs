@@ -230,8 +230,14 @@ pub fn create_told(
     )
     .map_err(|e| ledger("seal.answers", e))?;
     let decisions = pinned(ws, record.as_ref(), decisions);
-    // Not a Git repository: the receipt still records the decision.
-    let subject = match evaluate::default_subject(ws) {
+    // Not a Git repository: the receipt still records the decision. An Eval
+    // of one unit's own change, ended where the next unit began, is sealed
+    // at that end.
+    let bounded = record
+        .as_ref()
+        .filter(|r| r["span"]["end_kind"] == "next_unit")
+        .map(|r| ("git_commit".to_string(), str_of(&r["span"], "end")));
+    let subject = match bounded.map_or_else(|| evaluate::default_subject(ws), Ok) {
         Ok((kind, reference)) => {
             let files = |done, total| {
                 progress(SealProgress { step: SealStep::Files, done, total });
@@ -348,6 +354,15 @@ fn pinned(ws: &Workspace, record: Option<&Value>, decisions: Vec<Value>) -> Vec<
                 Some(c) if !windows.is_empty() => crate::knowledge::pins_for(ws, c, &windows),
                 _ => Vec::new(),
             };
+            if let Some(c) = &changes {
+                for p in
+                    crate::knowledge::pins_for_requirements(ws, c, &strings(&d, "requirements"))
+                {
+                    if !pins.contains(&p) {
+                        pins.push(p);
+                    }
+                }
+            }
             // A decision about a change against a rule rests on the rule too.
             let q = questions.as_array().into_iter().flatten().find(|q| q["id"] == d["question"]);
             for rule in q.map(|q| strings_of(&q["rules"], "source")).unwrap_or_default() {

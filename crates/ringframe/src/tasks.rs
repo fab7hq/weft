@@ -783,8 +783,14 @@ fn instructions(kind: &str, deny: &[String]) -> String {
 /// The brief a reader reads, in one file and in reading order: the task, what
 /// to do, the requests, the requirements, what the agent said, the unit
 /// index, and every asked unit's diff. A re-read's is the same, naming the
-/// items still unsure.
-fn brief(ctx: &Ctx, t: &Task, file: &Value, deny: &[String]) -> String {
+/// items still unsure and what the readings before it answered of them.
+fn brief(
+    ctx: &Ctx,
+    t: &Task,
+    file: &Value,
+    deny: &[String],
+    earlier: &BTreeMap<String, Vec<Reading>>,
+) -> String {
     use std::fmt::Write as _;
     let mut b = String::new();
     let _ = writeln!(b, "# RingFrame Eval task `{}`\n", t.id);
@@ -822,6 +828,9 @@ fn brief(ctx: &Ctx, t: &Task, file: &Value, deny: &[String]) -> String {
              {}. Read the whole file all the same: every requirement and every unit bears on them.",
             ids.join(", ")
         );
+    }
+    if !earlier.is_empty() {
+        earlier_block(t, earlier, &mut b);
     }
     b.push_str("\n## The requests\n\n");
     let asks: Vec<String> = if t.kind == "requirements" {
@@ -914,6 +923,91 @@ fn brief(ctx: &Ctx, t: &Task, file: &Value, deny: &[String]) -> String {
     }
     b.push_str("=== end of brief ===\n");
     b
+}
+
+/// What each earlier accepted reading answered of the items a re-read asks,
+/// item by item in the order read; a reading that kept no answer for an
+/// item is left out. Every quote passes the secret scrubber.
+fn earlier_block(t: &Task, earlier: &BTreeMap<String, Vec<Reading>>, b: &mut String) {
+    use std::fmt::Write as _;
+    let mut lines = Vec::new();
+    for item in &t.items {
+        let id = item.split_once('|').map_or(item.as_str(), |(_, id)| id);
+        for (n, r) in earlier.get(item).into_iter().flatten().enumerate() {
+            let Some(a) = r.answer.as_ref().filter(|_| r.task != t.id) else { continue };
+            lines.push(format!("- `{id}`: reading {} (`{}`): {}", n + 1, r.task, answer_words(a)));
+        }
+    }
+    if lines.is_empty() {
+        return;
+    }
+    b.push_str(
+        "\n## What the earlier readings answered\n\nThey may be wrong; your own reading of the \
+         file decides.\n\n",
+    );
+    for l in lines {
+        let _ = writeln!(b, "{}", crate::knowledge::scrub(&l));
+    }
+}
+
+/// One answer in a line: what it said, its reason, what it cites and quotes,
+/// and what it says is missing.
+fn answer_words(a: &Value) -> String {
+    let q = |s: &str| format!("\"{}\"", s.replace('\n', " "));
+    let mut parts = Vec::new();
+    match a["answer"].as_str() {
+        Some(kind) => {
+            parts.push(match kind {
+                "serves" => format!(
+                    "serves {}",
+                    array_of(a, "serves")
+                        .iter()
+                        .map(|s| format!("`{}`", str_of_value(s)))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                "follows_from" => format!("follows_from `{}`", str_of(a, "source")),
+                "elsewhere" => format!("elsewhere `{}`", str_of(a, "ask")),
+                other => other.to_string(),
+            });
+            if let Some(quote) = a["quote"].as_str() {
+                parts.push(format!("cites `{}` {}", str_of(a, "id"), q(quote)));
+            }
+            if let Some(c) = a["context"].as_object() {
+                let source = c.get("source").and_then(Value::as_str).unwrap_or_default();
+                let quote = c.get("quote").and_then(Value::as_str).unwrap_or_default();
+                parts.push(format!("rule `{source}` {}", q(quote)));
+            }
+        }
+        None => parts.push(str_of(a, "vote")),
+    }
+    let reason = str_of(a, "reason");
+    if !reason.trim().is_empty() {
+        parts.insert(1, q(&reason));
+    }
+    for c in array_of(a, "citations") {
+        let piece = if let Some(w) = c["window"].as_str() {
+            w.to_string()
+        } else if let Some(f) = c["file"].as_str() {
+            match c["lines"].as_array().map(Vec::as_slice) {
+                Some([x, y]) => format!("{f}:{x}-{y}"),
+                _ => f.to_string(),
+            }
+        } else if let Some(f) = c["fact"].as_str() {
+            format!("fact {f}")
+        } else {
+            format!("commits {}", str_of(c, "commits"))
+        };
+        match c["quote"].as_str().filter(|x| !x.is_empty()) {
+            Some(quote) => parts.push(format!("cites `{piece}` {}", q(quote))),
+            None => parts.push(format!("cites `{piece}`")),
+        }
+    }
+    let missing = str_of(a, "missing");
+    if !missing.trim().is_empty() {
+        parts.push(format!("missing {}", q(&missing)));
+    }
+    parts.join(", ")
 }
 
 /// The product the work lands in: where its read-only copies are, before and
@@ -1244,7 +1338,8 @@ fn hand_out(
     bytes.push(b'\n');
     let brief_path = dir.join(format!("tasks/{}.brief.md", t.id));
     write(&dir.join(format!("tasks/{}.json", t.id)), &bytes)?;
-    write(&brief_path, brief(&ctx, t, &file, &deny_of(&ctx.brief)).as_bytes())?;
+    let earlier = if t.kind == "reread" { readings(&st, &tasks) } else { BTreeMap::new() };
+    write(&brief_path, brief(&ctx, t, &file, &deny_of(&ctx.brief), &earlier).as_bytes())?;
     let slot = &mut state["handed"][&t.id];
     if !slot.is_array() {
         *slot = json!([]);
@@ -2344,7 +2439,8 @@ fn close(ctx: &Ctx, st: &Status, tasks: &[Task]) -> Result<Value, EvalError> {
             ));
         }
     }
-    let Settled { requirements, units, report } = settled(ctx, st, tasks);
+    let Settled { requirements, units, mut report } = settled(ctx, st, tasks);
+    report["rule_changed"] = json!(rule_changed(ctx));
     let questions = questions_of(ctx, st, tasks);
     let not_judgeable: Vec<String> = ctx
         .requirements()
@@ -2422,7 +2518,7 @@ fn close(ctx: &Ctx, st: &Status, tasks: &[Task]) -> Result<Value, EvalError> {
     let record = json!({
         "schema": RECORD2_SCHEMA, "eval_id": eval_id, "time": sessions::now(),
         "basis": {"asks": asks, "anchor": ctx.brief["anchor"]},
-        "subject": subject,
+        "subject": subject, "span": ctx.brief["span"],
         "brief": {"path": format!("evals/{eval_id}/brief.json")},
         "requirements": requirements, "units": units, "report": report,
         "questions_status": if questions.is_empty() { "none" } else { "asked" },
@@ -2457,7 +2553,55 @@ fn close(ctx: &Ctx, st: &Status, tasks: &[Task]) -> Result<Value, EvalError> {
         &ctx.ws,
         &crate::evaluate::event("eval.completed", eval_id, Some(&actor), data, links)?,
     )?;
+    crate::evaluate::closed(&ctx.ws, eval_id);
     Ok(record)
+}
+
+/// Units an earlier Eval of the same unit of work explained by a rule whose
+/// file has changed as of this Eval's anchor: an observation, which nothing
+/// acts on.
+fn rule_changed(ctx: &Ctx) -> Vec<Value> {
+    let ws = &ctx.ws;
+    let Some(first) = array_of(&ctx.brief, "asks").first().map(|a| str_of(a, "ask_id")) else {
+        return Vec::new();
+    };
+    let chain = crate::ask::unit_of(ws, &first).unwrap_or_default();
+    let Ok(anchor) = crate::evaluate::commit_of(&ws.root, &str_of(&ctx.brief["anchor"], "ref"))
+    else {
+        return Vec::new();
+    };
+    let mut out: Vec<Value> = Vec::new();
+    for r in crate::evaluate::list_records(ws).unwrap_or_default() {
+        let shares = array_of(&r["basis"], "asks").iter().any(|a| chain.contains(&str_of_value(a)));
+        if r["state"] != "completed" || !shares || r["eval_id"] == json!(ctx.eval_id) {
+            continue;
+        }
+        let Ok(Some(rec)) = crate::evaluate::load_record(ws, &str_of(&r, "eval_id")) else {
+            continue;
+        };
+        for u in array_of(&rec, "units").iter().filter(|u| u["result"] == "explained") {
+            let cited = array_of(u, "readings").iter().find_map(|x| {
+                let c = x["answer"]["context"].as_object()?;
+                Some((
+                    c.get("source")?.as_str()?.to_string(),
+                    c.get("quote").and_then(Value::as_str).unwrap_or_default().to_string(),
+                ))
+            });
+            let Some((source, quote)) = cited else { continue };
+            let Some(pin) = crate::knowledge::pin_source(ws, &ctx.changes, &source) else {
+                continue;
+            };
+            let root = crate::knowledge::repo_root(ws, &str_of(&pin, "repo"));
+            if crate::knowledge::state(&root, &pin, &anchor)["stale"] != true {
+                continue;
+            }
+            if !out.iter().any(|o| o["path"] == u["path"] && o["source"] == json!(source)) {
+                out.push(json!({"eval_id": rec["eval_id"], "unit": u["id"], "path": u["path"],
+                                "source": source, "quote": crate::knowledge::scrub(&quote)}));
+            }
+        }
+    }
+    out
 }
 
 /// What an item is, in words: a requirement's text, a unit's path.
@@ -2490,6 +2634,16 @@ pub fn render(r: &Value) -> String {
         array_of(rep, "faults").len(),
         array_of(rep, "cannot_settle").len(),
     );
+    let span = &r["span"];
+    if span.is_object() {
+        let short = |k: &str| str_of(span, k).chars().take(7).collect::<String>();
+        let end = match (span["end_kind"].as_str(), r["subject"]["kind"].as_str()) {
+            (Some("next_unit"), _) => format!("`{}`, where the next unit began", short("end")),
+            (_, Some("worktree")) => "the worktree".to_string(),
+            _ => format!("`{}`", short("end")),
+        };
+        out.push_str(&format!("\nThe change read: from `{}` to {end}.\n", short("anchor")));
+    }
     let faults = array_of(rep, "faults");
     if !faults.is_empty() {
         out.push_str("\n## Faults\n\n");
@@ -2524,6 +2678,19 @@ pub fn render(r: &Value) -> String {
                 str_of(&f["rule"], "source"),
                 str_of(f, "reason"),
                 str_of(&f["rule"], "quote")
+            ));
+        }
+    }
+    let changed = array_of(rep, "rule_changed");
+    if !changed.is_empty() {
+        out.push_str("\n## Explained by a rule that changed\n\n");
+        for c in changed {
+            out.push_str(&format!(
+                "- {} (Eval {}): `{}` has changed since (\"{}\")\n",
+                str_of(c, "path"),
+                str_of(c, "eval_id"),
+                str_of(c, "source"),
+                str_of(c, "quote")
             ));
         }
     }
@@ -2944,6 +3111,80 @@ mod tests {
             let tele = array_of(&rec, "units").iter().find(|u| u["id"] == json!(i.tele)).unwrap();
             assert_eq!(array_of(tele, "readings").len(), 3);
             assert_eq!(tele["result"], "unexplained", "two of three");
+        });
+    }
+
+    /// A re-read is given what each earlier accepted reading answered of the
+    /// items it asks, and of no other item; a refused answer is not listed,
+    /// and the whole reading's brief is unchanged.
+    #[test]
+    fn a_re_read_is_given_the_earlier_answers_of_its_items() {
+        eval_bench(|ws| {
+            let e = bench(ws);
+            let rd = next(ws, &e).unwrap();
+            let rd_brief = brief_md(ws, &rd);
+            assert!(!rd_brief.contains("What the earlier readings answered"), "{rd_brief}");
+            let i = ids(ws, &e);
+            let unknown = |id: &str| {
+                if id == S2 {
+                    json!({"id": id, "vote": "unknown", "reason": "the notes are not shown",
+                           "missing": "the notes as they are now, key sk-abcdefghijklmnopqrstuv"})
+                } else {
+                    met_in(&i.up)(id)
+                }
+            };
+            let unit = |id: &str| if id == i.tele { flags(id) } else { serves(id) };
+            submit_ok(ws, &rd, answer(ws, &rd, &unit, &unknown, json!([])));
+            let rr1 = next(ws, &e).unwrap();
+            let md = brief_md(ws, &rr1);
+            let (_, earlier) = md.split_once("## What the earlier readings answered").expect(&md);
+            let earlier = earlier.split("\n## ").next().unwrap();
+            assert!(earlier.contains("may be wrong"), "{earlier}");
+            let lines: Vec<&str> = earlier.lines().filter(|l| l.starts_with("- ")).collect();
+            assert_eq!(lines.len(), 2, "{earlier}");
+            assert!(
+                lines[0].starts_with(&format!("- `{}`: reading 1 (`{rd}`): unexplained", i.tele))
+                    && lines[0].contains("\"It sends a usage beacon to an outside server.\"")
+                    && lines[0].contains(&format!(
+                        "cites `{}` \"fetch('https://example.com/collect')\"",
+                        i.tele
+                    )),
+                "{}",
+                lines[0]
+            );
+            assert!(
+                lines[1].starts_with(&format!("- `{S2}`: reading 1 (`{rd}`): unknown"))
+                    && lines[1].contains("\"the notes are not shown\"")
+                    && lines[1].contains("missing \"the notes as they are now, key [secret]\""),
+                "{}",
+                lines[1]
+            );
+            assert!(!earlier.contains(S1) && !earlier.contains(&i.up), "{earlier}");
+            assert_eq!(brief_md(ws, &rd), rd_brief, "the whole reading's brief is unchanged");
+            // A refused answer is not a reading; the accepted one splits the beacon.
+            let mut bad = answer(ws, &rr1, &serves, &unknown, json!([]));
+            bad["windows"][0]["serves"] = json!(["R9-never-a-requirement"]);
+            put(ws, &rr1, bad);
+            assert_eq!(submit(ws, &rr1).unwrap().0, 2);
+            submit_ok(ws, &rr1, answer(ws, &rr1, &serves, &unknown, json!([])));
+            let rr2 = next(ws, &e).unwrap();
+            assert!(rr2.ends_with("~rr2"), "{rr2}");
+            let md = brief_md(ws, &rr2);
+            assert!(!md.contains("R9-never"), "{md}");
+            let (_, earlier) = md.split_once("## What the earlier readings answered").expect(&md);
+            let earlier = earlier.split("\n## ").next().unwrap();
+            let lines: Vec<&str> = earlier.lines().filter(|l| l.starts_with("- ")).collect();
+            assert_eq!(
+                lines.len(),
+                2,
+                "the beacon, twice; the requirement is not asked: {earlier}"
+            );
+            assert!(lines[0].contains(&format!("reading 1 (`{rd}`): unexplained")), "{}", lines[0]);
+            assert!(
+                lines[1].contains(&format!("reading 2 (`{rr1}`): serves `{S1}`")),
+                "{}",
+                lines[1]
+            );
         });
     }
 
@@ -3848,6 +4089,130 @@ mod tests {
             );
             let shown = crate::knowledge::show(ws, None).unwrap();
             assert_eq!(shown["decisions"][0]["stale"], json!(true), "{shown}");
+        });
+    }
+
+    /// Once the Eval closes, its reader folders and its own copies are gone.
+    #[test]
+    fn a_closed_eval_leaves_no_reader_folder_behind() {
+        eval_bench(|ws| {
+            let e = bench(ws);
+            let cache = crate::snapshots::cache_dir(ws).unwrap();
+            let mine = || {
+                std::fs::read_dir(cache.join("readers"))
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .filter(|r| r.file_name().to_string_lossy().starts_with(&format!("{e}.")))
+                    .count()
+            };
+            let rd = next(ws, &e).unwrap();
+            assert!(mine() > 0, "a reader folder while the Eval is open");
+            read_fine(ws, &e, &rd);
+            while let Ok(t) = next(ws, &e) {
+                read_fine(ws, &e, &t);
+            }
+            assert_eq!(mine(), 0);
+            assert!(!cache.join("evals").join(&e).exists());
+        });
+    }
+
+    /// A unit an earlier Eval of the same unit of work explained by a rule is
+    /// reported once that rule's file has changed as of the next Eval's anchor.
+    #[test]
+    fn a_unit_explained_by_a_rule_that_changed_is_reported() {
+        eval_bench(|ws| {
+            let rule = "A usage beacon to example.com is allowed.";
+            commit(&ws.root, &[("AGENTS.md", Some(&format!("{rule}\n")))], "rules");
+            let e = bench(ws);
+            let i = ids(ws, &e);
+            let ctx = Ctx::load(ws, &e).unwrap();
+            let source =
+                format!("./AGENTS.md@{}", str_of(&ctx.brief["product"]["snapshots"][0], "anchor"));
+            let unit = |id: &str| {
+                let mut v = serves(id);
+                if id == i.tele {
+                    v["context"] = json!({"source": source, "quote": rule});
+                }
+                v
+            };
+            while let Ok(t) = next(ws, &e) {
+                submit_ok(ws, &t, answer(ws, &t, &unit, &met_in(&i.up), json!([])));
+            }
+            let rec = crate::evaluate::load_record(ws, &e).unwrap().unwrap();
+            assert_eq!(rec["report"]["rule_changed"], json!([]), "the rule has not changed");
+            commit(&ws.root, &[("AGENTS.md", Some("No usage beacon, anywhere.\n"))], "rules");
+            let ask = str_of(&ctx.brief["asks"][0], "ask_id");
+            crate::seal::create(ws, "accepted", Some(&e), None, None, None).unwrap();
+            let e2 = next_eval(ws, &ask, false);
+            let report = loop {
+                match next(ws, &e2) {
+                    Ok(t) => submit_ok(ws, &t, answer(ws, &t, &other_work, &no_req, json!([]))),
+                    Err(_) => break crate::evaluate::load_record(ws, &e2).unwrap().unwrap(),
+                }
+            };
+            let changed = array_of(&report["report"], "rule_changed");
+            assert_eq!(changed.len(), 1, "{}", report["report"]);
+            assert_eq!(
+                (
+                    changed[0]["path"].clone(),
+                    changed[0]["source"].clone(),
+                    changed[0]["eval_id"].clone()
+                ),
+                (json!("src/telemetry.js"), json!(source), json!(e))
+            );
+            let md = render(&report);
+            assert!(
+                md.contains("## Explained by a rule that changed") && md.contains(rule),
+                "{md}"
+            );
+        });
+    }
+
+    /// A decision about a requirement alone is pinned to the plan document the
+    /// requirement comes from, and goes stale when the plan changes.
+    #[test]
+    fn a_decision_about_a_requirement_alone_is_pinned_to_its_plan() {
+        eval_bench(|ws| {
+            let e = bench(ws);
+            let i = ids(ws, &e);
+            let not_met = |id: &str| {
+                if id == S2 {
+                    json!({"id": id, "vote": "not_met", "reason": "the notes do not name it",
+                           "missing": "a line in the notes naming uptime_seconds"})
+                } else {
+                    met_in(&i.up)(id)
+                }
+            };
+            let qs = read_to_questions(ws, &e, &serves, &not_met).expect("a question");
+            submit_ok(ws, &qs, answer(ws, &qs, &serves, &serves, json!([])));
+            assert!(next(ws, &e).is_err());
+            let answers = json!({"answers": [{"question": "q1", "answer": "later"}]});
+            let seal = crate::seal::create_with(
+                ws,
+                "accepted",
+                Some(&e),
+                None,
+                None,
+                None,
+                Some(&answers),
+            )
+            .unwrap();
+            let d = &created(ws, &seal)["data"]["decisions"][0];
+            assert_eq!(d["requirements"], json!([S2]), "{d}");
+            let pins = d["pins"].as_array().expect("pins");
+            assert_eq!(
+                pins.iter().map(|p| (str_of(p, "repo"), str_of(p, "path"))).collect::<Vec<_>>(),
+                [(".".to_string(), "plans/plan.md".to_string())],
+                "{d}"
+            );
+            assert_eq!(crate::knowledge::show(ws, None).unwrap()["decisions"][0]["stale"], false);
+            crate::testing::commit(
+                &ws.root,
+                &[("plans/plan.md", Some(&format!("{PLAN}\nOne more line.\n")))],
+                "plan",
+            );
+            assert_eq!(crate::knowledge::show(ws, None).unwrap()["decisions"][0]["stale"], true);
         });
     }
 
