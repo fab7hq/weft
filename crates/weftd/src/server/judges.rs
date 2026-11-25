@@ -557,11 +557,7 @@ impl Session {
             .harnesses
             .find(&harness)
             .map(|h| h.judge_spec(model.as_deref(), effort.as_deref()));
-        // It starts in the task's own empty folder, outside every repository,
-        // and reads the product from the copies its brief lists.
-        let dir = task.dir.clone().filter(|d| d.is_dir());
-        let pane =
-            spec.and_then(|spec| self.spawn_in(client, at, &harness, &spec, None, dir.as_deref()));
+        let pane = spec.and_then(|spec| self.spawn(client, at, &harness, &spec, None));
         let seat = match pane {
             Some(pane) => {
                 if let Some(slot) = self.projects[at].slot(pane) {

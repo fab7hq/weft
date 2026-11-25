@@ -623,8 +623,10 @@ You are reviewing a code change against the requests that asked for it, as one \
 whole reading. Everything you need is in this file, however long it is, and in \
 the product it names: the requests, the requirements, what the agent said, every \
 unit of the change, and read-only copies of the product before and after it with \
-the rules in force. Judge from this file and those copies: read only under the \
-folders \"The product\" lists, change nothing, and run nothing else but the submit.
+the rules in force. First read the product in those copies to understand its \
+context; the folder you start in may have changed since. Judge from this file and \
+those copies: read only under the folders \"The product\" lists, change nothing, \
+and run nothing else but the submit.
 
 Work in this order:
 1. Read the requirements.
@@ -1225,11 +1227,6 @@ fn task_file(ctx: &Ctx, t: &Task) -> Value {
         "items": t.items,
         "output": dir.join("out").join(format!("{}.json", t.id)).to_string_lossy(),
     });
-    // Where the reader starts: an empty folder outside every repository, so
-    // its harness loads no instruction file of the project by itself.
-    if let Ok(d) = crate::snapshots::reader_dir(&ctx.ws, &format!("{}.{}", ctx.eval_id, t.id)) {
-        v["dir"] = json!(d.to_string_lossy());
-    }
     if let Some(effort) = agent(&ctx.brief, t.role)["effort"].as_str() {
         v["effort"] = json!(effort);
     }
@@ -1359,9 +1356,6 @@ fn hand_out(
         "answer": answer.to_string_lossy(),
         "reads": t.reads(),
     });
-    if let Some(d) = file.get("dir") {
-        task["dir"] = d.clone();
-    }
     for k in ["harness", "model", "effort"] {
         if let Some(v) = agent(&ctx.brief, t.role).get(k) {
             task[k] = v.clone();
@@ -3983,8 +3977,6 @@ mod tests {
             let md = brief_md(ws, &t);
             assert!(md.contains("## The product") && md.contains("./AGENTS.md@"), "{md}");
             assert!(md.contains("--workspace"), "submits by the workspace");
-            let dir = str_of(&task_of(ws, &t), "dir");
-            assert!(!dir.is_empty() && !Path::new(&dir).starts_with(&ws.root), "{dir}");
             let ctx = Ctx::load(ws, &e).unwrap();
             let anchor = str_of(&ctx.brief["product"]["snapshots"][0], "anchor");
             let breaks = |quote: &str| {
@@ -4101,27 +4093,17 @@ mod tests {
         });
     }
 
-    /// Once the Eval closes, its reader folders and its own copies are gone.
+    /// Once the Eval closes, its own copies are gone.
     #[test]
-    fn a_closed_eval_leaves_no_reader_folder_behind() {
+    fn a_closed_eval_leaves_no_copy_behind() {
         eval_bench(|ws| {
             let e = bench(ws);
             let cache = crate::snapshots::cache_dir(ws).unwrap();
-            let mine = || {
-                std::fs::read_dir(cache.join("readers"))
-                    .into_iter()
-                    .flatten()
-                    .flatten()
-                    .filter(|r| r.file_name().to_string_lossy().starts_with(&format!("{e}.")))
-                    .count()
-            };
             let rd = next(ws, &e).unwrap();
-            assert!(mine() > 0, "a reader folder while the Eval is open");
             read_fine(ws, &e, &rd);
             while let Ok(t) = next(ws, &e) {
                 read_fine(ws, &e, &t);
             }
-            assert_eq!(mine(), 0);
             assert!(!cache.join("evals").join(&e).exists());
         });
     }

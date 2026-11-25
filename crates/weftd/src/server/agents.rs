@@ -607,21 +607,8 @@ impl Session {
         spec: &str,
         resumed: Option<String>,
     ) -> Option<u32> {
-        self.spawn_in(client, project, harness, spec, resumed, None)
-    }
-
-    /// [`Self::spawn`], started in `dir` instead of the project's root.
-    pub(super) fn spawn_in(
-        &mut self,
-        client: u64,
-        project: usize,
-        harness: &str,
-        spec: &str,
-        resumed: Option<String>,
-        dir: Option<&std::path::Path>,
-    ) -> Option<u32> {
         let p = self.projects.get_mut(project)?;
-        let cwd = dir.unwrap_or(&p.root).to_string_lossy().into_owned();
+        let cwd = p.root.to_string_lossy().into_owned();
         // Turbo mode, when this project's config turns it on: the harness's
         // own flags, after the person's own.
         let flags = if p.turbo {

@@ -529,8 +529,6 @@ pub struct Task {
     pub effort: Option<String>,
     /// What its judge reads: a map's windows, a reduce's requirements.
     pub reads: Vec<String>,
-    /// Where its judge starts: an empty folder outside every repository.
-    pub dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -605,7 +603,6 @@ fn eval_step(ws: &Workspace, eval_id: &str, out: Value) -> Result<EvalStep, Erro
             .filter_map(Value::as_str)
             .map(str::to_string)
             .collect(),
-        dir: text("dir").map(PathBuf::from),
     })))
 }
 
@@ -847,9 +844,6 @@ mod tests {
             let EvalStep::Task(task) = eval_task(ws, &opened.eval_id, None).unwrap() else {
                 panic!("a task is ready");
             };
-            let dir = task.dir.expect("a folder");
-            assert!(dir.is_dir() && !dir.starts_with(&ws.root), "{}", dir.display());
-            assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "empty");
             let workspace = format!("--workspace {}", ws.root.display());
             assert!(task.prompt.contains(&workspace), "{}", task.prompt);
         });

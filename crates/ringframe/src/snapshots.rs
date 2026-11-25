@@ -2,8 +2,7 @@
 //! was at a commit, unpacked once and shared by every Eval of that commit, and,
 //! for work not yet committed, a copy of the files Git lists, made for one Eval.
 //! They live in RingFrame's cache, `~/.fab7/cache/<workspace id>/`, outside
-//! every repository, so a harness started there loads no instruction file of
-//! the project by itself. The cache is RingFrame's alone: made and pruned only
+//! every repository. The cache is RingFrame's alone: made and pruned only
 //! here, never a path a caller names.
 
 use std::io::Write as _;
@@ -178,16 +177,7 @@ fn of_worktree_in(base: &Path, root: &Path, eval: &str) -> Result<PathBuf, Strin
     Ok(dir)
 }
 
-/// An empty folder for one reader task to start in, outside every repository.
-pub fn reader_dir(ws: &Workspace, task: &str) -> Result<PathBuf, String> {
-    let base = cache_dir(ws).ok_or("HOME is not set")?;
-    let dir = base.join("readers").join(task);
-    private(&base)?;
-    std::fs::create_dir_all(&dir).map_err(io)?;
-    Ok(dir)
-}
-
-/// What `eval` held: its worktree copies and reader folders go, and it no
+/// What `eval` held: its worktree copies go, and it no
 /// longer keeps any shared snapshot from being pruned.
 pub fn release(ws: &Workspace, eval: &str) {
     if let Some(base) = cache_dir(ws) {
@@ -200,13 +190,6 @@ fn release_in(base: &Path, eval: &str) {
     for user in users(base) {
         if user.file_name().is_some_and(|n| n == eval) {
             let _ = std::fs::remove_file(&user);
-        }
-    }
-    if let Ok(readers) = std::fs::read_dir(base.join("readers")) {
-        for r in readers.flatten() {
-            if r.file_name().to_string_lossy().starts_with(&format!("{eval}.")) {
-                remove(&r.path());
-            }
         }
     }
 }
@@ -354,7 +337,7 @@ mod tests {
     }
 
     #[test]
-    fn released_snapshots_can_be_pruned_and_reader_folders_go() {
+    fn released_snapshots_can_be_pruned() {
         let dir = repo();
         let root = dir.path();
         let ws = ws_for(root);
@@ -362,10 +345,7 @@ mod tests {
         let base = cache_in(cache.path(), &ws);
         let c1 = commit(root, &[("a.txt", Some("one\n"))], "1");
         let s1 = at_commit_in(&base, root, &c1, "ev_1").unwrap();
-        let reader = base.join("readers").join("ev_1.t1");
-        std::fs::create_dir_all(&reader).unwrap();
         release_in(&base, "ev_1");
-        assert!(!reader.exists());
         prune_in(&base, 0, &|e| e == "ev_1");
         assert!(!s1.exists(), "released, so no longer held");
     }

@@ -1266,7 +1266,7 @@ pub fn void_eval(
     Ok(json!({"eval_id": eval_id, "state": "voided", "reason": reason.trim()}))
 }
 
-/// An Eval is closed: its own copies and reader folders go, and the cache is
+/// An Eval is closed: its own copies go, and the cache is
 /// pruned past its limit, never a snapshot an open Eval uses.
 pub(crate) fn closed(ws: &Workspace, eval_id: &str) {
     crate::snapshots::release(ws, eval_id);
