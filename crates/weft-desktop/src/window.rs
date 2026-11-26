@@ -150,6 +150,7 @@ struct Listed {
 struct Kept {
     terminals: HashSet<(PathBuf, u32)>,
     parts: HashSet<String>,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     viewers: HashSet<u64>,
 }
 
@@ -2101,6 +2102,9 @@ impl EntityInputHandler for GpuiDesktopView {
 
 impl Render for GpuiDesktopView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The window is needed only for the file pages, which only macOS draws.
+        #[cfg(not(target_os = "macos"))]
+        let _ = &window;
         // Drawn for terminals' output alone, the tree and its parts are as
         // they were; told anything else, both are built again.
         let output_only = std::mem::take(&mut self.output_only);

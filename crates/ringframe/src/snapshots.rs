@@ -104,10 +104,16 @@ fn at_commit_in(base: &Path, root: &Path, commit: &str, eval: &str) -> Result<Pa
         std::fs::create_dir_all(&tmp).map_err(io)?;
         unpack(root, commit, &tmp)?;
         std::fs::write(tmp.join(".complete"), b"").map_err(io)?;
-        set_writable(&tmp, false);
-        if std::fs::rename(&tmp, &dir).is_err() {
+        // Moved while still writable: some systems refuse to move a folder
+        // its owner cannot write.
+        match std::fs::rename(&tmp, &dir) {
+            Ok(()) => set_writable(&dir, false),
             // Another Eval made it first: theirs is the same tree.
-            remove(&tmp);
+            Err(_) if dir.join(".complete").exists() => remove(&tmp),
+            Err(e) => {
+                remove(&tmp);
+                return Err(format!("the snapshot of {commit} could not be kept: {e}"));
+            }
         }
     }
     mark(&meta, eval)?;
