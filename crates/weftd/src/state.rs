@@ -108,6 +108,7 @@ mod tests {
                     width: 1440.0,
                     height: 900.0,
                 }),
+                advanced: true,
             },
             panes: SavedPanesLayout {
                 layout: SplitLayout::FourGrid,

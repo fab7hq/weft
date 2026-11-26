@@ -1,180 +1,197 @@
-//! Settings › Harnesses: inspect and tune, never add. The harnesses this Weft
-//! ships, each with how it stands; one shown with the version it was verified
-//! with, where its program is, how RingFrame sends to it, and its route rules
-//! (on or off, qualified or candidate, wording, Reset).
+//! Settings › Agent apps: inspect and tune, never add. Each harness this Weft
+//! supports and how it stands, in plain words, with what to do when it needs
+//! something. With Advanced settings on, one opens in place: its version and
+//! the one Weft was verified with, where its program is, how Weft asks it,
+//! and its own rules.
 
-use serde_json::{Value, json};
+use serde_json::Value;
 use weft_core::onboarding::State;
 use weft_core::words::{fill, word};
 
 use super::SheetProps;
-use super::menu::badge;
-use crate::action::{Focus, SheetAct, WindowAct};
+use super::settings::{group, line_row, link};
+use crate::action::SheetAct;
 use crate::daemon::Then;
-use crate::gpui::{Element, div, input_el, palette};
-use crate::ui::{Size, Tone, button, row_list, section_label, sheet_body};
+use crate::gpui::{Element, div, palette};
 
-fn key(parts: &[&str]) -> Vec<String> {
-    parts.iter().map(|p| p.to_string()).collect()
+/// How an agent app stands, in the person's words: its mark, the chip's
+/// colours, its word, what to do when it needs something, and whether it
+/// needs the person.
+struct Standing {
+    mark: &'static str,
+    tone: (&'static str, &'static str, &'static str),
+    word: String,
+    what: Option<&'static str>,
+    needs: bool,
 }
 
-fn link(layer: &str, act: impl Into<crate::action::Action>, text: &str) -> Element {
-    div()
-        .layer(layer)
-        .on_click(act)
-        .font_size(12)
-        .color(palette::BLUE_BORDER)
-        .text(text.to_string())
+const OK: (&str, &str, &str) = (palette::TEAL, "#1f6f69", palette::TEAL_BG);
+const WARN: (&str, &str, &str) = (palette::AMBER, palette::AMBER_BORDER, palette::AMBER_BG);
+const NO: (&str, &str, &str) = (palette::MUTED, palette::LINE, "transparent");
+
+fn standing(state: Option<&State>) -> Standing {
+    let s = |mark, tone, w: &str, what, needs| Standing {
+        mark,
+        tone,
+        word: word(w).to_string(),
+        what,
+        needs,
+    };
+    match state {
+        Some(State::Ready { .. }) => s("✓", OK, "settings.apps.ready", None, false),
+        Some(State::Behind { .. }) => {
+            s("■", WARN, "settings.apps.update", Some("settings.apps.update_what"), true)
+        }
+        Some(State::NotFound) => {
+            s("□", NO, "settings.apps.missing", Some("settings.apps.missing_what"), false)
+        }
+        Some(State::NotSetUp | State::CannotInstall | State::Failed { .. }) => {
+            s("■", WARN, "settings.apps.setup", Some("settings.apps.setup_what"), true)
+        }
+        Some(other) => Standing {
+            mark: other.mark(),
+            tone: NO,
+            word: other.label().to_string(),
+            what: None,
+            needs: false,
+        },
+        None => Standing { mark: "?", tone: NO, word: String::new(), what: None, needs: false },
+    }
+}
+
+fn state_of(props: &SheetProps, name: &str) -> Option<State> {
+    props.setup?.rows.iter().find(|r| r.name == name).map(|r| r.state.clone())
+}
+
+/// How many agent apps need the person, as the list of sections says.
+pub(super) fn needing(props: &SheetProps) -> usize {
+    props.harnesses.iter().filter(|h| standing(state_of(props, &h.name).as_ref()).needs).count()
 }
 
 pub(super) fn render(props: &SheetProps) -> Element {
-    let rows = props.setup.map(|v| v.rows.clone()).unwrap_or_default();
-    let state_of = |name: &str| rows.iter().find(|r| r.name == name).map(|r| r.state.clone());
-    let version_of =
-        |name: &str| rows.iter().find(|r| r.name == name).and_then(|r| r.version.clone());
-    let shown = props.harness;
-    let mut list = div().layer("harness list").w(240).flex_col().border_right(palette::LINE);
-    for h in props.harnesses.iter() {
-        let state = state_of(&h.name);
-        let on = h.name == shown;
-        list = list.child(
+    let machine = [("machine", props.machine)];
+    let mut body = div()
+        .layer("harnesses")
+        .self_stretch()
+        .flex_col()
+        .child(
             div()
-                .layer(format!("harness {}", h.title))
-                .on_click(SheetAct::ShowHarness(h.name.clone()))
-                .self_stretch()
-                .flex_row()
-                .gap(10)
-                .pad(10, 14)
-                .items_center()
-                .border_bottom(palette::LINE)
-                .bg(if on { palette::SELECTED_BG } else { "transparent" })
-                .child(
-                    div()
-                        .w(14)
-                        .font_mono()
-                        .font_weight(700)
-                        .font_size(12)
-                        .color(crate::ui::mark_colour(state.as_ref().map_or("?", State::mark)))
-                        .text(state.as_ref().map_or("?", State::mark).to_string()),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .font_size(13)
-                        .font_weight(if on { 600 } else { 400 })
-                        .text(h.title.clone()),
-                )
-                .child(
-                    div()
-                        .font_mono()
-                        .font_size(11)
-                        .color(palette::DIM)
-                        .text(state.as_ref().map_or("", State::label).to_string()),
-                ),
-        );
-    }
-    list = list.child(
-        div().pad(12, 14).font_size(11).color(palette::DIM).text(word("desktop.harness.supported")),
-    );
-
-    let detail = props.harnesses.iter().find(|h| h.name == shown).map(|h| {
-        let state = state_of(&h.name);
-        let mut head = div()
-            .self_stretch()
-            .flex_row()
-            .gap(10)
-            .items_baseline()
-            .child(div().font_weight(600).font_size(16).text(h.title.clone()));
-        // Its own version, and the one Weft was verified with.
+                .font_size(12)
+                .color(palette::MUTED)
+                .pad(4, 0)
+                .text(fill("settings.apps_what", &machine)),
+        )
+        .child(group(fill("settings.apps.on", &machine), false, None));
+    for h in props.harnesses.iter() {
+        let state = state_of(props, &h.name);
+        let st = standing(state.as_ref());
+        let open = props.advanced && props.harness == h.name;
+        let version = props
+            .setup
+            .and_then(|v| v.rows.iter().find(|r| r.name == h.name))
+            .and_then(|r| r.version.clone());
         let verified = h
             .conversation
             .as_ref()
             .map(|c| fill("desktop.harness.verified", &[("version", &c.verified)]));
-        let said: Vec<String> = version_of(&h.name).into_iter().chain(verified).collect();
-        if !said.is_empty() {
-            head = head.child(
-                div().font_mono().font_size(12).color(palette::MUTED).text(said.join(" · ")),
+        let said: Vec<String> = version.into_iter().chain(verified).collect();
+        let mut title = div()
+            .flex_row()
+            .gap(8)
+            .items_baseline()
+            .child(div().font_size(14).text(h.title.clone()));
+        if props.advanced && !said.is_empty() {
+            title = title.child(
+                div().font_mono().font_size(11).color(palette::MUTED).text(said.join(" · ")),
             );
         }
-        let found = !matches!(state, Some(State::NotFound));
-        let machine = row_list(vec![
-            div()
-                .layer("harness program")
-                .self_stretch()
-                .flex_row()
-                .gap(12)
-                .pad(9, 14)
-                .items_center()
-                .child(
-                    div()
-                        .w(170)
-                        .font_weight(600)
-                        .font_size(13)
-                        .text(word("desktop.harness.program")),
-                )
-                .child(div().flex_1().font_size(12).color(palette::MUTED).text(word(if found {
+        let mut label = div().flex_1().flex_col().gap(2).style("min-width", "0px").child(title);
+        if let Some(what) = st.what {
+            label =
+                label.child(div().font_size(12).color(palette::MUTED).text(fill(what, &machine)));
+        }
+        let (text, line, bg) = st.tone;
+        let mut row = div()
+            .layer(format!("harness {}", h.title))
+            .self_stretch()
+            .flex_row()
+            .gap(10)
+            .pad(10, 8)
+            .items_center()
+            .border_bottom(palette::LINE)
+            .bg(if open { palette::SELECTED_BG } else { "transparent" })
+            .child(div().w(14).font_mono().font_size(12).color(text).text(st.mark))
+            .child(label)
+            .children((!st.word.is_empty()).then(|| {
+                div()
+                    .layer("harness standing")
+                    .pad(3, 8)
+                    .font_size(12)
+                    .color(text)
+                    .border(line)
+                    .bg(bg)
+                    .text(st.word.clone())
+            }));
+        if props.advanced {
+            row = row.on_click(SheetAct::ShowHarness(h.name.clone())).child(
+                div().font_mono().font_size(11).color(palette::DIM).text(if open {
+                    "⌄"
+                } else {
+                    "›"
+                }),
+            );
+        }
+        body = body.child(row);
+        if open {
+            body = body.child(detail(props, &h.name, state.as_ref()));
+        }
+    }
+    body
+}
+
+/// An agent app opened: where its program is, how Weft asks it, and its own
+/// rules.
+fn detail(props: &SheetProps, host: &str, state: Option<&State>) -> Element {
+    let found = !matches!(state, Some(State::NotFound));
+    div()
+        .layer("harness detail")
+        .self_stretch()
+        .flex_col()
+        .style("padding-left", "22px")
+        .child(
+            line_row(
+                "harness program",
+                word("desktop.harness.program"),
+                Some(word(if found {
                     "desktop.harness.found"
                 } else {
                     "desktop.harness.not_found"
-                })))
-                .child(button(
-                    "harness find",
-                    word("desktop.updates.locate"),
-                    SheetAct::Locate(h.name.clone()),
-                    Tone::Plain,
-                    Size::Row,
-                )),
-            div()
-                .layer("harness setup")
-                .self_stretch()
-                .flex_row()
-                .gap(12)
-                .pad(9, 14)
-                .items_center()
-                .child(
-                    div().w(170).font_weight(600).font_size(13).text(word("desktop.harness.setup")),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .font_size(12)
-                        .color(palette::MUTED)
-                        .text(state.as_ref().map(State::words).unwrap_or_default()),
-                )
-                .child(link(
-                    "harness updates",
-                    WindowAct::OpenUpdates,
-                    word("desktop.harness.in_updates"),
-                )),
-        ]);
-        sheet_body()
-            .child(head)
-            .child(machine)
-            .child(section_label(word("desktop.harness.sends")))
-            .child(sends(props, &h.name))
-            .child(section_label(fill("desktop.harness.route_rules", &[("harness", &h.title)])))
-            .child(route_rules(props, &h.name))
-    });
-    div().layer("harnesses").self_stretch().flex_1().flex_row().child(list).children(detail)
+                })),
+            )
+            .child(link(
+                "harness find",
+                SheetAct::Locate(host.to_string()),
+                word("desktop.updates.locate"),
+            )),
+        )
+        .child(group(word("settings.apps.asks"), true, None))
+        .child(asks(props, host))
+        .child(group(word("settings.apps.rules"), true, None))
+        .child(its_rules(props, host))
 }
 
-/// How RingFrame sends to it, as its profile says.
-fn sends(props: &SheetProps, host: &str) -> Element {
+/// How Weft asks it, as its profile says: each mode, what it does in a line
+/// for people, and its limit when it has one.
+fn asks(props: &SheetProps, host: &str) -> Element {
     let then = Then::Profile { host: host.to_string() };
     let profile = props.clients.iter().find_map(|c| c.read.get(&then));
     let Some(p) = profile else {
         let refused = props.clients.iter().find_map(|c| c.refused.get(&then));
         return super::ringframe::unanswered(refused, then.clone());
     };
-    let mut rows = Vec::new();
+    let mut rows = div().self_stretch().flex_col();
     for cap in p["capabilities"].as_array().into_iter().flatten() {
         let id = cap["id"].as_str().unwrap_or_default();
-        let who = if cap["delivery_mode"] == "human_handoff" {
-            "desktop.harness.you_send"
-        } else {
-            "desktop.harness.weft_sends"
-        };
-        // What it does, in a line for people, and its limit when it has one.
         let limit = cap["max_prompt_chars"]
             .as_u64()
             .map(|n| fill("desktop.harness.limit", &[("n", &n.to_string())]));
@@ -187,138 +204,37 @@ fn sends(props: &SheetProps, host: &str) -> Element {
             .iter()
             .find(|(k, _)| *k == format!("desktop.harness.{id}"))
             .map_or(id, |(_, w)| *w);
-        rows.push(
+        rows = rows.child(
             div()
                 .layer(format!("sends {id}"))
                 .self_stretch()
                 .flex_row()
                 .gap(12)
-                .pad(8, 14)
+                .pad(9, 0)
                 .items_center()
-                .child(div().w(170).font_weight(600).font_size(13).text(name.to_string()))
-                .child(div().flex_1().font_size(12).color(palette::MUTED).text(said))
-                .child(
-                    div()
-                        .pad(2, 6)
-                        .border(palette::LINE)
-                        .font_mono()
-                        .font_size(10)
-                        .color(palette::DIM)
-                        .text(word(who)),
-                ),
+                .border_bottom(palette::LINE)
+                .child(div().w(110).font_size(14).text(name.to_string()))
+                .child(div().flex_1().font_size(12).color(palette::MUTED).text(said)),
         );
     }
-    row_list(rows)
+    rows
 }
 
-/// Its route rules, from RingFrame's catalog for it: each on or off,
-/// qualified or candidate, its wording, and Reset once changed.
-fn route_rules(props: &SheetProps, host: &str) -> Element {
+/// Its own rules, from RingFrame's catalog for it, each as Rules shows one.
+fn its_rules(props: &SheetProps, host: &str) -> Element {
     let then = Then::Rules { project: false };
     let Some(rules) = props.clients.iter().find_map(|c| c.read.get(&then)) else {
         let refused = props.clients.iter().find_map(|c| c.refused.get(&then));
         return super::ringframe::unanswered(refused, then.clone());
     };
-    let catalog = Some(rules)
-        .and_then(|r| r["catalogs"].as_array())
+    let catalog = rules["catalogs"]
+        .as_array()
         .and_then(|cs| cs.iter().find(|c| c["catalog"] == host))
         .cloned()
         .unwrap_or(Value::Null);
-    let mut rows = Vec::new();
+    let mut rows = div().self_stretch().flex_col();
     for e in catalog["entries"].as_array().into_iter().flatten() {
-        let id = e["id"].as_str().unwrap_or_default();
-        let field = |f: &str| key(&["ringframe", "deltas", host, "entries", id, f]);
-        let changed = e["source"] != "shipped";
-        let on = e["enabled"] != false;
-        let qualified = e["status"] == "qualified";
-        let status = |q: bool, w: &str| {
-            let mine = q == qualified;
-            div()
-                .layer(format!("status {w}"))
-                .on_click(SheetAct::Choose {
-                    project: None,
-                    key: field("status"),
-                    value: Some(json!(if q { "qualified" } else { "candidate" })),
-                })
-                .pad(2, 7)
-                .font_mono()
-                .font_size(10)
-                .color(if mine { palette::TEAL } else { palette::DIM })
-                .bg(if mine { palette::SURFACE_ALT } else { "transparent" })
-                .text(word(w))
-        };
-        let editing =
-            props.setting_editing.is_some_and(|(p, k)| p.is_none() && *k == field("text"));
-        let text: Element = if editing {
-            div()
-                .flex_1()
-                .child(input_el(Focus::Setting).text(props.setting_text.to_string()).font_size(12))
-        } else {
-            div()
-                .flex_1()
-                .font_size(12)
-                .color(palette::MUTED)
-                .style("white-space", "nowrap")
-                .style("overflow", "hidden")
-                .style("text-overflow", "ellipsis")
-                .text(e["text"].as_str().unwrap_or_default().to_string())
-        };
-        rows.push(
-            div()
-                .layer(format!("route rule {id}"))
-                .self_stretch()
-                .flex_row()
-                .gap(10)
-                .pad(8, 14)
-                .items_center()
-                .bg(if changed { palette::SELECTED_BG } else { "transparent" })
-                .child(
-                    div()
-                        .w(150)
-                        .font_weight(600)
-                        .font_size(13)
-                        .text(e["label"].as_str().unwrap_or(id).to_string()),
-                )
-                .child(text)
-                .child(
-                    div()
-                        .flex_row()
-                        .border(palette::LINE)
-                        .child(status(true, "desktop.harness.qualified"))
-                        .child(status(false, "desktop.harness.candidate")),
-                )
-                .child(
-                    div()
-                        .layer("rule switch")
-                        .on_click(SheetAct::Choose {
-                            project: None,
-                            key: field("enabled"),
-                            value: Some(json!(!on)),
-                        })
-                        .child(badge(
-                            "setting badge",
-                            on,
-                            (palette::SELECTED_BG, palette::BLUE_BORDER, palette::BLUE_BORDER),
-                        )),
-                )
-                .child(if changed {
-                    link(
-                        "reset",
-                        SheetAct::Choose {
-                            project: None,
-                            key: key(&["ringframe", "deltas", host, "entries", id]),
-                            value: None,
-                        },
-                        word("act.reset"),
-                    )
-                } else {
-                    link(
-                        "edit",
-                        SheetAct::EditSetting { project: None, key: field("text") },
-                        word("desktop.settings.edit"),
-                    )
-                }),
-        );
+        rows = rows.child(super::ringframe::rule(props, host, e));
     }
-    row_list(rows)
+    rows
 }

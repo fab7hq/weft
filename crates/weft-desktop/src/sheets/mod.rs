@@ -27,6 +27,7 @@ use crate::gpui::Element;
 use crate::tree_view::Listed;
 
 pub use menu::{MenuProps, render_menu_popover};
+pub use ringframe::BASE as BASE_PRACTICE;
 pub use updates::behind;
 
 pub struct SheetProps<'a> {
@@ -63,15 +64,19 @@ pub struct SheetProps<'a> {
     pub setting_text: &'a str,
     /// The RingFrame preview's `<host>|<route>|<task>`.
     pub preview: &'a str,
-    /// The harness Settings › Harnesses shows.
+    /// The agent app open in Settings › Agent apps (empty: none).
     pub harness: &'a str,
-    /// The practices whose every rule Settings › RingFrame shows, not the
+    /// The practice whose rules Settings › Rules shows, by catalog.
+    pub practice_shown: Option<&'a str>,
+    /// Keep finished sessions shows Custom, whatever the days.
+    pub keep_custom: bool,
+    /// Advanced settings is on: every section shows its expert controls.
+    pub advanced: bool,
+    /// The practices whose every rule Settings › Rules shows, not the
     /// first few, by catalog.
     pub all_rules: &'a std::collections::HashSet<String>,
     /// The preview's text shown, not only what it keeps.
     pub preview_shown: bool,
-    /// Workflow's "Each judge" is open.
-    pub judges_shown: bool,
     /// What Weft and the person's devices call this machine.
     pub machine: &'a str,
     /// What Updates is running, by its row, and since when.

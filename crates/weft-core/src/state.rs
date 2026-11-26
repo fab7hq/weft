@@ -73,6 +73,9 @@ pub struct WeftSettings {
     pub default_view: PaneViewMode,
     #[serde(default)]
     pub window_bounds: Option<WindowBounds>,
+    /// Settings shows every section's expert controls in place.
+    #[serde(default)]
+    pub advanced: bool,
 }
 
 impl Default for WeftSettings {
@@ -82,6 +85,7 @@ impl Default for WeftSettings {
             sidebar_open: true,
             default_view: PaneViewMode::Terminal,
             window_bounds: None,
+            advanced: false,
         }
     }
 }
@@ -253,6 +257,7 @@ mod tests {
                     width: 1440.0,
                     height: 900.0,
                 }),
+                advanced: true,
             },
             panes: SavedPanesLayout {
                 layout: SplitLayout::TwoColumns,

@@ -1,20 +1,19 @@
-//! Settings › RingFrame: the practices a prompt draws on, the core rules per
-//! phase, every rule of the base practice and of each practice turned on,
-//! with where it comes from, what Eval judges must not do, and a preview of
-//! the Rules block a route gets. Every project's; a project's own are in its
-//! settings.
+//! Settings › Rules: what the person works on, and each practice's rules,
+//! switched on and off; with Advanced settings, the core rules per phase,
+//! each rule's tier and a preview of the Rules block a route gets. Also
+//! Eval's "While reading, Eval never". Every project's; a project's own are
+//! in its settings.
 
 use serde_json::{Value, json};
 use weft_core::words::{fill, word};
 
 use super::SheetProps;
-use super::menu::badge;
+use super::settings::{group, line_row, link, toggle};
 use crate::action::{Focus, SheetAct};
 use crate::daemon::Then;
 use crate::gpui::{Element, div, input_el, palette};
-use crate::ui::{row_list, section_label, sheet_body};
 
-const BASE: &str = "practices/software-development";
+pub const BASE: &str = "practices/software-development";
 const TASKS: [&str; 4] = ["implement", "plan", "review", "diagnose"];
 const ROUTES: [&str; 3] = ["native_plan", "native_goal", "native_direct"];
 
@@ -36,15 +35,6 @@ fn tag(text: &str, on: bool) -> Element {
         .pad(2, 6)
         .border(if on { palette::BLUE_BORDER } else { palette::LINE })
         .color(if on { palette::BLUE_BORDER } else { palette::DIM })
-        .text(text.to_string())
-}
-
-fn link(layer: &str, act: SheetAct, text: &str) -> Element {
-    div()
-        .layer(layer)
-        .on_click(act)
-        .font_size(12)
-        .color(palette::BLUE_BORDER)
         .text(text.to_string())
 }
 
@@ -107,159 +97,435 @@ pub(super) fn unanswered(refused: Option<&String>, then: Then) -> Element {
     }
 }
 
-/// How many rules show before "+ N more".
+/// How many rules show before "N more".
 const FIRST_RULES: usize = 5;
 
-pub(super) fn render(props: &SheetProps) -> Element {
+/// RingFrame's rules, every project's, once the daemon has said them.
+fn rules_read<'a>(props: &'a SheetProps) -> Option<&'a Value> {
+    props.clients.iter().find_map(|c| c.read.get(&Then::Rules { project: false }))
+}
+
+/// What shows until RingFrame's rules are said.
+fn rules_waiting(props: &SheetProps) -> Element {
     let then = Then::Rules { project: false };
-    let rules = props.clients.iter().find_map(|c| c.read.get(&then));
-    let Some(rules) = rules else {
-        let refused = props.clients.iter().find_map(|c| c.refused.get(&then));
-        return sheet_body().child(unanswered(refused, then.clone()));
-    };
-    let machine = props
+    let refused = props.clients.iter().find_map(|c| c.refused.get(&then));
+    unanswered(refused, then.clone())
+}
+
+/// The machine's RingFrame layer, as the daemon last said it.
+fn layer_of(props: &SheetProps) -> Value {
+    props
         .clients
         .iter()
         .find_map(|c| c.config.as_ref())
-        .map_or(Value::Null, |c| c["machine"].clone());
-    let layer = &machine["ringframe"];
+        .map_or(Value::Null, |c| c["machine"]["ringframe"].clone())
+}
+
+/// One row: its name, what it is, and its controls; a line under it.
+fn line(layer: impl Into<String>, label: &str, what: &str) -> Element {
+    line_row(layer, label, (!what.is_empty()).then_some(what))
+}
+
+/// Rules: what the person works on, and each practice's rules, switched on
+/// and off; a practice opens its rules in place. Advanced settings adds the
+/// core rules per phase, each rule's tier and Edit, and the preview.
+pub(super) fn render(props: &SheetProps) -> Element {
+    let Some(rules) = rules_read(props) else {
+        return div().self_stretch().flex_col().pad(12, 0).child(rules_waiting(props));
+    };
+    let layer = layer_of(props);
     let catalogs = rules["catalogs"].as_array().cloned().unwrap_or_default();
     let base = catalogs.iter().find(|c| c["catalog"] == BASE).cloned().unwrap_or(Value::Null);
-
-    // Practices: the base always; each other, turned on here by naming it.
-    let mut practices = vec![
-        div()
-            .layer("practice software-development")
-            .self_stretch()
-            .flex_row()
-            .gap(12)
-            .pad(8, 14)
-            .items_center()
-            .child(
-                div()
-                    .w(200)
-                    .font_weight(600)
-                    .font_size(13)
-                    .text(domain_name("software-development")),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .font_size(12)
-                    .color(palette::MUTED)
-                    .text(word("desktop.settings.always")),
-            )
-            .child(badge(
-                "setting badge",
-                true,
-                (palette::SELECTED_BG, palette::BLUE_BORDER, palette::BLUE_BORDER),
-            )),
-    ];
-    for d in rules["domains"].as_array().into_iter().flatten().filter(|d| d["base"] != true) {
+    let mut body = div()
+        .self_stretch()
+        .flex_col()
+        .child(
+            div().font_size(12).color(palette::MUTED).pad(4, 0).text(word("settings.rules_what")),
+        )
+        .child(group(word("settings.rules.work_on"), false, None));
+    // What the person works on: the base always; each other, turned on here by naming it.
+    let domains = rules["domains"].as_array().cloned().unwrap_or_default();
+    for d in &domains {
         let id = d["domain"].as_str().unwrap_or_default();
+        let what = d["description"].as_str().unwrap_or_default();
+        if d["base"] == true {
+            body = body.child(
+                line(format!("practice {id}"), &domain_name(id), what).child(
+                    div()
+                        .font_mono()
+                        .font_size(10)
+                        .color(palette::DIM)
+                        .text(word("settings.rules.always_on")),
+                ),
+            );
+            continue;
+        }
         let catalog = format!("practices/{id}");
         let on = !layer["deltas"][catalog.as_str()].is_null();
         let value = (!on).then(|| json!({"domain": id}));
-        practices.push(
-            div()
-                .layer(format!("practice {id}"))
+        body = body.child(
+            line(format!("practice {id}"), &domain_name(id), what)
                 .on_click(SheetAct::Choose {
                     project: None,
                     key: key(&["ringframe", "deltas", &catalog]),
                     value,
                 })
-                .self_stretch()
-                .flex_row()
-                .gap(12)
-                .pad(8, 14)
-                .items_center()
-                .child(div().w(200).font_weight(600).font_size(13).text(domain_name(id)))
-                .child(
-                    div()
-                        .flex_1()
-                        .font_size(12)
-                        .color(palette::MUTED)
-                        .text(d["description"].as_str().unwrap_or_default().to_string()),
-                )
-                .child(badge(
-                    "setting badge",
-                    on,
-                    (palette::SELECTED_BG, palette::BLUE_BORDER, palette::BLUE_BORDER),
-                )),
+                .child(toggle(on, false)),
         );
     }
-    // The core rules per phase: the base practice's cap.
-    let cap_key = key(&["ringframe", "deltas", BASE, "render", "core_cap"]);
-    let cap = base["render"]["core_cap"].as_u64().unwrap_or(5);
-    let dotted = cap_key.join(".");
-    let options: Vec<(String, SheetAct)> = (1..=9)
-        .map(|n| {
-            (
-                n.to_string(),
-                SheetAct::Choose { project: None, key: cap_key.clone(), value: Some(json!(n)) },
-            )
-        })
-        .collect();
-    practices.push(
-        div()
-            .layer("setting Core rules per phase")
-            .self_stretch()
-            .flex_col()
-            .child(
-                div()
-                    .self_stretch()
-                    .flex_row()
-                    .gap(12)
-                    .pad(8, 14)
-                    .items_center()
-                    .child(
-                        div()
-                            .w(200)
-                            .font_weight(600)
-                            .font_size(13)
-                            .text(word("desktop.settings.core_cap")),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .font_size(12)
-                            .color(palette::MUTED)
-                            .text(word("desktop.settings.core_cap_what")),
+    if props.advanced {
+        // The core rules per phase: the base practice's cap.
+        let cap_key = key(&["ringframe", "deltas", BASE, "render", "core_cap"]);
+        let cap = base["render"]["core_cap"].as_u64().unwrap_or(5);
+        let dotted = cap_key.join(".");
+        let options: Vec<(String, SheetAct)> = (1..=9)
+            .map(|n| {
+                let act =
+                    SheetAct::Choose { project: None, key: cap_key.clone(), value: Some(json!(n)) };
+                (n.to_string(), act)
+            })
+            .collect();
+        body = body.child(group(word("settings.rules.cap"), true, None)).child(
+            div()
+                .layer("setting Core rules per phase")
+                .self_stretch()
+                .flex_col()
+                .child(
+                    line(
+                        "core cap",
+                        word("desktop.settings.core_cap"),
+                        word("desktop.settings.core_cap_what"),
                     )
                     .child(
                         div()
                             .layer("setting value")
                             .on_click(SheetAct::OpenChoice(cap_key.clone()))
-                            .pad(4, 10)
+                            .w(70)
+                            .pad(6, 10)
+                            .bg(palette::SURFACE_ALT)
                             .border(palette::LINE)
                             .font_size(13)
                             .text(format!("{cap} ▾")),
                     ),
-            )
-            .children(choices(props, &dotted, options)),
+                )
+                .children(choices(props, &dotted, options)),
+        );
+    }
+    // The rules of the base practice, then of each practice turned on here.
+    let on = domains.iter().filter_map(|d| {
+        let id = d["domain"].as_str()?;
+        let catalog = format!("practices/{id}");
+        (d["base"] != true && !layer["deltas"][catalog.as_str()].is_null()).then_some(catalog)
+    });
+    let groups: Vec<String> = std::iter::once(BASE.to_string()).chain(on).collect();
+    // A rule of the person's own goes into the practice open, else the base.
+    let into = props.practice_shown.filter(|c| groups.iter().any(|g| g == c)).unwrap_or(BASE);
+    let own = next_own(&catalogs);
+    let new_key = key(&["ringframe", "deltas", into, "entries", &own, "text"]);
+    body = body.child(
+        group(
+            word("settings.rules.the_rules"),
+            false,
+            Some(link(
+                "add rule",
+                SheetAct::EditSetting { project: None, key: new_key },
+                word("settings.rules.add"),
+            )),
+        )
+        .layer("rules head"),
     );
+    // The new rule being typed: an own id no practice holds yet.
+    let typing = props.setting_editing.and_then(|(p, k)| {
+        let new = p.is_none()
+            && k.get(4).is_some_and(|id| {
+                id.starts_with("own.") && !catalogs.iter().any(|c| rows_have(c, id))
+            });
+        new.then(|| k.clone())
+    });
+    if let Some(k) = typing {
+        body =
+            body.child(div().layer("new rule").self_stretch().flex_row().pad(8, 0).child(field(
+                props,
+                k,
+                String::new(),
+            )));
+    }
+    for catalog in &groups {
+        let listed = catalogs.iter().find(|c| c["catalog"] == catalog.as_str());
+        let name = domain_name(catalog.trim_start_matches("practices/"));
+        body = body.children(practice(props, catalog, listed, &name));
+    }
+    if props.advanced {
+        body = body.child(div().self_stretch().pad(10, 0).child(preview(props)));
+    }
+    body
+}
 
-    // What Eval judges must not do: the machine's list, else RingFrame's own.
+/// The id a new rule of the person's own takes: the first `own.N` no
+/// practice holds, so two practices never share one.
+fn next_own(catalogs: &[Value]) -> String {
+    let taken = |id: &str| catalogs.iter().any(|c| rows_have(c, id));
+    (1..).map(|n| format!("own.{n}")).find(|id| !taken(id)).unwrap_or_default()
+}
+
+/// One practice: its name and how many of its rules are on, which opens it;
+/// open, its first few rules, then how many more.
+fn practice(props: &SheetProps, catalog: &str, listed: Option<&Value>, name: &str) -> Vec<Element> {
+    let empty = Value::Null;
+    let listed = listed.unwrap_or(&empty);
+    let entries = listed["entries"].as_array().map_or(&[][..], Vec::as_slice);
+    let open = props.practice_shown == Some(catalog);
+    let n_on = entries.iter().filter(|e| e["enabled"] != false).count();
+    let said =
+        fill("settings.rules.on", &[("on", &n_on.to_string()), ("n", &entries.len().to_string())]);
+    let head = div()
+        .layer(format!("rules head {catalog}"))
+        .on_click(SheetAct::ShowPractice(catalog.to_string()))
+        .self_stretch()
+        .flex_row()
+        .gap(8)
+        .pad(9, 8)
+        .items_center()
+        .border_bottom(palette::LINE)
+        .bg(if open { palette::SELECTED_BG } else { "transparent" })
+        .child(div().font_mono().font_size(11).color(palette::DIM).text(if open {
+            "⌄"
+        } else {
+            "›"
+        }))
+        .child(
+            div()
+                .flex_1()
+                .font_size(14)
+                .font_weight(if open { 600 } else { 400 })
+                .text(name.to_string()),
+        )
+        .child(div().font_mono().font_size(10).color(palette::DIM).text(said));
+    if !open {
+        return vec![head];
+    }
+    let folded = !props.all_rules.contains(catalog) && entries.len() > FIRST_RULES + 1;
+    let shown = if folded { FIRST_RULES } else { entries.len() };
+    let mut rows = div()
+        .layer(format!("rules {catalog}"))
+        .self_stretch()
+        .flex_col()
+        .style("padding-left", "22px");
+    for e in entries.iter().take(shown) {
+        rows = rows.child(rule(props, catalog, e));
+    }
+    if folded {
+        let n = (entries.len() - FIRST_RULES).to_string();
+        rows = rows.child(
+            div()
+                .layer("more rules")
+                .on_click(SheetAct::AllRules(catalog.to_string()))
+                .self_stretch()
+                .pad(9, 0)
+                .border_bottom(palette::LINE)
+                .font_size(13)
+                .color(palette::MUTED)
+                .text(fill("settings.rules.more", &[("n", &n)])),
+        );
+    }
+    vec![head, rows]
+}
+
+fn rows_have(catalog: &Value, id: &str) -> bool {
+    catalog["entries"].as_array().is_some_and(|e| e.iter().any(|x| x["id"] == id))
+}
+
+/// One rule: its name and wording, which opens its wording to change; Reset
+/// once changed; on or off. Advanced settings adds its tier and Edit, and
+/// opens its tasks and concerns too.
+pub(super) fn rule(props: &SheetProps, catalog: &str, e: &Value) -> Element {
+    let id = e["id"].as_str().unwrap_or_default();
+    let entry = |field: &str| key(&["ringframe", "deltas", catalog, "entries", id, field]);
+    let changed = e["source"] != "shipped";
+    let on = e["enabled"] != false;
+    let tier = e["tier"].as_str().unwrap_or("core");
+    let label = e["label"].as_str().unwrap_or(id).to_string();
+    let host = !catalog.starts_with("practices/");
+    let tier_key = entry("tier");
+    let dotted = tier_key.join(".");
+    let tiers: Vec<(String, SheetAct)> = ["core", "situational"]
+        .iter()
+        .map(|t| {
+            let act =
+                SheetAct::Choose { project: None, key: tier_key.clone(), value: Some(json!(t)) };
+            (t.to_string(), act)
+        })
+        .collect();
+    let editing = props.setting_editing.is_some_and(|(p, k)| {
+        p.is_none() && k.get(2).is_some_and(|c| c == catalog) && k.get(4).is_some_and(|i| i == id)
+    });
+    let name = div()
+        .layer("rule name")
+        .on_click(SheetAct::EditSetting { project: None, key: entry("text") })
+        .flex_1()
+        .flex_col()
+        .gap(2)
+        .style("min-width", "0px")
+        .child(div().font_size(14).text(label))
+        .child(
+            div()
+                .font_size(12)
+                .color(palette::MUTED)
+                .style("white-space", "nowrap")
+                .style("overflow", "hidden")
+                .style("text-overflow", "ellipsis")
+                .text(e["text"].as_str().unwrap_or_default().to_string()),
+        );
+    let mut top = div()
+        .self_stretch()
+        .flex_row()
+        .gap(10)
+        .pad(9, 0)
+        .items_center()
+        .border_bottom(palette::LINE)
+        .child(name);
+    if changed {
+        top = top.child(tag(word("desktop.settings.changed"), true));
+    }
+    if props.advanced && host {
+        top = top.child(status(e, &entry("status")));
+    } else if props.advanced {
+        top = top.child(
+            div()
+                .layer("rule tier")
+                .on_click(SheetAct::OpenChoice(tier_key.clone()))
+                .child(tag(tier, false)),
+        );
+    }
+    if changed {
+        top = top.child(link(
+            "reset",
+            SheetAct::Choose {
+                project: None,
+                key: key(&["ringframe", "deltas", catalog, "entries", id]),
+                value: None,
+            },
+            word("act.reset"),
+        ));
+    } else if props.advanced {
+        top = top.child(link(
+            "edit",
+            SheetAct::EditSetting { project: None, key: entry("text") },
+            word("desktop.settings.edit"),
+        ));
+    }
+    top = top.child(
+        div()
+            .layer("rule switch")
+            .on_click(SheetAct::Choose {
+                project: None,
+                key: entry("enabled"),
+                value: Some(json!(!on)),
+            })
+            .child(toggle(on, false)),
+    );
+    let mut row = div()
+        .layer(format!("rule {id}"))
+        .self_stretch()
+        .flex_col()
+        .child(top)
+        .children(choices(props, &dotted, tiers));
+    if editing {
+        let fields: &[(&str, &str)] = if props.advanced && !host {
+            &[
+                ("text", "desktop.settings.wording"),
+                ("applies_to", "desktop.settings.applies_to"),
+                ("concerns", "desktop.settings.concerns"),
+            ]
+        } else {
+            &[("text", "desktop.settings.wording")]
+        };
+        for (field_name, word_key) in fields {
+            let shown = match &e[*field_name] {
+                Value::Array(items) => {
+                    items.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")
+                }
+                v => v.as_str().unwrap_or_default().to_string(),
+            };
+            row = row.child(
+                div()
+                    .self_stretch()
+                    .flex_row()
+                    .gap(10)
+                    .pad(4, 0)
+                    .items_center()
+                    .child(div().w(130).font_size(12).color(palette::MUTED).text(word(word_key)))
+                    .child(field(props, entry(field_name), shown)),
+            );
+        }
+    }
+    row
+}
+
+/// A harness's rule: qualified or candidate, either picked.
+fn status(e: &Value, field: &[String]) -> Element {
+    let qualified = e["status"] == "qualified";
+    let part = |q: bool, w: &str| {
+        let mine = q == qualified;
+        div()
+            .layer(format!("status {w}"))
+            .on_click(SheetAct::Choose {
+                project: None,
+                key: field.to_vec(),
+                value: Some(json!(if q { "qualified" } else { "candidate" })),
+            })
+            .pad(3, 8)
+            .font_size(12)
+            .font_weight(if mine { 600 } else { 400 })
+            .color(if mine { palette::TEAL } else { palette::MUTED })
+            .bg(if mine { palette::TEAL_BG } else { "transparent" })
+            .text(word(w))
+    };
+    div()
+        .flex_row()
+        .border(palette::LINE)
+        .child(part(true, "desktop.harness.qualified"))
+        .child(part(false, "desktop.harness.candidate"))
+}
+
+/// While reading, Eval never: the machine's list, else RingFrame's own, each
+/// with Remove; `+ Add` types one.
+pub(super) fn eval_never(props: &SheetProps) -> Element {
+    let deny_add = key(&["ringframe", "eval", "deny", "+"]);
+    let add = link(
+        "add deny",
+        SheetAct::EditSetting { project: None, key: deny_add.clone() },
+        word("desktop.settings.add"),
+    );
+    let mut el = div().layer("eval never").self_stretch().flex_col().child(group(
+        word("settings.eval.never"),
+        false,
+        Some(add),
+    ));
+    let Some(rules) = rules_read(props) else {
+        return el.child(rules_waiting(props));
+    };
+    let layer = layer_of(props);
     let deny = layer["eval"]["deny"].as_array().cloned();
     let shipped = deny.is_none();
     let listed = deny.or_else(|| rules["judges"]["deny"].as_array().cloned());
-    let mut judges = Vec::new();
+    if props.setting_editing.is_some_and(|(p, k)| p.is_none() && *k == deny_add) {
+        el = el.child(div().self_stretch().flex_row().pad(8, 0).child(field(
+            props,
+            deny_add,
+            String::new(),
+        )));
+    }
     for (i, rule) in listed.iter().flatten().enumerate() {
-        judges.push(
-            div()
-                .layer(format!("deny {i}"))
-                .self_stretch()
-                .flex_row()
-                .gap(12)
-                .pad(8, 14)
-                .items_center()
-                .child(
+        el = el.child(
+            line(format!("deny {i}"), rule.as_str().unwrap_or_default(), "")
+                .children(shipped.then(|| {
                     div()
-                        .flex_1()
-                        .font_size(13)
-                        .text(rule.as_str().unwrap_or_default().to_string()),
-                )
-                .children(shipped.then(|| tag(word("desktop.settings.shipped"), false)))
+                        .font_mono()
+                        .font_size(10)
+                        .color(palette::DIM)
+                        .text(word("settings.eval.built_in"))
+                }))
                 .child(link(
                     "remove",
                     SheetAct::Choose {
@@ -271,223 +537,7 @@ pub(super) fn render(props: &SheetProps) -> Element {
                 )),
         );
     }
-    let deny_add = key(&["ringframe", "eval", "deny", "+"]);
-    let adding = props.setting_editing.is_some_and(|(p, k)| p.is_none() && *k == deny_add);
-    judges.push(if adding {
-        div().self_stretch().pad(8, 14).child(field(props, deny_add, String::new()))
-    } else {
-        div().self_stretch().pad(8, 14).child(link(
-            "add deny",
-            SheetAct::EditSetting { project: None, key: deny_add },
-            word("desktop.settings.add"),
-        ))
-    });
-
-    // The rules of the base practice, then of each practice turned on here.
-    let mut body = sheet_body()
-        .child(section_label(word("desktop.settings.practices")))
-        .child(row_list(practices));
-    let own = next_own(&catalogs);
-    let on = rules["domains"].as_array().into_iter().flatten().filter_map(|d| {
-        let id = d["domain"].as_str()?;
-        let catalog = format!("practices/{id}");
-        (d["base"] != true && !layer["deltas"][catalog.as_str()].is_null()).then_some(id)
-    });
-    for id in std::iter::once(BASE.trim_start_matches("practices/")).chain(on) {
-        let catalog = format!("practices/{id}");
-        let listed = catalogs.iter().find(|c| c["catalog"] == catalog.as_str());
-        body = body.children(rules_section(props, &catalog, listed, &domain_name(id), &own));
-    }
-    body.child(section_label(word("desktop.settings.judges")))
-        .child(row_list(judges))
-        .child(preview(props))
-}
-
-/// The id a new rule of the person's own takes: the first `own.N` no
-/// practice holds, so two practices never share one.
-fn next_own(catalogs: &[Value]) -> String {
-    let taken = |id: &str| catalogs.iter().any(|c| rows_have(c, id));
-    (1..).map(|n| format!("own.{n}")).find(|id| !taken(id)).unwrap_or_default()
-}
-
-/// One practice's rules, headed by its name with "+ Add a rule": the first
-/// few, then how many more; the new rule being typed under them.
-fn rules_section(
-    props: &SheetProps,
-    catalog: &str,
-    listed: Option<&Value>,
-    name: &str,
-    own: &str,
-) -> [Element; 2] {
-    let empty = Value::Null;
-    let listed = listed.unwrap_or(&empty);
-    let entries = listed["entries"].as_array().map_or(&[][..], Vec::as_slice);
-    let folded = !props.all_rules.contains(catalog) && entries.len() > FIRST_RULES + 1;
-    let shown = if folded { FIRST_RULES } else { entries.len() };
-    let mut rows: Vec<Element> =
-        entries.iter().take(shown).map(|e| rule(props, catalog, e)).collect();
-    if folded {
-        let n = (entries.len() - FIRST_RULES).to_string();
-        rows.push(
-            div()
-                .layer("more rules")
-                .on_click(SheetAct::AllRules(catalog.to_string()))
-                .self_stretch()
-                .pad(8, 14)
-                .font_size(13)
-                .color(palette::MUTED)
-                .text(fill("desktop.settings.more_rules", &[("n", &n)])),
-        );
-    }
-    let new_key = key(&["ringframe", "deltas", catalog, "entries", own, "text"]);
-    let add = link(
-        "add rule",
-        SheetAct::EditSetting { project: None, key: new_key },
-        word("desktop.settings.add_rule"),
-    );
-    // The new rule being typed: an own id this practice does not hold yet.
-    let typing = props.setting_editing.and_then(|(p, k)| {
-        let new = p.is_none()
-            && k.get(2).is_some_and(|c| c == catalog)
-            && k.get(4).is_some_and(|id| id.starts_with("own.") && !rows_have(listed, id));
-        new.then(|| k.clone())
-    });
-    if let Some(k) = typing {
-        rows.push(div().self_stretch().pad(8, 14).child(field(props, k, String::new())));
-    }
-    let head = div()
-        .layer(format!("rules head {catalog}"))
-        .self_stretch()
-        .flex_row()
-        .justify_between()
-        .child(section_label(fill("desktop.settings.rules", &[("practice", name)])))
-        .child(add);
-    [head, row_list(rows).layer(format!("rules {catalog}"))]
-}
-
-fn rows_have(catalog: &Value, id: &str) -> bool {
-    catalog["entries"].as_array().is_some_and(|e| e.iter().any(|x| x["id"] == id))
-}
-
-/// One rule: its name and wording, where it comes from, its tier and whether
-/// it is on; Edit opens its wording, tasks and concerns, Reset takes the
-/// change out.
-fn rule(props: &SheetProps, catalog: &str, e: &Value) -> Element {
-    let id = e["id"].as_str().unwrap_or_default();
-    let entry = |field: &str| key(&["ringframe", "deltas", catalog, "entries", id, field]);
-    let changed = e["source"] != "shipped";
-    let on = e["enabled"] != false;
-    let tier = e["tier"].as_str().unwrap_or("core");
-    let label = e["label"].as_str().unwrap_or(id).to_string();
-    let tier_key = entry("tier");
-    let dotted = tier_key.join(".");
-    let tiers: Vec<(String, SheetAct)> = ["core", "situational"]
-        .iter()
-        .map(|t| {
-            (
-                t.to_string(),
-                SheetAct::Choose { project: None, key: tier_key.clone(), value: Some(json!(t)) },
-            )
-        })
-        .collect();
-    let editing = props.setting_editing.is_some_and(|(p, k)| {
-        p.is_none() && k.get(2).is_some_and(|c| c == catalog) && k.get(4).is_some_and(|i| i == id)
-    });
-    let mut row = div()
-        .layer(format!("rule {id}"))
-        .self_stretch()
-        .flex_col()
-        .child(
-            div()
-                .self_stretch()
-                .flex_row()
-                .gap(10)
-                .pad(7, 14)
-                .items_center()
-                .bg(if changed { palette::SELECTED_BG } else { "transparent" })
-                .child(div().w(170).font_weight(600).font_size(13).text(label))
-                .child(
-                    div()
-                        .flex_1()
-                        .font_size(12)
-                        .color(palette::MUTED)
-                        .style("white-space", "nowrap")
-                        .style("overflow", "hidden")
-                        .style("text-overflow", "ellipsis")
-                        .text(e["text"].as_str().unwrap_or_default().to_string()),
-                )
-                .child(tag(
-                    word(if changed {
-                        "desktop.settings.changed"
-                    } else {
-                        "desktop.settings.shipped"
-                    }),
-                    changed,
-                ))
-                .child(
-                    div()
-                        .layer("rule tier")
-                        .on_click(SheetAct::OpenChoice(tier_key.clone()))
-                        .child(tag(tier, false)),
-                )
-                .child(
-                    div()
-                        .layer("rule switch")
-                        .on_click(SheetAct::Choose {
-                            project: None,
-                            key: entry("enabled"),
-                            value: Some(json!(!on)),
-                        })
-                        .child(badge(
-                            "setting badge",
-                            on,
-                            (palette::SELECTED_BG, palette::BLUE_BORDER, palette::BLUE_BORDER),
-                        )),
-                )
-                .child(if changed {
-                    link(
-                        "reset",
-                        SheetAct::Choose {
-                            project: None,
-                            key: key(&["ringframe", "deltas", catalog, "entries", id]),
-                            value: None,
-                        },
-                        word("act.reset"),
-                    )
-                } else {
-                    link(
-                        "edit",
-                        SheetAct::EditSetting { project: None, key: entry("text") },
-                        word("desktop.settings.edit"),
-                    )
-                }),
-        )
-        .children(choices(props, &dotted, tiers));
-    if editing {
-        for (field_name, word_key) in [
-            ("text", "desktop.settings.wording"),
-            ("applies_to", "desktop.settings.applies_to"),
-            ("concerns", "desktop.settings.concerns"),
-        ] {
-            let shown = match &e[field_name] {
-                Value::Array(items) => {
-                    items.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")
-                }
-                v => v.as_str().unwrap_or_default().to_string(),
-            };
-            row = row.child(
-                div()
-                    .self_stretch()
-                    .flex_row()
-                    .gap(10)
-                    .pad(4, 28)
-                    .items_center()
-                    .child(div().w(130).font_size(12).color(palette::MUTED).text(word(word_key)))
-                    .child(field(props, entry(field_name), shown)),
-            );
-        }
-    }
-    row
+    el
 }
 
 /// The Rules block a route gets with these settings, once asked for.

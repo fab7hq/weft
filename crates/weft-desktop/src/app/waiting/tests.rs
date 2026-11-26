@@ -523,7 +523,7 @@ fn a_search_says_it_searches_until_answered() {
 fn settings_reads_breathe_and_say_why_they_were_refused() {
     let (_tmp, mut app, mut wire) = wired_app();
     app.dispatch(crate::action::WindowAct::OpenSettings);
-    app.dispatch(SheetAct::SettingsTab(crate::action::SettingsTab::RingFrame));
+    app.dispatch(SheetAct::SettingsTab(crate::action::SettingsTab::Rules));
     let (id, _) = call_of(&mut wire, |c| matches!(c, Call::Read { what, .. } if what == "rules"));
     let busy = app.render().find_layer("busy").expect("asked").all_text();
     assert_eq!(busy, words::word("desktop.settings.asking"));

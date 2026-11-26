@@ -1,9 +1,10 @@
-//! Settings: the machine's, for every project, on tabs. General holds the
-//! machine's name, Turbo, Start at login, Notifications and how long ended
-//! sessions are kept; Workflow who runs each step
-//! and Eval's judges. A project's own settings use the same rows, for what
-//! differs from every project's. Each is set through the daemon and shows
-//! what it last said.
+//! Settings: the machine's, for every project, in sections listed beside the
+//! one shown. General holds the machine's name, Start Weft at login, Notify
+//! me, how long finished sessions are kept, and Turbo; Eval how carefully it
+//! reads and who reads; Rules and Agent apps their own files. Advanced
+//! settings shows each section's expert controls in place. A project's own
+//! settings use the same controls, for what differs from every project's.
+//! Each is set through the daemon and shows what it last said.
 
 use std::path::Path;
 
@@ -11,18 +12,9 @@ use serde_json::{Value, json};
 use weft_core::words::{fill, word};
 
 use super::SheetProps;
-use super::menu::badge;
 use crate::action::{Action, Focus, Setting, SettingsTab, SheetAct, WindowAct};
 use crate::gpui::{Element, div, input_el, palette};
-use crate::ui::{close_button, row_list, section_label, sheet, sheet_body, sheet_foot, sheet_head};
-
-/// The tabs, in their order.
-const TABS: [(SettingsTab, &str, &str); 4] = [
-    (SettingsTab::General, "General", "desktop.settings.tab.general"),
-    (SettingsTab::Workflow, "Workflow", "desktop.settings.tab.workflow"),
-    (SettingsTab::RingFrame, "RingFrame", "desktop.settings.tab.ringframe"),
-    (SettingsTab::Harnesses, "Harnesses", "desktop.settings.tab.harnesses"),
-];
+use crate::ui::{close_button, section_label, sheet, sheet_foot};
 
 /// What a setting takes.
 #[derive(Clone, Copy, PartialEq)]
@@ -105,105 +97,264 @@ pub(super) fn entries() -> Vec<Entry> {
 pub(super) fn render(props: &SheetProps, tab: SettingsTab) -> Element {
     let body = match tab {
         SettingsTab::General => general(props),
-        SettingsTab::Workflow => workflow(props),
-        SettingsTab::RingFrame => super::ringframe::render(props),
-        SettingsTab::Harnesses => super::harnesses::render(props),
+        SettingsTab::Eval => eval(props),
+        SettingsTab::Rules => super::ringframe::render(props),
+        SettingsTab::Apps => super::harnesses::render(props),
     };
+    let title = SECTIONS.iter().find(|(t, ..)| *t == tab).map_or("", |(_, _, key)| word(key));
+    // Advanced settings on: the badge beside the title, and a blue line under it.
+    let head = div()
+        .layer("settings head")
+        .self_stretch()
+        .flex_row()
+        .gap(10)
+        .pad(12, 20)
+        .items_center()
+        .border_bottom(if props.advanced { palette::BLUE_BORDER } else { palette::LINE })
+        .child(div().font_weight(600).font_size(16).text(word("web.settings.title")))
+        .children(props.advanced.then(advanced_mark));
+    let shown = div()
+        .layer("sheet body")
+        .flex_1()
+        .self_stretch()
+        .flex_col()
+        .style("overflow-y", "auto")
+        .style("min-width", "0px")
+        .pad(18, 24)
+        .child(
+            div()
+                .layer(format!("settings section {title}"))
+                .self_stretch()
+                .flex_col()
+                .style("max-width", "640px")
+                .child(div().font_weight(600).font_size(16).text(title.to_string()))
+                .child(body),
+        );
     sheet(
         "sheet Settings",
-        sheet_head(fill("web.machine.title", &[("machine", props.machine)]), None),
-        div().self_stretch().flex_1().flex_col().child(tabs(tab)).child(body),
+        head,
+        div()
+            .self_stretch()
+            .flex_1()
+            .flex_row()
+            .style("min-height", "0px")
+            .child(nav(props, tab))
+            .child(shown),
         sheet_foot(Vec::new(), vec![close_button()]),
     )
 }
 
-fn tabs(shown: SettingsTab) -> Element {
-    let mut row = div()
-        .layer("settings tabs")
-        .self_stretch()
-        .flex_row()
-        .gap(4)
-        .pad(0, 20)
-        .bg(palette::SURFACE_ALT)
-        .border_bottom(palette::LINE);
-    for (tab, name, key) in TABS {
-        let on = tab == shown;
-        row = row.child(
-            div()
-                .layer(format!("settings tab {name}"))
-                .on_click(SheetAct::SettingsTab(tab))
-                .pad(9, 14)
-                .font_size(13)
-                .font_weight(if on { 600 } else { 400 })
-                .color(if on { palette::TEXT } else { palette::MUTED })
-                .style(
-                    "border-bottom",
-                    format!("2px solid {}", if on { palette::BLUE_BORDER } else { "transparent" }),
-                )
-                .text(word(key)),
-        );
-    }
-    row
+/// The sections, in their order: each by its name in a layer, and its word.
+const SECTIONS: [(SettingsTab, &str, &str); 4] = [
+    (SettingsTab::General, "General", "settings.general"),
+    (SettingsTab::Eval, "Eval", "settings.eval"),
+    (SettingsTab::Rules, "Rules", "settings.rules"),
+    (SettingsTab::Apps, "Agent apps", "settings.apps"),
+];
+
+/// The badge Settings carries while Advanced settings is on.
+fn advanced_mark() -> Element {
+    div()
+        .layer("advanced mark")
+        .pad(2, 7)
+        .bg(palette::BLUE_BORDER)
+        .color(palette::CANVAS)
+        .font_mono()
+        .font_size(10)
+        .font_weight(700)
+        .text(word("settings.advanced_mark"))
 }
 
+/// The sections listed beside the one shown, and Advanced settings' switch at
+/// their foot.
+fn nav(props: &SheetProps, shown: SettingsTab) -> Element {
+    let needing = super::harnesses::needing(props);
+    let mut list = div()
+        .layer("settings sections")
+        .w(200)
+        .shrink_0()
+        .flex_col()
+        .pad(12, 0)
+        .border_right(palette::LINE);
+    for (tab, name, key) in SECTIONS {
+        let on = tab == shown;
+        let mut item = div()
+            .layer(format!("settings tab {name}"))
+            .on_click(SheetAct::SettingsTab(tab))
+            .self_stretch()
+            .flex_row()
+            .items_center()
+            .pad(8, 16)
+            .font_size(13)
+            .font_weight(if on { 600 } else { 400 })
+            .color(if on { palette::TEXT } else { palette::MUTED })
+            .bg(if on { palette::SELECTED_BG } else { "transparent" })
+            .style(
+                "border-left",
+                format!("2px solid {}", if on { palette::BLUE_BORDER } else { "transparent" }),
+            )
+            .child(div().flex_1().text(word(key)));
+        if tab == SettingsTab::Apps && needing > 0 {
+            item = item.child(
+                div()
+                    .layer("apps needing")
+                    .font_mono()
+                    .font_size(11)
+                    .color(palette::AMBER)
+                    .text(format!("■ {needing}")),
+            );
+        }
+        list = list.child(item);
+    }
+    list.child(div().flex_1()).child(
+        div()
+            .layer("setting Advanced settings")
+            .on_click(SheetAct::Advanced)
+            .self_stretch()
+            .flex_row()
+            .items_center()
+            .gap(10)
+            .pad(12, 16)
+            .border_top(palette::LINE)
+            .child(
+                div().flex_1().font_size(13).color(palette::MUTED).text(word("settings.advanced")),
+            )
+            .child(toggle(props.advanced, false)),
+    )
+}
+
+/// A switch, as the cards draw it: a track, its knob at the right when on.
+/// Turbo's is amber.
+pub(super) fn toggle(on: bool, amber: bool) -> Element {
+    let (track, line) = match (on, amber) {
+        (false, _) => ("#1d2a40", palette::LINE),
+        (true, false) => (palette::BLUE, palette::BLUE_BORDER),
+        (true, true) => ("#b07b16", palette::AMBER_BORDER),
+    };
+    let knob =
+        div().layer(if on { "switch on" } else { "switch off" }).w(14).h(14).bg(palette::TEXT);
+    let mut el = div()
+        .layer("setting switch")
+        .shrink_0()
+        .w(34)
+        .h(20)
+        .pad(2, 2)
+        .flex_row()
+        .items_center()
+        .bg(track)
+        .border(line)
+        .child(knob);
+    if on {
+        el = el.justify_end();
+    }
+    el
+}
+
+/// A section's group of rows: its name in the eyebrow's capitals, marked when
+/// only Advanced settings shows it, and its one act on the right.
+pub(super) fn group(name: impl Into<String>, more: bool, act: Option<Element>) -> Element {
+    let mut label = div().flex_1().flex_row().items_center().gap(8).child(section_label(name));
+    if more {
+        label = label.child(
+            div()
+                .pad(1, 5)
+                .border(palette::BLUE_BORDER)
+                .font_mono()
+                .font_size(9)
+                .color(palette::BLUE_BORDER)
+                .text(word("settings.advanced_mark")),
+        );
+    }
+    div()
+        .self_stretch()
+        .flex_row()
+        .items_center()
+        .style("padding", "16px 0 6px")
+        .child(label)
+        .children(act)
+}
+
+/// One row: its name and what it does, then its controls; a line under it.
+pub(super) fn line_row(layer: impl Into<String>, label: &str, what: Option<&str>) -> Element {
+    div()
+        .layer(layer)
+        .self_stretch()
+        .flex_row()
+        .gap(12)
+        .pad(10, 0)
+        .items_center()
+        .border_bottom(palette::LINE)
+        .child(label_col(label, what))
+}
+
+/// A link that acts: `+ Add`, Reset, Edit, Remove.
+pub(super) fn link(layer: &str, act: impl Into<Action>, text: &str) -> Element {
+    div()
+        .layer(layer)
+        .on_click(act)
+        .font_size(12)
+        .color(palette::BLUE_BORDER)
+        .text(text.to_string())
+}
+
+/// General: the machine's name, Start Weft at login, Notify me, how long
+/// finished sessions stay, and Turbo.
 fn general(props: &SheetProps) -> Element {
     let config = props.clients.iter().find_map(|c| c.config.as_ref());
     let machine = |key: &str| config.and_then(|c| c["machine"][key].as_bool());
     let start_at_login = props.clients.iter().any(|c| c.start_at_login);
-    let turbo_accent = (palette::AMBER_BG, palette::AMBER_BORDER, palette::AMBER);
-    let blue = (palette::SELECTED_BG, palette::BLUE_BORDER, palette::BLUE_BORDER);
-    let login_what = fill("web.machine.login_what", &[("machine", props.machine)]);
-    sheet_body()
-        .child(section_label(word("desktop.settings.this_machine")))
-        .child(row_list(vec![name_row(props)]))
-        .child(section_label(word("desktop.settings.every_project")))
-        .child(row_list(vec![
-            switch(
-                "Turbo",
-                WindowAct::ToggleTurbo,
-                word("desktop.menu.turbo"),
-                word("desktop.settings.turbo_what"),
-                badge("setting badge", machine("turbo") == Some(true), turbo_accent),
-            ),
-            switch(
-                "Start at login",
-                WindowAct::ToggleStartAtLogin,
-                word("desktop.menu.login"),
-                &login_what,
-                badge("setting badge", start_at_login, blue),
-            ),
-            switch(
-                "Notifications",
-                SheetAct::Toggle(Setting::Notify),
-                word("desktop.settings.notify"),
-                word("desktop.settings.notify_what"),
-                badge("setting badge", machine("notify") != Some(false), blue),
-            ),
-            keep_row(props),
-        ]))
-        .child(
-            div()
-                .self_stretch()
-                .font_size(12)
-                .color(palette::DIM)
-                .text(word("web.machine.foot").to_string()),
-        )
+    let login_what = fill("settings.login_what", &[("machine", props.machine)]);
+    let switched = |name: &str, act: Action, label: &str, what: &str, on: bool, amber: bool| {
+        line_row(format!("setting {name}"), label, Some(what))
+            .on_click(act)
+            .child(toggle(on, amber))
+    };
+    div()
+        .self_stretch()
+        .flex_col()
+        .child(group(props.machine, false, None))
+        .child(name_row(props))
+        .child(switched(
+            "Start at login",
+            WindowAct::ToggleStartAtLogin.into(),
+            word("settings.login"),
+            &login_what,
+            start_at_login,
+            false,
+        ))
+        .child(switched(
+            "Notifications",
+            SheetAct::Toggle(Setting::Notify).into(),
+            word("settings.notify"),
+            word("settings.notify_what"),
+            machine("notify") != Some(false),
+            false,
+        ))
+        .child(keep_row(props))
+        .child(group(word("settings.agents"), false, None))
+        .child(switched(
+            "Turbo",
+            WindowAct::ToggleTurbo.into(),
+            word("desktop.menu.turbo"),
+            word("settings.turbo_what"),
+            machine("turbo") == Some(true),
+            true,
+        ))
 }
 
-/// The machine's name: what Weft and the person's devices call it, typed
-/// in its field and kept on Enter. Of any length, it ends in an ellipsis.
-fn name_row(props: &SheetProps) -> Element {
-    let key = vec!["name".to_string()];
+/// A setting's value in its box: a field while it is typed, else what it
+/// says, which opens it.
+fn boxed_field(props: &SheetProps, key: Vec<String>, said: String, width: u32) -> Element {
     let editing = props.setting_editing.is_some_and(|(p, k)| p.is_none() && *k == key);
     let field = div()
         .layer("setting value")
-        .w(220)
+        .w(width)
         .pad(6, 10)
         .bg(palette::SURFACE_ALT)
         .border(palette::LINE)
         .font_size(13)
         .style("min-width", "0px");
-    let field = if editing {
+    if editing {
         field.child(input_el(Focus::Setting).text(props.setting_text.to_string()).font_size(13))
     } else {
         field
@@ -212,58 +363,84 @@ fn name_row(props: &SheetProps) -> Element {
             .style("white-space", "nowrap")
             .style("overflow", "hidden")
             .style("text-overflow", "ellipsis")
-            .text(props.machine.to_string())
-    };
-    div()
-        .layer("setting Name")
-        .self_stretch()
-        .flex_row()
-        .gap(12)
-        .pad(11, 16)
-        .items_center()
-        .child(label_col(word("desktop.settings.name"), Some(word("desktop.settings.name_what"))))
+            .text(said)
+    }
+}
+
+/// The machine's name: what Weft and the person's devices call it, typed
+/// in its field and kept on Enter. Of any length, it ends in an ellipsis.
+fn name_row(props: &SheetProps) -> Element {
+    let field = boxed_field(props, vec!["name".to_string()], props.machine.to_string(), 220);
+    line_row("setting Name", word("desktop.settings.name"), Some(word("settings.name_what")))
         .child(field)
 }
 
-/// How many days an ended session stays listed, typed in its field and kept
-/// on Enter: the number the daemon says applies.
+/// Keep finished sessions' choices: a number of days and its word; 0 keeps
+/// them all.
+const KEEP: [(u64, &str); 4] = [
+    (3, "settings.keep.3"),
+    (7, "settings.keep.7"),
+    (30, "settings.keep.30"),
+    (0, "settings.keep.forever"),
+];
+
+/// Keep finished sessions: 3 days, a week, a month, Custom or Keep forever.
+/// Custom shows a field of days beside the choice, kept on Enter.
 fn keep_row(props: &SheetProps) -> Element {
     let key = vec!["sessions".to_string(), "keep_days".to_string()];
-    let editing = props.setting_editing.is_some_and(|(p, k)| p.is_none() && *k == key);
     let days = props
         .clients
         .iter()
         .find_map(|c| c.config.as_ref()?["effective"]["keep_days"].as_u64())
         .unwrap_or(weft_core::config::KEEP_DAYS);
-    let field = div()
+    let preset = KEEP.iter().find(|(d, _)| *d == days).filter(|_| !props.keep_custom);
+    let said = preset.map_or(word("settings.keep.custom"), |(_, w)| word(w));
+    let dotted = key.join(".");
+    let pick = div()
         .layer("setting value")
-        .w(70)
+        .on_click(SheetAct::OpenChoice(key.clone()))
+        .w(150)
         .pad(6, 10)
         .bg(palette::SURFACE_ALT)
         .border(palette::LINE)
         .font_size(13)
-        .style("text-align", "right");
-    let field = if editing {
-        field.child(input_el(Focus::Setting).text(props.setting_text.to_string()).font_size(13))
-    } else {
-        field
-            .on_click(SheetAct::EditSetting { project: None, key })
-            .color(palette::TEXT)
-            .text(days.to_string())
-    };
-    div()
-        .layer("setting Keep ended sessions")
-        .self_stretch()
-        .flex_row()
-        .gap(12)
-        .pad(11, 16)
-        .items_center()
-        .child(label_col(
-            word("web.machine.keep_sessions"),
-            Some(word("web.machine.keep_sessions_what")),
-        ))
-        .child(field)
-        .child(div().w(34).font_size(13).color(palette::DIM).text(word("web.machine.days")))
+        .text(format!("{said} ▾"));
+    let mut row = line_row(
+        "setting Keep finished sessions",
+        word("settings.keep"),
+        Some(word("settings.keep_what")),
+    )
+    .child(pick);
+    if preset.is_none() {
+        row = row
+            .child(boxed_field(props, key.clone(), days.to_string(), 70).layer("setting days"))
+            .child(div().font_size(13).color(palette::DIM).text(word("settings.days")));
+    }
+    let list = (props.choice == Some(dotted.as_str())).then(|| {
+        let mut list = div()
+            .layer(format!("choices {dotted}"))
+            .self_stretch()
+            .flex_col()
+            .bg(palette::SURFACE_ALT)
+            .border_bottom(palette::LINE);
+        let option = |title: &str, act: SheetAct| {
+            div()
+                .layer(format!("choice {title}"))
+                .on_click(act)
+                .self_stretch()
+                .pad(8, 16)
+                .font_size(13)
+                .text(title.to_string())
+        };
+        for (d, w) in &KEEP[..3] {
+            let act = SheetAct::Choose { project: None, key: key.clone(), value: Some(json!(d)) };
+            list = list.child(option(word(w), act));
+        }
+        list = list.child(option(word("settings.keep.custom"), SheetAct::KeepCustom));
+        let forever = SheetAct::Choose { project: None, key: key.clone(), value: Some(json!(0)) };
+        list.child(option(word("settings.keep.forever"), forever))
+    });
+    div().self_stretch().flex_col().child(row).children(list)
 }
 
 /// One switch: its name and what it does, and its badge; the row turns it.
@@ -291,164 +468,111 @@ fn label_col(label: &str, what: Option<&str>) -> Element {
         .flex_1()
         .flex_col()
         .gap(2)
-        .child(div().font_weight(600).font_size(14).text(label.to_string()));
+        .style("min-width", "0px")
+        .child(div().font_size(14).text(label.to_string()));
     if let Some(what) = what {
         col = col.child(div().font_size(12).color(palette::MUTED).text(what.to_string()));
     }
     col
 }
 
-fn workflow(props: &SheetProps) -> Element {
+/// Eval: how carefully it reads, which agent app reads, and what it never
+/// does; Advanced settings adds each reader and who runs each step.
+fn eval(props: &SheetProps) -> Element {
     let all = entries();
-    let row_of = |e: &Entry| {
+    let row_of = |e: &Entry, named: Option<(&str, &str)>| {
+        let (label, what) = named.map_or((e.label.clone(), e.what.clone()), |(l, w)| {
+            (word(l).into(), Some(word(w).into()))
+        });
         div()
-            .layer(format!("setting {}", e.name))
             .self_stretch()
             .flex_col()
             .child(
-                div()
-                    .self_stretch()
-                    .flex_row()
-                    .gap(12)
-                    .pad(10, 16)
-                    .items_center()
-                    .child(label_col(&e.label, e.what.as_deref()))
+                line_row(format!("setting {}", e.name), &label, what.as_deref())
                     .child(control(props, None, e)),
             )
             .children(choices(props, None, e))
     };
-    let acts: Vec<Element> = all.iter().take(3).map(row_of).collect();
-    let mut judges = vec![row_of(&all[3]), how_hard(props)];
-    judges.push(
-        div()
-            .layer("setting Each judge")
-            .on_click(SheetAct::ShowJudges)
-            .self_stretch()
-            .pad(10, 16)
-            .font_size(13)
-            .color(palette::BLUE_BORDER)
-            .text(format!(
-                "{} {}",
-                if props.judges_shown { "⌄" } else { "›" },
-                word("desktop.settings.each_judge")
-            )),
-    );
-    // Each judge, once opened: its model and its effort, on one row.
-    for (i, (_, name, key)) in ROLES.iter().enumerate().filter(|_| props.judges_shown) {
-        let (model, effort) = (&all[4 + 2 * i], &all[5 + 2 * i]);
-        let what = word(&format!("{key}_what")).to_string();
-        judges.push(
-            div()
-                .layer(format!("setting {name}"))
-                .self_stretch()
-                .flex_col()
-                .child(
-                    div()
-                        .self_stretch()
-                        .flex_row()
-                        .gap(12)
-                        .pad(10, 16)
-                        .items_center()
-                        // Under "Each judge", a step in.
-                        .child(div().w(4))
-                        .child(label_col(word(key), Some(&what)))
-                        .child(
-                            div()
-                                .layer(format!("setting {}", model.name))
-                                .child(control(props, None, model)),
-                        )
-                        .child(
-                            div()
-                                .layer(format!("setting {}", effort.name))
-                                .child(control(props, None, effort)),
-                        ),
-                )
-                .children(choices(props, None, model))
-                .children(choices(props, None, effort)),
-        );
-    }
-    sheet_body()
-        .child(section_label(word("desktop.settings.acts")))
-        .child(row_list(acts))
-        .child(section_label(word("desktop.settings.debate")))
-        .child(row_list(judges))
-        .child(
-            div()
-                .self_stretch()
-                .pad(10, 0)
-                .font_size(12)
-                .color(palette::DIM)
-                .text(word("desktop.settings.workflow_foot").to_string()),
-        )
-}
-
-/// How hard the judges look, one choice for all three, and what an effort
-/// changes in the harness they run in.
-fn how_hard(props: &SheetProps) -> Element {
-    let on = how_hard_now(props);
-    let mut seg = div().flex_row().border(palette::LINE);
-    let choices = [
-        ("quick", "desktop.settings.quick"),
-        ("balanced", "desktop.settings.balanced"),
-        ("thorough", "desktop.settings.thorough"),
-    ];
-    for (how, key) in choices {
-        let chosen = on == how;
-        let mut part = div()
-            .layer(if chosen { "how hard on".to_string() } else { format!("how hard {how}") })
-            .pad(6, 14)
-            .font_size(13)
-            .border_right(palette::LINE)
-            .color(if chosen { palette::BLUE_BORDER } else { palette::MUTED })
-            .text(word(key).to_string());
-        if chosen {
-            part = part.bg(palette::SURFACE_ALT).font_weight(600);
-        } else {
-            part = part.on_click(SheetAct::HowHard(how.to_string()));
-        }
-        seg = seg.child(part);
-    }
-    if on == "custom" {
-        seg = seg.child(
-            div()
-                .layer("how hard on")
-                .pad(6, 14)
-                .font_size(13)
-                .bg(palette::SURFACE_ALT)
-                .color(palette::BLUE_BORDER)
-                .text(word("desktop.settings.custom").to_string()),
-        );
-    }
-    let (title, judge) =
-        judges_harness(props).map_or((String::new(), None), |h| (h.title.clone(), h.eval.as_ref()));
-    let reach = match judge.map(|j| j.effort) {
-        Some(weft_core::harness::EffortReaches::Model) => "desktop.settings.effort_reaches_model",
-        Some(weft_core::harness::EffortReaches::Lookups) => {
-            "desktop.settings.effort_reaches_lookups"
-        }
-        None => "desktop.settings.effort_reaches_unknown",
-    };
-    div()
-        .layer("setting How hard")
+    let mut body = div()
         .self_stretch()
         .flex_col()
-        .gap(6)
-        .pad(10, 16)
-        .child(
-            div()
-                .self_stretch()
-                .flex_row()
-                .gap(12)
-                .items_center()
-                .child(label_col(word("desktop.settings.how_hard"), None))
-                .child(seg),
-        )
-        .child(
-            div()
-                .font_size(12)
-                .color(palette::MUTED)
-                .text(fill(reach, &[("harness", title.as_str())])),
-        )
+        .child(group(word("settings.eval.care"), false, None))
+        .child(care(props))
+        .child(group(word("settings.eval.who"), false, None))
+        .child(row_of(&all[3], Some(("settings.eval.read_by", "settings.eval.read_by_what"))));
+    if props.advanced {
+        body = body.child(group(word("settings.eval.each"), true, None));
+        // Each reader on one row: its model and its effort.
+        for (i, (_, name, key)) in ROLES.iter().enumerate() {
+            let (model, effort) = (&all[4 + 2 * i], &all[5 + 2 * i]);
+            let what = word(&format!("{key}_what")).to_string();
+            body = body.child(
+                div()
+                    .layer(format!("setting {name}"))
+                    .self_stretch()
+                    .flex_col()
+                    .child(
+                        line_row(format!("reader {name}"), word(key), Some(&what))
+                            .child(
+                                div()
+                                    .layer(format!("setting {}", model.name))
+                                    .child(control(props, None, model)),
+                            )
+                            .child(
+                                div()
+                                    .layer(format!("setting {}", effort.name))
+                                    .child(control(props, None, effort)),
+                            ),
+                    )
+                    .children(choices(props, None, model))
+                    .children(choices(props, None, effort)),
+            );
+        }
+        body = body
+            .child(group(word("settings.eval.steps"), true, None))
+            .child(row_of(&all[0], None))
+            .child(row_of(&all[1], Some(("act.eval", "settings.eval.eval_what"))))
+            .child(row_of(&all[2], None));
+    }
+    body.child(super::ringframe::eval_never(props))
+}
+
+/// How carefully Eval reads: Quick, Balanced or Thorough for every reader,
+/// or Custom once a reader is set on its own.
+fn care(props: &SheetProps) -> Element {
+    let on = how_hard_now(props);
+    let mut cards = div().layer("setting How hard").self_stretch().flex_row().gap(10);
+    let options = [
+        ("quick", "desktop.settings.quick", "settings.eval.quick_what"),
+        ("balanced", "desktop.settings.balanced", "settings.eval.balanced_what"),
+        ("thorough", "desktop.settings.thorough", "settings.eval.thorough_what"),
+        ("custom", "desktop.settings.custom", "settings.eval.custom_what"),
+    ];
+    for (how, name, what) in options.into_iter().filter(|(h, ..)| *h != "custom" || on == "custom")
+    {
+        let chosen = on == how;
+        let mut card = div()
+            .layer(if chosen { "how hard on".to_string() } else { format!("how hard {how}") })
+            .flex_1()
+            .flex_col()
+            .gap(3)
+            .pad(10, 12)
+            .bg(if chosen { palette::SELECTED_BG } else { palette::SURFACE })
+            .border(if chosen { palette::BLUE_BORDER } else { palette::LINE })
+            .child(
+                div()
+                    .font_size(14)
+                    .font_weight(600)
+                    .color(if chosen { palette::BLUE_BORDER } else { palette::TEXT })
+                    .text(word(name)),
+            )
+            .child(div().font_size(11).color(palette::MUTED).text(word(what)));
+        if !chosen && how != "custom" {
+            card = card.on_click(SheetAct::HowHard(how.to_string()));
+        }
+        cards = cards.child(card);
+    }
+    cards
 }
 
 /// The choice the three judges' efforts make: `quick`, `balanced`,

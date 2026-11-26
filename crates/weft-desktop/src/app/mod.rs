@@ -101,7 +101,7 @@ pub(crate) const ASK_PAUSE: std::time::Duration = std::time::Duration::from_mill
 /// Right-pane sheet overlay or modal view.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActiveSheet {
-    /// Settings, on one of its tabs.
+    /// Settings, on one of its sections.
     Settings {
         tab: crate::action::SettingsTab,
     },
@@ -256,11 +256,14 @@ pub struct WeftDesktopApp {
     pub(crate) preview: [String; 3],
     /// The preview's text shown, not only what it keeps.
     pub(crate) preview_shown: bool,
-    /// Workflow's "Each judge" is open.
-    pub(crate) judges_shown: bool,
-    /// The harness Settings › Harnesses shows (empty: the first).
+    /// Keep finished sessions shows Custom, once picked, whatever the days.
+    pub(crate) keep_custom: bool,
+    /// The agent app open in Settings › Agent apps, with Advanced settings
+    /// on (empty: none).
     pub(crate) harness_shown: String,
-    /// The practices whose every rule Settings › RingFrame shows, not the
+    /// The practice whose rules Settings › Rules shows, by catalog.
+    pub(crate) practice_shown: Option<String>,
+    /// The practices whose every rule Settings › Rules shows, not the
     /// first few, by catalog.
     pub(crate) all_rules: HashSet<String>,
     pub plus_popover_project: Option<PathBuf>,
@@ -376,8 +379,9 @@ impl WeftDesktopApp {
             // No host picked yet: the first harness Weft has.
             preview: [String::new(), "native_plan".into(), "implement".into()],
             preview_shown: false,
-            judges_shown: false,
+            keep_custom: false,
             harness_shown: String::new(),
+            practice_shown: Some(crate::sheets::BASE_PRACTICE.into()),
             all_rules: HashSet::new(),
             plus_popover_project: None,
             menu_open: false,
@@ -668,23 +672,16 @@ impl WeftDesktopApp {
         picked.join("|")
     }
 
-    /// The harness Settings › Harnesses shows: the one picked, or the first.
-    pub(crate) fn harness_shown(&self) -> String {
-        if !self.harness_shown.is_empty() {
-            return self.harness_shown.clone();
-        }
-        self.clients
-            .iter()
-            .find_map(|c| c.harnesses.iter().next().map(|h| h.name.clone()))
-            .unwrap_or_default()
-    }
-
     /// RingFrame's rules, asked of the daemon while a sheet shows them; on
     /// Harnesses, the shown harness's profile too.
     pub(crate) fn want_rules(&mut self) {
         use crate::action::SettingsTab;
-        if let Some(ActiveSheet::Settings { tab: SettingsTab::Harnesses }) = &self.active_sheet {
-            let host = self.harness_shown();
+        if let Some(ActiveSheet::Settings { tab: SettingsTab::Apps }) = &self.active_sheet {
+            let host = if self.state.settings.advanced {
+                self.harness_shown.clone()
+            } else {
+                String::new()
+            };
             if let Some(c) = self.clients.iter_mut().find(|c| c.is_connected()) {
                 let then = crate::daemon::Then::Profile { host: host.clone() };
                 if !c.read.contains_key(&then) && !c.refused.contains_key(&then) && !host.is_empty()
@@ -695,7 +692,7 @@ impl WeftDesktopApp {
         }
         let project = match &self.active_sheet {
             Some(ActiveSheet::Settings {
-                tab: SettingsTab::RingFrame | SettingsTab::Harnesses,
+                tab: SettingsTab::Eval | SettingsTab::Rules | SettingsTab::Apps,
             }) => None,
             Some(ActiveSheet::ProjectSettings { project }) => Some(project.clone()),
             _ => return,
@@ -718,8 +715,11 @@ impl WeftDesktopApp {
         if project.is_some() && !c.read.contains_key(&then) && !c.refused.contains_key(&then) {
             let _ = c.decisions();
         }
-        // On RingFrame, what the preview keeps, said beside Show.
-        if let Some(ActiveSheet::Settings { tab: SettingsTab::RingFrame }) = &self.active_sheet {
+        // On Rules, with Advanced settings on, what the preview keeps, said
+        // beside Show.
+        let rules =
+            matches!(&self.active_sheet, Some(ActiveSheet::Settings { tab: SettingsTab::Rules }));
+        if rules && self.state.settings.advanced {
             let unit = self.preview_unit();
             if let Some(c) = self.clients.iter_mut().find(|c| c.is_connected()) {
                 let then = crate::daemon::Then::Preview { unit: unit.clone() };
@@ -2027,7 +2027,7 @@ impl WeftDesktopApp {
             _ => None,
         };
         let preview = self.preview_unit();
-        let harness = self.harness_shown();
+        let harness = self.harness_shown.clone();
         let ask_reading = match &self.active_sheet {
             Some(ActiveSheet::Ask { project, .. }) => self
                 .client(project)
@@ -2059,7 +2059,9 @@ impl WeftDesktopApp {
                 harness: &harness,
                 all_rules: &self.all_rules,
                 preview_shown: self.preview_shown,
-                judges_shown: self.judges_shown,
+                keep_custom: self.keep_custom,
+                practice_shown: self.practice_shown.as_deref(),
+                advanced: self.state.settings.advanced,
                 machine: &machine,
                 updating: self.updating(),
                 running_since: &self.running_since,

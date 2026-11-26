@@ -2832,9 +2832,9 @@ mod tests {
             let p = || root.clone();
             let sheets = vec![
                 ActiveSheet::Settings { tab: SettingsTab::General },
-                ActiveSheet::Settings { tab: SettingsTab::Workflow },
-                ActiveSheet::Settings { tab: SettingsTab::RingFrame },
-                ActiveSheet::Settings { tab: SettingsTab::Harnesses },
+                ActiveSheet::Settings { tab: SettingsTab::Eval },
+                ActiveSheet::Settings { tab: SettingsTab::Rules },
+                ActiveSheet::Settings { tab: SettingsTab::Apps },
                 ActiveSheet::ProjectSettings { project: p() },
                 ActiveSheet::Ask { project: p(), send_to: None, follow_up_unit: None },
                 ActiveSheet::Unit { project: p(), unit: "ask_4".into() },

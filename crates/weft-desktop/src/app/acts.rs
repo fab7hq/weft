@@ -85,6 +85,7 @@ impl WeftDesktopApp {
                 self.clients.iter_mut().for_each(|c| c.refused.retain(|t, _| !t.is_settings()));
                 self.all_rules.clear();
                 self.preview_shown = false;
+                self.keep_custom = false;
             }
             WindowAct::ToggleStartAtLogin => {
                 // The daemon's own setting is what is turned, whatever was saved here.
@@ -851,8 +852,8 @@ impl WeftDesktopApp {
                     *shown = tab;
                 }
                 self.choice = None;
-                // How each harness stands, as Updates asks it.
-                if tab == crate::action::SettingsTab::Harnesses {
+                // How each agent app stands, as Updates asks it.
+                if tab == crate::action::SettingsTab::Apps {
                     for c in self.setup_links() {
                         let _ = c.setup("look", "", "");
                     }
@@ -869,13 +870,32 @@ impl WeftDesktopApp {
             SheetAct::AllRules(catalog) => {
                 self.all_rules.insert(catalog);
             }
-            SheetAct::ShowHarness(name) => {
-                self.harness_shown = name;
+            SheetAct::Advanced => {
+                self.state.settings.advanced = !self.state.settings.advanced;
+                let _ = self.save_state();
                 self.choice = None;
                 self.want_rules();
             }
+            SheetAct::KeepCustom => {
+                self.keep_custom = true;
+                self.choice = None;
+                let key = vec!["sessions".to_string(), "keep_days".to_string()];
+                self.sheet_act(SheetAct::EditSetting { project: None, key });
+            }
+            SheetAct::ShowHarness(name) => {
+                self.harness_shown = if self.harness_shown == name { String::new() } else { name };
+                self.choice = None;
+                self.want_rules();
+            }
+            SheetAct::ShowPractice(catalog) => {
+                self.practice_shown = if self.practice_shown.as_deref() == Some(&catalog) {
+                    None
+                } else {
+                    Some(catalog)
+                };
+                self.all_rules.clear();
+            }
             SheetAct::ShowPreview => self.preview_shown = !self.preview_shown,
-            SheetAct::ShowJudges => self.judges_shown = !self.judges_shown,
             SheetAct::HowHard(how) => {
                 let effort = match how.as_str() {
                     "quick" => Some(serde_json::json!("low")),
@@ -893,6 +913,10 @@ impl WeftDesktopApp {
             }
             SheetAct::Choose { project, key, value } => {
                 self.choice = None;
+                // A number of days picked: Custom's field goes.
+                if key == ["sessions", "keep_days"] {
+                    self.keep_custom = false;
+                }
                 self.set_setting(project.as_deref(), &key, value);
             }
             SheetAct::EditSetting { project, key } => {

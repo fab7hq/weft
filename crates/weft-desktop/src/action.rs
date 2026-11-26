@@ -51,13 +51,13 @@ pub enum WindowAct {
     Focus(Focus),
 }
 
-/// Settings' tabs.
+/// Settings' sections, listed beside the one shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {
     General,
-    Workflow,
-    RingFrame,
-    Harnesses,
+    Eval,
+    Rules,
+    Apps,
 }
 
 /// A switch in Settings that only the machine has (Turbo and Start at login
@@ -206,8 +206,14 @@ pub enum SheetAct {
         offer: weft_core::after_seal::Offer,
     },
     Close,
-    /// Settings shows another of its tabs.
+    /// Settings shows another of its sections.
     SettingsTab(SettingsTab),
+    /// Advanced settings turned on or off: every section shows its expert
+    /// controls in place.
+    Advanced,
+    /// Keep finished sessions' Custom picked: its field of days takes the
+    /// keyboard.
+    KeepCustom,
     /// A switch in Settings turned: the machine's, through the daemon.
     Toggle(Setting),
     /// A setting's choices shown, or hidden again, by its key.
@@ -232,15 +238,17 @@ pub enum SheetAct {
     PreviewPick(usize, String),
     /// The preview shown, as RingFrame writes it.
     ShowPreview,
-    /// Workflow's "Each judge" opened, or closed again.
-    ShowJudges,
     /// How hard Eval's judges look: `quick`, `balanced` or `thorough`, which
     /// sets all three judges' efforts.
     HowHard(String),
-    /// A harness's details shown in Settings › Harnesses, by its name.
+    /// An agent app opened in Settings › Agent apps, by its name, or closed
+    /// again.
     ShowHarness(String),
-    /// Settings › RingFrame shows every rule of this practice's catalog,
-    /// not the first few.
+    /// A practice's rules opened in Settings › Rules, by its catalog, or
+    /// closed again.
+    ShowPractice(String),
+    /// Settings › Rules shows every rule of this practice's catalog, not the
+    /// first few.
     AllRules(String),
     /// SEND TO opened or closed.
     ToggleSendTo,

@@ -2309,7 +2309,8 @@ fn settings_name_the_machine_and_its_name_is_set_through_the_daemon() {
     app.dispatch(WindowAct::OpenSettings);
     let dom = app.render();
     let sheet = dom.find_layer("sheet Settings").expect("the Settings sheet");
-    assert!(sheet.all_text().contains(&format!("Settings · {long}")), "the title names it");
+    assert_eq!(sheet.find_layer("settings head").unwrap().all_text(), "Settings");
+    assert!(sheet.all_text().contains(&long.to_uppercase()), "General's group names it");
     let row = sheet.find_layer("setting Name").expect("the Name row");
     assert_eq!(row.find_layer("setting value").unwrap().all_text(), long);
 
@@ -2326,33 +2327,55 @@ fn settings_name_the_machine_and_its_name_is_set_through_the_daemon() {
     assert_eq!(wire.call().1, set(None), "emptied: the system's own name again");
 }
 
-/// Keep ended sessions: the days that apply, typed and set through the
-/// daemon as a number; emptied, the default again; anything else, nothing.
+/// Keep finished sessions: 3 days, a week, a month, Custom or Keep forever,
+/// each set through the daemon as a number of days, 0 keeping them all;
+/// Custom types the days, and days no choice names show as Custom.
 #[test]
-fn settings_keep_ended_sessions_for_the_days_typed() {
+fn settings_keep_finished_sessions_as_chosen_or_typed() {
     let (_tmp, mut app, mut wire) = wired_app();
     app.clients[0].config =
         Some(json!({"machine": {}, "project": null, "effective": {"keep_days": 7}}));
     app.dispatch(WindowAct::OpenSettings);
     let dom = app.render();
-    let row = dom.find_layer("setting Keep ended sessions").expect("the row");
-    assert_eq!(row.find_layer("setting value").unwrap().all_text(), "7");
-    assert!(row.all_text().contains("days"));
+    let row = dom.find_layer("setting Keep finished sessions").expect("the row");
+    assert_eq!(row.find_layer("setting value").unwrap().all_text(), "A week ▾");
+    assert!(row.find_layer("setting days").is_none(), "no field of days");
     let key = vec!["sessions".to_string(), "keep_days".to_string()];
-    let typed = |app: &mut WeftDesktopApp, text: &str| {
-        app.dispatch(SheetAct::EditSetting { project: None, key: key.clone() });
-        assert_eq!(app.setting_field.text(), "7", "it starts as the days now");
-        app.setting_field.set_text(text);
-        app.dispatch(SheetAct::CommitSetting);
-    };
     let set = |value| Call::ConfigSet { scope: "machine".into(), key: key.clone(), value };
-    typed(&mut app, " 30 ");
-    assert_eq!(wire.call().1, set(Some(json!(30))));
-    typed(&mut app, "");
-    assert_eq!(wire.call().1, set(None), "emptied: seven again");
-    typed(&mut app, "a week");
-    typed(&mut app, "0");
-    assert_eq!(wire.call().1, set(Some(json!(0))), "words set nothing; 0 keeps them all");
+    app.dispatch(SheetAct::OpenChoice(key.clone()));
+    let dom = app.render();
+    let list = dom.find_layer("choices sessions.keep_days").expect("the choices");
+    for option in ["3 days", "A week", "A month", "Custom", "Keep forever"] {
+        assert!(list.find_layer(&format!("choice {option}")).is_some(), "{option}");
+    }
+    let forever = list.find_layer("choice Keep forever").unwrap().action.clone().unwrap();
+    app.dispatch(forever);
+    assert_eq!(wire.call().1, set(Some(json!(0))), "0 keeps them all");
+
+    app.dispatch(SheetAct::KeepCustom);
+    assert_eq!(app.focus, Focus::Setting, "Custom's field takes the keyboard");
+    assert_eq!(app.setting_field.text(), "7", "it starts as the days now");
+    let dom = app.render();
+    let row = dom.find_layer("setting Keep finished sessions").unwrap();
+    assert_eq!(row.find_layer("setting value").unwrap().all_text(), "Custom ▾");
+    app.setting_field.set_text(" 12 ");
+    app.dispatch(SheetAct::CommitSetting);
+    assert_eq!(wire.call().1, set(Some(json!(12))));
+
+    app.clients[0].config =
+        Some(json!({"machine": {}, "project": null, "effective": {"keep_days": 12}}));
+    app.dispatch(WindowAct::OpenSettings);
+    let dom = app.render();
+    let row = dom.find_layer("setting Keep finished sessions").unwrap();
+    assert_eq!(row.find_layer("setting value").unwrap().all_text(), "Custom ▾");
+    assert_eq!(row.find_layer("setting days").unwrap().all_text(), "12");
+}
+
+/// A switch as Settings draws it: on or off.
+fn switched(row: &crate::gpui::Element) -> bool {
+    let switch = row.find_layer("setting switch").expect("a switch");
+    assert!(switch.find_layer("switch on").is_some() || switch.find_layer("switch off").is_some());
+    switch.find_layer("switch on").is_some()
 }
 
 /// The daemon carries today's sessions and counts the earlier ones: the tree
@@ -3552,18 +3575,13 @@ fn settings_opens_on_general_and_its_switches_set_the_machine_s_settings() {
     assert!(matches!(app.active_sheet, Some(ActiveSheet::Settings { tab: SettingsTab::General })));
     let dom = app.render();
     let sheet = dom.find_layer("sheet Settings").expect("the Settings sheet");
-    assert!(sheet.find_layer("settings tab General").is_some());
-    let badge = |row: &str| {
-        sheet
-            .find_layer(row)
-            .unwrap_or_else(|| panic!("{row}"))
-            .find_layer("setting badge")
-            .unwrap()
-            .all_text()
-    };
-    assert_eq!(badge("setting Turbo"), "OFF");
-    assert_eq!(badge("setting Start at login"), "OFF");
-    assert_eq!(badge("setting Notifications"), "ON", "on until turned off");
+    for tab in ["General", "Eval", "Rules", "Agent apps"] {
+        assert!(sheet.find_layer(&format!("settings tab {tab}")).is_some(), "{tab}");
+    }
+    let on = |row: &str| switched(sheet.find_layer(row).unwrap_or_else(|| panic!("{row}")));
+    assert!(!on("setting Turbo"));
+    assert!(!on("setting Start at login"));
+    assert!(on("setting Notifications"), "on until turned off");
     assert!(sheet.find_layer("setting Suggestions").is_none(), "no prompt suggestions");
 
     app.dispatch(SheetAct::Toggle(Setting::Notify));
@@ -3582,22 +3600,44 @@ fn settings_opens_on_general_and_its_switches_set_the_machine_s_settings() {
     });
     let dom = app.render();
     let sheet = dom.find_layer("sheet Settings").unwrap();
-    let said =
-        |row: &str| sheet.find_layer(row).unwrap().find_layer("setting badge").unwrap().all_text();
-    assert_eq!(said("setting Notifications"), "OFF");
+    assert!(!switched(sheet.find_layer("setting Notifications").unwrap()));
 }
 
-/// Workflow: who runs each step and Eval's judges, every project's; a
-/// choice lists "The agent you are in" and each harness; a role's model is
-/// typed and kept on Enter.
+/// Advanced settings: off at first; on, Settings carries its badge, each
+/// section shows its expert controls, and it is kept for the next time.
 #[test]
-fn workflow_sets_every_project_s_routing_and_debate() {
+fn advanced_settings_show_the_expert_controls_and_are_kept() {
+    let (_tmp, mut app, _wire) = wired_app();
+    app.clients[0].config = Some(json!({"machine": {}, "project": null}));
+    app.dispatch(WindowAct::OpenSettings);
+    app.dispatch(SheetAct::SettingsTab(SettingsTab::Eval));
+    let dom = app.render();
+    assert!(!switched(dom.find_layer("setting Advanced settings").unwrap()));
+    assert!(dom.find_layer("advanced mark").is_none());
+    assert!(dom.find_layer("setting Read effort").is_none(), "each reader is advanced");
+    assert!(dom.find_layer("setting Readers run in").is_some(), "Read by is for everyone");
+    app.dispatch(SheetAct::Advanced);
+    let dom = app.render();
+    assert!(switched(dom.find_layer("setting Advanced settings").unwrap()));
+    assert_eq!(dom.find_layer("advanced mark").unwrap().all_text(), "ADVANCED");
+    assert!(dom.find_layer("setting Read effort").is_some());
+    assert!(dom.find_layer("setting Seal").is_some(), "who runs each step");
+    assert!(saved(&mut app).settings.advanced, "kept");
+}
+
+/// Eval, with Advanced settings: who runs each step and its readers, every
+/// project's; a choice lists "The agent you are in" and each harness; a
+/// reader's model is typed and kept on Enter.
+#[test]
+fn eval_sets_every_project_s_routing_and_debate() {
     let (_tmp, mut app, mut wire) = wired_app();
     app.clients[0].config = Some(json!({"machine": {"routing": {"eval": "claude"},
         "eval": {"debate": {"harness": "codex", "read": {"effort": "low"}}}}, "project": null}));
     app.dispatch(WindowAct::OpenSettings);
-    app.dispatch(SheetAct::SettingsTab(SettingsTab::Workflow));
-    app.dispatch(SheetAct::ShowJudges);
+    app.dispatch(SheetAct::SettingsTab(SettingsTab::Eval));
+    let (_, call) = wire.call();
+    assert!(matches!(call, Call::Read { what, .. } if what == "rules"), "what Eval never does");
+    app.dispatch(SheetAct::Advanced);
     let dom = app.render();
     let sheet = dom.find_layer("sheet Settings").unwrap();
     let value = |row: &str| {
@@ -3681,12 +3721,13 @@ fn eval_s_judges_look_as_hard_as_chosen_and_show_their_defaults() {
     debate["harness"] = json!("codex");
     app.clients[0].config = Some(json!({"machine": {"eval": {"debate": debate}}, "project": null}));
     app.dispatch(WindowAct::OpenSettings);
-    app.dispatch(SheetAct::SettingsTab(SettingsTab::Workflow));
+    app.dispatch(SheetAct::SettingsTab(SettingsTab::Eval));
+    let (_, call) = wire.call();
+    assert!(matches!(call, Call::Read { what, .. } if what == "rules"), "what Eval never does");
     let dom = app.render();
     let hard = dom.find_layer("setting How hard").expect("how hard");
-    assert_eq!(hard.find_layer("how hard on").unwrap().all_text(), "Quick");
-    assert!(hard.all_text().contains("In Codex, this sets each reader's reasoning"));
-    assert!(dom.find_layer("setting Read effort").is_none(), "each reader is closed until opened");
+    assert!(hard.find_layer("how hard on").unwrap().all_text().starts_with("Quick"));
+    assert!(dom.find_layer("setting Read effort").is_none(), "each reader is advanced");
 
     app.dispatch(SheetAct::HowHard("thorough".into()));
     for role in ["read", "question"] {
@@ -3703,7 +3744,7 @@ fn eval_s_judges_look_as_hard_as_chosen_and_show_their_defaults() {
 
     app.clients[0].config =
         Some(json!({"machine": {"eval": {"debate": {"harness": "codex"}}}, "project": null}));
-    app.dispatch(SheetAct::ShowJudges);
+    app.dispatch(SheetAct::Advanced);
     let dom = app.render();
     let value = |row: &str| {
         dom.find_layer(row)
@@ -3712,10 +3753,8 @@ fn eval_s_judges_look_as_hard_as_chosen_and_show_their_defaults() {
             .unwrap()
             .all_text()
     };
-    assert_eq!(
-        dom.find_layer("setting How hard").unwrap().find_layer("how hard on").unwrap().all_text(),
-        "Balanced"
-    );
+    let on = dom.find_layer("setting How hard").unwrap().find_layer("how hard on").unwrap();
+    assert!(on.all_text().starts_with("Balanced"), "{}", on.all_text());
     assert_eq!(value("setting Questions effort"), "medium · default ▾");
     assert_eq!(
         value("setting Read model"),
@@ -3793,10 +3832,10 @@ fn a_project_s_own_settings_list_what_differs_and_reset_it() {
 
 /// Many rules: the first five, then how many more; asked, every one.
 #[test]
-fn ringframe_folds_its_rules_after_five() {
+fn rules_fold_after_five() {
     let (_tmp, mut app, mut wire) = wired_app();
     app.dispatch(WindowAct::OpenSettings);
-    app.dispatch(SheetAct::SettingsTab(SettingsTab::RingFrame));
+    app.dispatch(SheetAct::SettingsTab(SettingsTab::Rules));
     let (id, _) = wire.call();
     let entries: Vec<Value> = (0..8)
         .map(|i| json!({"id": format!("r{i}"), "text": "A rule.", "source": "shipped"}))
@@ -3811,23 +3850,23 @@ fn ringframe_folds_its_rules_after_five() {
     });
     let dom = app.render();
     assert!(dom.find_layer("rule r4").is_some() && dom.find_layer("rule r5").is_none());
-    assert_eq!(dom.find_layer("more rules").unwrap().all_text(), "+ 3 more");
+    assert_eq!(dom.find_layer("more rules").unwrap().all_text(), "3 more ›");
     app.dispatch(SheetAct::AllRules("practices/software-development".into()));
     let dom = app.render();
     assert!(dom.find_layer("rule r7").is_some() && dom.find_layer("more rules").is_none());
 }
 
-/// Each practice turned on lists its rules below the base practice's, with
-/// the same controls, each change written to that practice's catalog; one
-/// turned off lists none.
+/// Each practice turned on is listed under the base practice, with how many
+/// of its rules are on, and opens its rules with the same controls, each
+/// change written to that practice's catalog; one turned off is not listed.
 #[test]
-fn ringframe_lists_the_rules_of_each_practice_turned_on() {
+fn rules_list_each_practice_turned_on() {
     let (_tmp, mut app, mut wire) = wired_app();
     let trading = "practices/autonomous-trading";
     app.clients[0].config = Some(json!({"machine": {"ringframe": {"deltas": {
         trading: {"domain": "autonomous-trading"}}}}, "project": null}));
     app.dispatch(WindowAct::OpenSettings);
-    app.dispatch(SheetAct::SettingsTab(SettingsTab::RingFrame));
+    app.dispatch(SheetAct::SettingsTab(SettingsTab::Rules));
     let (id, _) = wire.call();
     let many: Vec<Value> = (0..8)
         .map(|i| json!({"id": format!("trading.r{i}"), "label": format!("R{i}"), "source": "shipped"}))
@@ -3841,7 +3880,7 @@ fn ringframe_lists_the_rules_of_each_practice_turned_on() {
         "catalogs": [
             {"catalog": "practices/software-development", "entries": [
                 {"id": "practice.kiss", "label": "KISS", "source": "shipped"},
-                {"id": "own.1", "label": "Mine", "source": "weft"}]},
+                {"id": "own.1", "label": "Mine", "source": "weft", "enabled": false}]},
             {"catalog": trading, "entries": many},
             {"catalog": "practices/machine-learning", "entries": [
                 {"id": "ml.baseline", "label": "Baseline", "source": "shipped"}]}]}),
@@ -3850,21 +3889,27 @@ fn ringframe_lists_the_rules_of_each_practice_turned_on() {
         a.clients[0].read.contains_key(&crate::daemon::Then::Rules { project: false })
     });
     let dom = app.render();
-    let head = dom.find_layer(&format!("rules head {trading}")).expect("its rules' head");
-    assert!(head.all_text().contains("AUTONOMOUS TRADING · RULES"), "{}", head.all_text());
-    assert!(dom.find_layer("rules practices/machine-learning").is_none(), "turned off");
+    let base = dom.find_layer("rules head practices/software-development").expect("the base");
+    assert!(base.all_text().contains("1 of 2 on"), "{}", base.all_text());
+    assert!(dom.find_layer("rules practices/software-development").is_some(), "open at first");
+    let head = dom.find_layer(&format!("rules head {trading}")).expect("its head");
+    assert!(head.all_text().contains("Autonomous trading"), "{}", head.all_text());
+    assert!(dom.find_layer(&format!("rules {trading}")).is_none(), "closed until opened");
+    assert!(dom.find_layer("rules head practices/machine-learning").is_none(), "turned off");
+
+    app.dispatch(SheetAct::ShowPractice(trading.into()));
+    let dom = app.render();
+    assert!(dom.find_layer("rules practices/software-development").is_none(), "one open");
     let listed = dom.find_layer(&format!("rules {trading}")).expect("its rules");
     assert!(listed.find_layer("rule trading.r4").is_some());
     assert!(listed.find_layer("rule trading.r5").is_none(), "folded after five");
-    let base = dom.find_layer("rules practices/software-development").unwrap();
-    assert!(base.find_layer("more rules").is_none(), "the base's own fold");
-
     app.dispatch(SheetAct::AllRules(trading.into()));
     let dom = app.render();
     let listed = dom.find_layer(&format!("rules {trading}")).unwrap();
     assert!(
         listed.find_layer("rule trading.r7").is_some() && listed.find_layer("more rules").is_none()
     );
+    assert!(listed.find_layer("rule trading.r0").unwrap().find_layer("edit").is_none(), "advanced");
 
     // Its switch writes its own catalog.
     let switch = listed.find_layer("rule trading.r0").unwrap().find_layer("rule switch").unwrap();
@@ -3884,17 +3929,13 @@ fn ringframe_lists_the_rules_of_each_practice_turned_on() {
             value: Some(json!([{"id": "trading.r0", "enabled": false}])),
         }
     );
-    // A rule of the person's own goes into that practice, its id one no
-    // practice holds, typed under its rules only.
-    let add = head.find_layer("add rule").unwrap().action.clone().expect("+ Add a rule");
-    app.dispatch(add);
+    // A rule of the person's own goes into the practice open, its id one no
+    // practice holds.
+    let add = dom.find_layer("rules head").unwrap().find_layer("add rule").unwrap();
+    app.dispatch(add.action.clone().expect("+ Add your own rule"));
     let editing = app.setting_editing.clone().map(|(_, k)| k);
     assert_eq!(editing, Some(k(&["ringframe", "deltas", trading, "entries", "own.2", "text"])));
-    let dom = app.render();
-    let listed = dom.find_layer(&format!("rules {trading}")).unwrap();
-    assert!(listed.find_layer("setting value").is_some(), "typed here");
-    let base = dom.find_layer("rules practices/software-development").unwrap();
-    assert!(base.find_layer("setting value").is_none(), "not under the base's");
+    assert!(app.render().find_layer("new rule").unwrap().find_layer("setting value").is_some());
 }
 
 /// RingFrame would not say its rules: the sheet says why, asks nothing more
@@ -3904,37 +3945,34 @@ fn a_refused_settings_read_says_why_and_is_asked_again_on_opening() {
     let (_tmp, mut app, mut wire) = wired_app();
     let rules = crate::daemon::Then::Rules { project: false };
     app.dispatch(WindowAct::OpenSettings);
-    app.dispatch(SheetAct::SettingsTab(SettingsTab::RingFrame));
+    app.dispatch(SheetAct::SettingsTab(SettingsTab::Rules));
     let (id, _) = wire.call();
     wire.refuse(id, "config.absent: no configuration");
     pumped(&mut app, |a| a.clients[0].refused.contains_key(&rules));
     assert!(app.render().all_text().contains("RingFrame did not answer: config.absent"));
-    let (id, call) = wire.call();
-    assert!(matches!(call, Call::Read { what, .. } if what == "preview"));
-    wire.refuse(id, "config.absent: no configuration");
-    pumped(&mut app, |a| a.clients[0].refused.len() == 2);
 
     wire.event(Event::Turbo { on: true });
     pumped(&mut app, |a| a.clients[0].turbo);
     assert!(!app.clients[0].owes(&rules), "not asked again while the sheet stays open");
 
     app.dispatch(WindowAct::OpenSettings);
-    app.dispatch(SheetAct::SettingsTab(SettingsTab::RingFrame));
+    app.dispatch(SheetAct::SettingsTab(SettingsTab::Rules));
     let (_, call) = wire.call();
     assert!(matches!(call, Call::Read { what, .. } if what == "rules"));
 }
 
-/// RingFrame: the practices, the cap, each rule with where it comes from, what
-/// judges must not do, and a preview; each change written as RingFrame reads
-/// it, a rule as the list that holds it.
+/// Rules, with Advanced settings: the practices, the cap, each rule, and a
+/// preview; Eval's lines it never does; each change written as RingFrame
+/// reads it, a rule as the list that holds it.
 #[test]
-fn ringframe_shows_the_rules_and_writes_each_change_as_ringframe_reads_it() {
+fn rules_show_and_write_each_change_as_ringframe_reads_it() {
     let (_tmp, mut app, mut wire) = wired_app();
     let base = "practices/software-development";
     app.clients[0].config = Some(json!({"machine": {"ringframe": {"deltas": {base: {
         "entries": [{"id": "practice.kiss", "enabled": false}]}}}}, "project": null}));
     app.dispatch(WindowAct::OpenSettings);
-    app.dispatch(SheetAct::SettingsTab(SettingsTab::RingFrame));
+    app.dispatch(SheetAct::Advanced);
+    app.dispatch(SheetAct::SettingsTab(SettingsTab::Rules));
     let (id, call) = wire.call();
     assert_eq!(
         call,
@@ -3965,15 +4003,14 @@ fn ringframe_shows_the_rules_and_writes_each_change_as_ringframe_reads_it() {
         "5 core rules kept · 2 left out by the cap"
     );
     assert!(dom.find_layer("preview text").is_none(), "the text waits for Show");
-    let own = dom.find_layer("deny 0").expect("RingFrame's own list, listed");
-    assert!(own.all_text().contains(words::word("desktop.settings.shipped")));
+    assert!(dom.find_layer("deny 0").is_none(), "in Eval");
     let kiss = dom.find_layer("rule practice.kiss").expect("KISS");
     assert!(
         kiss.all_text().contains(words::word("desktop.settings.changed")),
         "{}",
         kiss.all_text()
     );
-    assert_eq!(kiss.find_layer("setting badge").unwrap().all_text(), "OFF");
+    assert!(!switched(kiss));
     assert!(dom.find_layer("rule practice.yagni").unwrap().find_layer("edit").is_some());
 
     let k = |parts: &[&str]| parts.iter().map(|p| p.to_string()).collect::<Vec<_>>();
@@ -4036,23 +4073,40 @@ fn ringframe_shows_the_rules_and_writes_each_change_as_ringframe_reads_it() {
 
     app.dispatch(SheetAct::ShowPreview);
     assert!(app.render().find_layer("preview text").unwrap().all_text().contains("KISS"));
+
+    app.dispatch(SheetAct::SettingsTab(SettingsTab::Eval));
+    let own = app.render().find_layer("deny 0").expect("RingFrame's own list, listed").clone();
+    assert!(own.all_text().contains(words::word("settings.eval.built_in")), "{}", own.all_text());
 }
 
-/// Harnesses: inspect and tune, never add. A harness shows how RingFrame
-/// sends to it and its route rules; a rule's status is switched, written as
-/// the list RingFrame reads.
+/// Agent apps: inspect and tune, never add. Each says how it stands; with
+/// Advanced settings, one opens with how Weft asks it, never who sends, and
+/// its rules; a rule's status is switched, written as the list RingFrame
+/// reads.
 #[test]
-fn harnesses_show_how_ringframe_sends_and_switch_a_route_rule_s_status() {
+fn agent_apps_say_how_each_stands_and_open_with_advanced_settings() {
     let (_tmp, mut app, mut wire) = wired_app();
     app.clients[0].config = Some(json!({"machine": {}, "project": null}));
     app.dispatch(WindowAct::OpenSettings);
-    app.dispatch(SheetAct::SettingsTab(SettingsTab::Harnesses));
+    app.dispatch(SheetAct::SettingsTab(SettingsTab::Apps));
+    let dom = app.render();
+    for layer in
+        ["harness Antigravity", "harness Claude Code", "harness Codex", "harness Grok Build"]
+    {
+        assert!(dom.find_layer(layer).is_some(), "{layer}");
+    }
+    assert!(
+        dom.find_layer("harness Antigravity").unwrap().action.is_none(),
+        "opens only with Advanced settings"
+    );
+    app.dispatch(SheetAct::Advanced);
+    app.dispatch(SheetAct::ShowHarness("antigravity".into()));
     let mut asked = Vec::new();
     while asked.len() < 2 {
         let (id, call) = wire.call();
         match call {
             Call::Read { what, unit, .. } if what == "profile" => {
-                assert_eq!(unit, "antigravity", "the first harness");
+                assert_eq!(unit, "antigravity");
                 wire.answer(id, json!({"capabilities": [
                     {"id": "native_plan", "delivery_mode": "native_dispatch",
                      "selection": "A plan or analysis before implementation.", "purpose": "Plans first"},
@@ -4071,29 +4125,16 @@ fn harnesses_show_how_ringframe_sends_and_switch_a_route_rule_s_status() {
     }
     pumped(&mut app, |a| a.clients[0].read.len() >= 2);
     let dom = app.render();
-    for layer in
-        ["harness Antigravity", "harness Claude Code", "harness Codex", "harness Grok Build"]
-    {
-        assert!(dom.find_layer(layer).is_some(), "{layer}");
-    }
-    let goal = dom.find_layer("sends native_goal").expect("Goal");
-    assert!(
-        goal.all_text().contains(words::word("desktop.harness.you_send")),
-        "{}",
-        goal.all_text()
-    );
-    assert!(goal.all_text().contains("4000"), "{}", goal.all_text());
-    assert!(
-        goal.all_text().contains("Works on its own until it marks the goal done"),
-        "its purpose, and its limit"
-    );
+    let goal = dom.find_layer("sends native_goal").expect("Goal").all_text();
+    assert!(!goal.contains(words::word("desktop.harness.you_send")), "never who sends: {goal}");
+    assert!(goal.contains("4000"), "{goal}");
+    assert!(goal.contains("Works on its own until it marks the goal done"), "its purpose");
     let plan = dom.find_layer("sends native_plan").unwrap().all_text();
     assert!(
         plan.contains("Plans first") && !plan.contains("before implementation"),
         "for people, not the model: {plan}"
     );
-    assert!(dom.find_layer("sends folds").is_none(), "no row for long pastes");
-    let rule = dom.find_layer("route rule agy.plan_as_files").expect("its route rule");
+    let rule = dom.find_layer("rule agy.plan_as_files").expect("its rule");
     assert!(rule.find_layer("status desktop.harness.candidate").is_some());
 
     app.dispatch(SheetAct::Choose {
