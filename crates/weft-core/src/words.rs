@@ -946,7 +946,10 @@ pub const WORDS: &[(&str, &str)] = &[
     ("settings.eval.never", "While reading, Eval never"),
     ("settings.eval.built_in", "built in"),
     ("settings.eval.never_new", "Something Eval must never do"),
-    ("settings.rules_what", "Good practice Weft adds to what you ask, and Eval checks the work against."),
+    (
+        "settings.rules_what",
+        "Good practice Weft adds to what you ask, and Eval checks the work against.",
+    ),
     ("settings.rules.work_on", "What you work on"),
     ("settings.rules.always_on", "always on"),
     ("settings.rules.the_rules", "The rules"),
@@ -960,7 +963,10 @@ pub const WORDS: &[(&str, &str)] = &[
     ("settings.apps.on", "On {machine}"),
     ("settings.apps.ready", "Ready"),
     ("settings.apps.update", "Needs an update"),
-    ("settings.apps.update_what", "Its Weft plugin is out of date. Update it on {machine}, in Updates."),
+    (
+        "settings.apps.update_what",
+        "Its Weft plugin is out of date. Update it on {machine}, in Updates.",
+    ),
     ("settings.apps.setup", "Needs setting up"),
     ("settings.apps.setup_what", "Set it up on {machine}, in Updates."),
     ("settings.apps.missing", "Not installed"),

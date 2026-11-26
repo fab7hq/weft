@@ -15,6 +15,7 @@ pub mod devices;
 pub mod health;
 pub mod jobs;
 pub mod links;
+pub mod names;
 pub mod push;
 pub mod run;
 pub mod socket;

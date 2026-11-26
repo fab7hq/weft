@@ -15,12 +15,16 @@ use std::time::{Duration, Instant, SystemTime};
 
 use weft_remote::account::Probe;
 use weft_remote::health::{Act, Recovery};
+use weft_remote::names::Lookup;
 use weft_remote::tunnel::{ADDRESS_WITHIN, Backoff};
 
 const PHONE: Duration = Duration::from_secs(10);
 /// A target in which the tunnel comes back at a new address is this much
 /// longer: the name is told only once its provider has published it.
 const NEW_ADDRESS: Duration = Duration::from_secs(10);
+/// Its provider's name servers answer a new name this long after the
+/// program gives it (1.7 to 25.7 s measured; the targets take a middle case).
+const NAME_PUBLISHED: Duration = Duration::from_secs(6);
 /// A tunnel's program gives its address this long after it starts.
 const ADDRESS_AFTER: Duration = Duration::from_secs(3);
 /// A look or a report is answered this long after it is made.
@@ -60,6 +64,8 @@ struct World {
     exits_offline: Option<Duration>,
     offline_since: Option<Duration>,
     names: u32,
+    /// When each name was given.
+    given: std::collections::HashMap<String, Duration>,
     recovery: Recovery,
     /// Answers on their way: when they arrive, and what they answer.
     answers: Vec<(Duration, Answer)>,
@@ -72,6 +78,7 @@ enum Answer {
     Probe(String),
     Network,
     Report(String),
+    Name(String),
 }
 
 impl World {
@@ -90,6 +97,7 @@ impl World {
             exits_offline: None,
             offline_since: None,
             names: 0,
+            given: Default::default(),
             recovery: Recovery::new(mono, wall),
             answers: Vec::new(),
             service: None,
@@ -144,6 +152,7 @@ impl World {
                     self.names += 1;
                     let name = format!("https://run-{}.trycloudflare.com", self.names);
                     self.carried.insert(name.clone());
+                    self.given.insert(name.clone(), self.t);
                     self.program = Program::Running { since, address: Some(name) };
                     self.backoff.reset();
                     self.recovery.health.new_name(self.mono());
@@ -182,6 +191,21 @@ impl World {
                     self.recovery.seen(self.mono(), probe)
                 }
                 Answer::Network => self.recovery.network(self.mono(), self.network),
+                Answer::Name(address) => {
+                    let published =
+                        self.given.get(&address).is_some_and(|g| self.t >= *g + NAME_PUBLISHED);
+                    let lookup = match (self.network, published) {
+                        (false, _) => Lookup::CannotAsk,
+                        (true, true) => Lookup::Found,
+                        (true, false) => Lookup::NotYet,
+                    };
+                    self.recovery.health.name_seen(self.mono(), lookup);
+                    let address = self.address().map(str::to_string);
+                    self.recovery
+                        .report(self.mono(), address.as_deref(), true)
+                        .into_iter()
+                        .collect()
+                }
                 Answer::Report(address) => {
                     if self.network {
                         self.service = Some(address.clone());
@@ -206,6 +230,7 @@ impl World {
                 Act::LookAtTunnel(a) => self.answers.push((at, Answer::Probe(a))),
                 Act::LookAtNetwork => self.answers.push((at, Answer::Network)),
                 Act::Report(a) => self.answers.push((at, Answer::Report(a))),
+                Act::LookUpName(a) => self.answers.push((at, Answer::Name(a))),
                 // A poke wakes a thread waiting to start again; one that runs
                 // drops pokes from before it ended.
                 Act::PokeTunnel => {

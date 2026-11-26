@@ -302,8 +302,8 @@ impl App {
 
     /// Views until one is picked, keeping each as `view`.
     pub fn wait_view(&mut self, mut pick: impl FnMut(&Value) -> bool) -> Value {
-        // A new address reaches the service `PUBLISHED` after it appears.
-        let deadline = Instant::now() + weft_remote::health::PUBLISHED + Duration::from_secs(5);
+        // A new address reaches the service once its name servers answer it, here at once.
+        let deadline = Instant::now() + Duration::from_secs(10);
         self.out.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
         while Instant::now() < deadline {
             if let Ok(Some(Line::Event(Event::Remote { view }))) = self.lines.next() {
@@ -427,6 +427,8 @@ impl Harness {
             socket: front,
             account: weft_remote::account::Account::at(service, login),
             key: fab7().verifying_key(),
+            // The test tunnel's name is no real one: its name servers answer it.
+            names: |_| weft_remote::names::Lookup::Found,
         };
         std::thread::spawn(move || weft_remote::run::serve(settings).unwrap());
         app.wait_view(|v| v["state"] == state);

@@ -42,6 +42,8 @@ pub struct Settings {
     pub account: Account,
     /// Fab7's assertion key.
     pub key: VerifyingKey,
+    /// Whether a new tunnel name is published at its own name servers.
+    pub names: fn(&str) -> crate::names::Lookup,
 }
 
 impl Settings {
@@ -52,6 +54,7 @@ impl Settings {
             socket: weft_proto::socket_path(),
             account: Account::new(),
             key: devices::fab7_key(),
+            names: crate::names::published,
         }
     }
 }
@@ -72,6 +75,8 @@ pub enum Wake {
     Probed(String, Probe),
     /// Whether the network answered, with no tunnel up to look at.
     Network(bool),
+    /// What this address's own name servers said of its name.
+    Named(String, crate::names::Lookup),
 }
 
 impl From<crate::push::Gone> for Wake {
@@ -414,6 +419,13 @@ impl Remote {
                 }
                 Wake::Probed(address, seen) => {
                     self.probed(&address, seen);
+                    true
+                }
+                Wake::Named(address, lookup) => {
+                    if self.view.address.as_deref() == Some(address.as_str()) {
+                        self.recovery.health.name_seen(Instant::now(), lookup);
+                        self.report();
+                    }
                     true
                 }
                 Wake::Network(online) => {
@@ -833,12 +845,19 @@ impl Remote {
     /// Do what the recovery rules say.
     fn perform(&mut self, acts: Vec<Act>) {
         for act in acts {
-            let (account, tx) = (self.settings.account.clone(), self.tx.clone());
+            let (account, tx, names) =
+                (self.settings.account.clone(), self.tx.clone(), self.settings.names);
             match act {
                 Act::LookAtTunnel(address) => {
                     std::thread::spawn(move || {
                         let seen = account.probe(&address);
                         let _ = tx.send(Wake::Probed(address, seen));
+                    });
+                }
+                Act::LookUpName(address) => {
+                    std::thread::spawn(move || {
+                        let lookup = names(&address);
+                        let _ = tx.send(Wake::Named(address, lookup));
                     });
                 }
                 Act::LookAtNetwork => {

@@ -10,17 +10,26 @@
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::account::{Probe, Reported};
+use crate::names::Lookup;
 
 /// The wall clock ran this far ahead of the tick: the machine slept.
 pub const SLEPT: Duration = Duration::from_secs(15);
 /// A new name is not looked at from outside for this long: until it is known
 /// everywhere, a lookup of it can say it does not exist.
 pub const NEW_NAME: Duration = Duration::from_secs(120);
-/// A new name is told to the service this long after it appears. Resolvers
-/// learn it some seconds after the tunnel prints it, and one asked sooner
+/// A new name is told to the service once its own name servers answer it
+/// (`names::published`). Resolvers learn it only then, and one asked sooner
 /// answers that it does not exist and keeps that answer for a minute or more:
 /// a phone that looked it up too soon could not reach it for 90 s. Cloudflare
-/// published a quick tunnel's name 6.5 to 9.9 s after it was printed.
+/// published a quick tunnel's name 1.7 to 25.7 s after it was printed (five
+/// tunnels, 2026-11-26), so no fixed wait fits.
+/// Between lookups of a new name at its own name servers.
+pub const NAME_LOOK_EVERY: Duration = Duration::from_secs(1);
+/// A name its name servers never answered is told after this, so a provider
+/// whose name servers cannot be asked never keeps the service waiting.
+pub const NAME_WAIT_MOST: Duration = Duration::from_secs(60);
+/// When no name server can be asked at all (no resolver to find them), the
+/// name is told this long after it appears, as before the lookup.
 pub const PUBLISHED: Duration = Duration::from_secs(11);
 /// How often the tunnel is looked at while it answers: often enough that one
 /// Cloudflare dropped is found, ended and replaced within the 60 s target
@@ -63,6 +72,10 @@ pub struct Health {
     offline: bool,
     /// When the tunnel last gave a new name.
     named: Option<Instant>,
+    /// What its own name servers last said of that name.
+    name: Option<Lookup>,
+    name_looking: bool,
+    next_name_look: Instant,
 }
 
 impl Health {
@@ -75,6 +88,9 @@ impl Health {
             gone: 0,
             offline: false,
             named: None,
+            name: None,
+            name_looking: false,
+            next_name_look: mono,
         }
     }
 
@@ -100,16 +116,46 @@ impl Health {
         if up { Due::Tunnel } else { Due::Network }
     }
 
-    /// A new address: looked at once it is known everywhere.
+    /// A new address: looked at once it is known everywhere, and asked of its
+    /// own name servers until they answer it.
     pub fn new_name(&mut self, mono: Instant) {
         self.next_look = mono + NEW_NAME;
         self.gone = 0;
         self.named = Some(mono);
+        self.name = None;
+        self.name_looking = false;
+        self.next_name_look = mono;
     }
 
-    /// Whether resolvers know the tunnel's name by now (`PUBLISHED`).
+    /// Whether resolvers know the tunnel's name by now: its name servers
+    /// answer it, or none could be asked and `PUBLISHED` has passed, or
+    /// `NAME_WAIT_MOST` has.
     pub fn published(&self, mono: Instant) -> bool {
-        self.named.is_none_or(|at| mono >= at + PUBLISHED)
+        let Some(at) = self.named else { return true };
+        match self.name {
+            Some(Lookup::Found) => true,
+            Some(Lookup::CannotAsk) => mono >= at + PUBLISHED,
+            _ => mono >= at + NAME_WAIT_MOST,
+        }
+    }
+
+    /// Whether to ask the new name's name servers now; noted as on its way
+    /// when so.
+    pub fn name_due(&mut self, mono: Instant) -> bool {
+        let waiting =
+            self.named.is_some() && !self.published(mono) && self.name != Some(Lookup::CannotAsk);
+        if !waiting || self.name_looking || mono < self.next_name_look {
+            return false;
+        }
+        self.name_looking = true;
+        true
+    }
+
+    /// What the name servers said of the new name.
+    pub fn name_seen(&mut self, mono: Instant, lookup: Lookup) {
+        self.name_looking = false;
+        self.name = Some(lookup);
+        self.next_name_look = mono + NAME_LOOK_EVERY;
     }
 
     /// What a look at the tunnel answered.
@@ -162,6 +208,8 @@ pub enum Act {
     LookAtTunnel(String),
     /// Look at whether the network answers.
     LookAtNetwork,
+    /// Ask the address's own name servers whether its name is published.
+    LookUpName(String),
     /// Tell the service this address.
     Report(String),
     /// Start a tunnel waiting to start again now.
@@ -206,6 +254,9 @@ impl Recovery {
                 (Due::Network, _) => acts.push(Act::LookAtNetwork),
                 _ => {}
             }
+        }
+        if let Some(a) = address.filter(|_| self.health.name_due(mono)) {
+            acts.push(Act::LookUpName(a.to_string()));
         }
         acts.extend(self.report(mono, address, joined));
         acts
@@ -355,29 +406,69 @@ mod tests {
         assert!(!h.seen(t, Probe::Gone).recycle && !h.seen(t, Probe::Gone).recycle);
     }
 
-    /// A new name is told to the service only once resolvers know it: a
-    /// device that looks it up sooner is told it does not exist, and keeps
-    /// that answer for a minute or more.
+    /// A new name is told to the service only once its own name servers
+    /// answer it: a device that looks it up sooner is told it does not exist,
+    /// and keeps that answer for a minute or more.
     #[test]
-    fn a_new_name_is_reported_only_once_it_is_published() {
+    fn a_new_name_is_reported_once_its_name_servers_answer_it() {
         let (mono, wall) = at();
         let mut r = Recovery::new(mono, wall);
         r.health.new_name(mono);
         let name = "https://new.example";
-        assert_eq!(r.report(mono, Some(name), true), None, "not as it appears");
-        let soon = mono + PUBLISHED - Duration::from_millis(1);
+        let reports = |acts: &[Act]| acts.iter().filter(|a| matches!(a, Act::Report(_))).count();
+        let acts = r.tick(mono, wall, Some(name), true, true);
+        assert!(acts.contains(&Act::LookUpName(name.into())), "asked at once: {acts:?}");
+        assert_eq!(reports(&acts), 0, "not as it appears");
+        let t = mono + Duration::from_millis(400);
         assert!(
-            r.tick(soon, wall, Some(name), true, true).iter().all(|a| !matches!(a, Act::Report(_)))
+            !r.tick(t, wall, Some(name), true, true).contains(&Act::LookUpName(name.into())),
+            "one at a time"
         );
-        let acts = r.tick(mono + PUBLISHED, wall, Some(name), true, true);
+        r.health.name_seen(t, Lookup::NotYet);
+        let t = mono + Duration::from_secs(25);
+        let acts = r.tick(t, wall, Some(name), true, true);
+        assert!(acts.contains(&Act::LookUpName(name.into())), "asked again: {acts:?}");
+        assert_eq!(reports(&acts), 0, "not yet published, past the old 11 s");
+        r.health.name_seen(t, Lookup::Found);
+        let acts = r.tick(t, wall, Some(name), true, true);
         assert!(acts.contains(&Act::Report(name.into())), "{acts:?}");
     }
 
-    /// Cloudflare's own name server first answered for a new quick tunnel
-    /// 6.5 to 9.9 s after the tunnel printed it (eight tunnels, 2026-10-19):
-    /// the name is told after the slowest of them.
+    /// Published in under 2 s, the name is told then, not after a fixed wait.
     #[test]
-    fn a_new_name_is_told_after_its_provider_publishes_it() {
-        assert!(PUBLISHED > Duration::from_millis(9_900), "{PUBLISHED:?}");
+    fn a_name_published_at_once_is_told_at_once() {
+        let (mono, wall) = at();
+        let mut r = Recovery::new(mono, wall);
+        r.health.new_name(mono);
+        let name = "https://new.example";
+        r.tick(mono, wall, Some(name), true, true);
+        let t = mono + Duration::from_millis(1700);
+        r.health.name_seen(t, Lookup::Found);
+        assert!(r.tick(t, wall, Some(name), true, true).contains(&Act::Report(name.into())));
+    }
+
+    /// Name servers that never answer it keep the service waiting at most
+    /// `NAME_WAIT_MOST`; none to ask, the name is told after `PUBLISHED`.
+    #[test]
+    fn a_name_nobody_can_confirm_is_told_anyway() {
+        let (mono, wall) = at();
+        let mut h = Health::new(mono, wall);
+        h.new_name(mono);
+        h.name_seen(mono, Lookup::NotYet);
+        assert!(!h.published(mono + NAME_WAIT_MOST - Duration::from_millis(1)));
+        assert!(h.published(mono + NAME_WAIT_MOST));
+        h.new_name(mono);
+        h.name_seen(mono, Lookup::CannotAsk);
+        assert!(!h.published(mono + PUBLISHED - Duration::from_millis(1)));
+        assert!(h.published(mono + PUBLISHED));
+        assert!(!h.name_due(mono + PUBLISHED), "nothing to ask");
+    }
+
+    /// Cloudflare's own name servers first answered for five new quick
+    /// tunnels 1.7, 1.7, 3.4, 12.4 and 25.7 s after the tunnel printed them
+    /// (2026-11-26): the wait covers the slowest with room.
+    #[test]
+    fn the_longest_wait_covers_the_slowest_name_seen() {
+        assert!(NAME_WAIT_MOST > Duration::from_millis(25_700) * 2, "{NAME_WAIT_MOST:?}");
     }
 }
